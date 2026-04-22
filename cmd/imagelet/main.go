@@ -22,9 +22,9 @@ import (
 
 // cli defines the top-level kong CLI flags.
 type cli struct {
-	Host     string `short:"H" help:"Host address to bind." default:"0.0.0.0"`
-	Port     int    `short:"p" help:"TCP port to listen on." default:"8080"`
-	LogLevel string `name:"log-level" short:"l" help:"Log level (trace|debug|info|warn|error|fatal|panic)." default:"info" enum:"trace,debug,info,warn,error,fatal,panic"`
+	Host    string `short:"H" help:"Host address to bind." default:"0.0.0.0"`
+	Port    int    `short:"p" help:"TCP port to listen on." default:"8080"`
+	Verbose int    `short:"v" type:"counter" help:"Increase log verbosity (-v for debug, -vv for trace)."`
 }
 
 func main() {
@@ -34,7 +34,14 @@ func main() {
 		kong.Description("imagelet HTTP service."),
 	)
 
-	if err := logger.Setup(c.LogLevel); err != nil {
+	level := "info"
+	switch {
+	case c.Verbose >= 2:
+		level = "trace"
+	case c.Verbose == 1:
+		level = "debug"
+	}
+	if err := logger.Setup(level); err != nil {
 		log.Fatal().Err(err).Msg("configure logger")
 	}
 

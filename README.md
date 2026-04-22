@@ -28,10 +28,10 @@ Usage: imagelet [flags]
 imagelet HTTP service.
 
 Flags:
-  -h, --help                Show context-sensitive help.
-  -H, --host="0.0.0.0"      Host address to bind.
-  -p, --port=8080           TCP port to listen on.
-  -l, --log-level="info"    Log level (trace|debug|info|warn|error|fatal|panic).
+  -h, --help              Show context-sensitive help.
+  -H, --host="0.0.0.0"    Host address to bind.
+  -p, --port=8080         TCP port to listen on.
+  -v, --verbose           Increase log verbosity (-v for debug, -vv for trace).
 ```
 
 ### Routes
