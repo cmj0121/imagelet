@@ -29,9 +29,9 @@ imagelet HTTP service.
 
 Flags:
   -h, --help                Show context-sensitive help.
-      --host="0.0.0.0"      Host address to bind.
-      --port=8080           TCP port to listen on.
-      --log-level="info"    Log level (trace|debug|info|warn|error|fatal|panic).
+  -H, --host="0.0.0.0"      Host address to bind.
+  -p, --port=8080           TCP port to listen on.
+  -l, --log-level="info"    Log level (trace|debug|info|warn|error|fatal|panic).
 ```
 
 ### Routes

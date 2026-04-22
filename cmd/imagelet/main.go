@@ -22,9 +22,9 @@ import (
 
 // cli defines the top-level kong CLI flags.
 type cli struct {
-	Host     string `help:"Host address to bind." default:"0.0.0.0"`
-	Port     int    `help:"TCP port to listen on." default:"8080"`
-	LogLevel string `name:"log-level" help:"Log level (trace|debug|info|warn|error|fatal|panic)." default:"info" enum:"trace,debug,info,warn,error,fatal,panic"`
+	Host     string `short:"H" help:"Host address to bind." default:"0.0.0.0"`
+	Port     int    `short:"p" help:"TCP port to listen on." default:"8080"`
+	LogLevel string `name:"log-level" short:"l" help:"Log level (trace|debug|info|warn|error|fatal|panic)." default:"info" enum:"trace,debug,info,warn,error,fatal,panic"`
 }
 
 func main() {
@@ -44,8 +44,12 @@ func main() {
 
 	addr := net.JoinHostPort(c.Host, strconv.Itoa(c.Port))
 	srv := &http.Server{
-		Addr:    addr,
-		Handler: server.NewRouter(),
+		Addr:              addr,
+		Handler:           server.NewRouter(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

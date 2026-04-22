@@ -10,6 +10,7 @@ import (
 // NewRouter returns a gin engine with the imagelet routes registered.
 func NewRouter() *gin.Engine {
 	r := gin.New()
+	r.Use(gin.Recovery())
 	r.GET("/", rootHandler)
 	return r
 }
