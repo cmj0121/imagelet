@@ -18,6 +18,6 @@ repos:
 
   # -------- golang related linter --------
   - repo: https://github.com/golangci/golangci-lint
-    rev: v1.55.2
+    rev: v1.62.2
     hooks:
       - id: golangci-lint

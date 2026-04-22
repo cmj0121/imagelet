@@ -8,12 +8,16 @@ all: $(SUBDIR) 		# default action
 
 clean: $(SUBDIR)	# clean-up environment
 	@find . -name '*.sw[po]' -delete
+	@rm -rf bin/
 
 test:				# run test
+	go test ./... -count=1
 
 run:				# run in the local environment
+	go run ./cmd/imagelet
 
 build:				# build the binary/library
+	go build -o bin/imagelet ./cmd/imagelet
 
 upgrade:			# upgrade all the necessary packages
 	pre-commit autoupdate
