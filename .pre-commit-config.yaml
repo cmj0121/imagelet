@@ -1,0 +1,23 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-yaml
+      - id: end-of-file-fixer
+        exclude: ^src/go/pkg/pylon/(testdata/.*\.(ascii|svg)|assets/.*)$
+      - id: trailing-whitespace
+        exclude: ^src/go/pkg/pylon/(testdata/.*\.(ascii|svg)|assets/.*)$
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.47.0
+    hooks:
+      - id: markdownlint-fix
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v3.1.0
+    hooks:
+      - id: prettier
+
+  # -------- golang related linter --------
+  - repo: https://github.com/golangci/golangci-lint
+    rev: v1.55.2
+    hooks:
+      - id: golangci-lint
