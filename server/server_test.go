@@ -7,7 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/cmj0121/imagelet/internal/server"
+	"github.com/cmj0121/imagelet/server"
 )
 
 func TestRootReturns200Empty(t *testing.T) {

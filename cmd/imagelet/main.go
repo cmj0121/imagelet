@@ -16,8 +16,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
 
-	"github.com/cmj0121/imagelet/internal/logger"
-	"github.com/cmj0121/imagelet/internal/server"
+	"github.com/cmj0121/imagelet/logger"
+	"github.com/cmj0121/imagelet/server"
 )
 
 // cli defines the top-level kong CLI flags.
