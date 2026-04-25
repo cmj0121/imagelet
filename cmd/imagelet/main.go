@@ -16,8 +16,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
 
-	"github.com/cmj0121/imagelet/internal/logger"
-	"github.com/cmj0121/imagelet/internal/server"
+	"github.com/cmj0121/imagelet/logger"
+	"github.com/cmj0121/imagelet/server"
+	"github.com/cmj0121/imagelet/service/now"
 )
 
 // cli defines the top-level kong CLI flags.
@@ -45,18 +46,26 @@ func main() {
 		log.Fatal().Err(err).Msg("configure logger")
 	}
 
+	// Resolved zone is logged so /now's wall-clock format is unambiguous.
+	// In containers without /etc/localtime this prints "UTC".
+	log.Info().Str("tz", time.Local.String()).Msg("server timezone")
+
 	gin.SetMode(gin.ReleaseMode)
 	gin.DefaultWriter = log.Logger
 	gin.DefaultErrorWriter = log.Logger
 
+	r := server.New()
+	now.Register(r)
+
 	addr := net.JoinHostPort(c.Host, strconv.Itoa(c.Port))
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           server.NewRouter(),
+		Handler:           r,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 14, // 16 KiB — caps client header floods.
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
