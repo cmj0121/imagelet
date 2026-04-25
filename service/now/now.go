@@ -31,13 +31,15 @@ func Register(r gin.IRouter) {
 	r.GET("/now", Handler)
 }
 
-// Handler responds with the current server-local time, banner-rendered with
-// a YYYY-MM-DD DAY UTC±H caption underneath. Accept: text/pylon takes
+// Handler responds with the current time in the caller's timezone (resolved
+// by middleware.TimezoneDetector from the CF-Timezone header, falling back
+// to the server's local zone when no header is present), banner-rendered
+// with a YYYY-MM-DD DAY UTC±H caption underneath. Accept: text/pylon takes
 // precedence over the User-Agent-based mode and returns the raw pylon
 // source so callers can render it themselves. Cache-Control: no-store is
 // set on every response because the body changes every minute.
 func Handler(c *gin.Context) {
-	t := time.Now()
+	t := time.Now().In(middleware.GetLocation(c))
 	head := headline(t)
 	sub := subtitle(t)
 

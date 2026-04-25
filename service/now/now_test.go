@@ -15,6 +15,7 @@ import (
 
 func newRouter() *gin.Engine {
 	r := gin.New()
+	r.Use(middleware.TimezoneDetector())
 	r.Use(middleware.ClientDetector())
 	now.Register(r)
 	return r
@@ -39,6 +40,37 @@ var svgRe = regexp.MustCompile(`(?s)<svg[^>]*>.*\d{4}-\d{2}-\d{2} [A-Z]{3} UTC[+
 // pylonSourceRe matches the exact two-element pylon source render.BannerSource
 // emits: `[ HH MM | banner ]\n( YYYY-MM-DD DAY UTC±H )`. Anchored.
 var pylonSourceRe = regexp.MustCompile(`\A\[ \d{2} \d{2} \| banner \]\n\( \d{4}-\d{2}-\d{2} [A-Z]{3} UTC[+-]\d+ \)\z`)
+
+// TestNowRespectsCFTimezone pins the contract that /now's subtitle reflects
+// the timezone resolved by middleware.TimezoneDetector from the CF-Timezone
+// header. UTC+0 vs UTC+8 is a wide enough gap that no plausible host zone
+// can produce both offsets, so this test is robust regardless of where it
+// runs.
+func TestNowRespectsCFTimezone(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := newRouter()
+
+	cases := []struct {
+		cfHeader string
+		want     string
+	}{
+		{"UTC", "UTC+0"},
+		{"Asia/Taipei", "UTC+8"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.cfHeader, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/now", nil)
+			req.Header.Set("User-Agent", "curl/8.4.0")
+			req.Header.Set("CF-Timezone", tc.cfHeader)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+
+			if !strings.Contains(rec.Body.String(), tc.want) {
+				t.Errorf("subtitle does not contain %q\n--- body ---\n%s", tc.want, rec.Body.String())
+			}
+		})
+	}
+}
 
 func TestNow(t *testing.T) {
 	gin.SetMode(gin.TestMode)

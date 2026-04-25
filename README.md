@@ -67,6 +67,10 @@ $ curl http://localhost:8080/now
 Browsers see the same banner wrapped in a self-contained `<svg>` document — pylon paints
 the solid `█` blocks as `<rect>` elements so it scales crisply.
 
+When the request carries Cloudflare's `CF-Timezone` header (e.g. `Asia/Taipei`),
+`/now` renders in the caller's local zone — the subtitle's `UTC±H` offset shifts
+accordingly. Missing or unparseable values fall back to the server's local zone.
+
 ## Project layout
 
 Top-level packages are importable; `internal/` is not used.
