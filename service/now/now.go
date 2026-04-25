@@ -1,7 +1,11 @@
-// Package now exposes the /now service: GET /now returns the current
-// server-local time in HH:MM format inside a pylon-rendered box. The wire
-// format (ASCII text or SVG) is chosen by middleware.ClientDetector based
-// on the request's User-Agent.
+// Package now exposes the /now service: GET /now returns the current time
+// in the caller's resolved timezone (via middleware.TimezoneDetector, with
+// fallback to the server's local zone) as a pylon banner stacked above a
+// date / weekday / zone caption. The wire format is content-negotiated:
+//
+//   - Accept: text/pylon → raw pylon source (callers render it themselves)
+//   - User-Agent contains Mozilla → image/svg+xml
+//   - everything else → text/plain; charset=utf-8 (ASCII)
 //
 // The service is reusable: external consumers can either call Register on
 // any gin.IRouter (mounting it under any prefix), or invoke Handler directly
@@ -9,7 +13,9 @@
 package now
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -18,10 +24,6 @@ import (
 	"github.com/cmj0121/imagelet/render"
 )
 
-// timeFormat is the wall-clock layout used in the response body. Go's
-// reference time encodes HH:MM as "15:04".
-const timeFormat = "15:04"
-
 // Register mounts GET /now -> Handler on r. r is typed as gin.IRouter so the
 // service can be installed on either a *gin.Engine or a route group (e.g.
 // for prefix-based versioning later).
@@ -29,21 +31,47 @@ func Register(r gin.IRouter) {
 	r.GET("/now", Handler)
 }
 
-// Handler responds with the current server-local time framed by render.Box.
-// The render mode is whatever middleware.ClientDetector decided for this
-// request — handlers do not duplicate the User-Agent rule. Cache-Control:
-// no-store is set on every response because the body changes every minute.
+// Handler responds with the current server-local time, banner-rendered with
+// a YYYY-MM-DD DAY UTC±H caption underneath. Accept: text/pylon takes
+// precedence over the User-Agent-based mode and returns the raw pylon
+// source so callers can render it themselves. Cache-Control: no-store is
+// set on every response because the body changes every minute.
 func Handler(c *gin.Context) {
-	mode := middleware.GetMode(c)
-	body := render.Box(time.Now().Format(timeFormat), mode)
+	t := time.Now()
+	head := headline(t)
+	sub := subtitle(t)
+
 	c.Header("Cache-Control", "no-store")
-	switch mode {
-	case render.ModeSVG:
-		c.Data(http.StatusOK, "image/svg+xml", []byte(body))
-	case render.ModeASCII:
-		c.String(http.StatusOK, "%s", body)
-	default:
-		// Unknown modes fall back to ASCII — plain text is universally readable.
-		c.String(http.StatusOK, "%s", body)
+	if strings.Contains(c.GetHeader("Accept"), "text/pylon") {
+		c.Data(http.StatusOK, "text/pylon", []byte(render.BannerSource(head, sub)))
+		return
 	}
+
+	mode := middleware.GetMode(c)
+	body := render.Banner(head, sub, mode)
+	if mode == render.ModeSVG {
+		c.Data(http.StatusOK, "image/svg+xml", []byte(body))
+		return
+	}
+	// ModeASCII or unknown — plain text is universally readable.
+	c.String(http.StatusOK, "%s", body)
+}
+
+// headline returns the wall-clock time as HH:MM. render.Banner replaces the
+// `:` with a space at its boundary because pylon's banner font has no `:`
+// glyph; the gap reads as a clock separator.
+func headline(t time.Time) string {
+	return t.Format("15:04")
+}
+
+// subtitle returns YYYY-MM-DD DAY UTC±H — ISO date, uppercase 3-letter
+// weekday, signed integer-hour offset. ASCII-safe (no `/`, no Unicode) so
+// it survives intact through every render path including raw pylon source.
+func subtitle(t time.Time) string {
+	_, off := t.Zone()
+	return fmt.Sprintf("%s %s UTC%+d",
+		t.Format("2006-01-02"),
+		strings.ToUpper(t.Format("Mon")),
+		off/3600,
+	)
 }
