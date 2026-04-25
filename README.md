@@ -66,6 +66,23 @@ client a probe would need, and orchestrators (Kubernetes, Compose, Fly machines,
 ...) supply their own. `GET /` returns `200 No Content` and is the intended
 liveness probe.
 
+### Image releases
+
+Pre-built multi-arch images are published to `ghcr.io/cmj0121/imagelet` by
+`.github/workflows/release.yml`:
+
+```bash
+docker pull ghcr.io/cmj0121/imagelet:latest
+```
+
+Available tags: `latest` (most recent semver release), `vX.Y.Z` (exact release),
+`X.Y` (latest patch in that minor), `main-<sha>` (every push to `main`). Pin
+something other than `latest` for production.
+
+ghcr packages default to **private**. After the first publish, flip the package
+visibility to public via the GitHub UI if you want unauthenticated `docker pull`
+to work — this is a one-time per-package action, not workflow-controllable.
+
 ## Routes
 
 | Method | Path   | Description                                                      |

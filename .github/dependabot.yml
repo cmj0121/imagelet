@@ -1,0 +1,8 @@
+version: 2
+updates:
+  # Auto-PR github-actions version bumps so the docker-release workflow stays
+  # current with action security patches without manual SHA tracking.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
