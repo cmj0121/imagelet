@@ -11,6 +11,10 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+	// Embeds Go's zoneinfo database into the binary so time.LoadLocation
+	// works on minimal runtimes (distroless, scratch, alpine variants
+	// without tzdata). Adds ~450 KB; required by middleware.TimezoneDetector.
+	_ "time/tzdata"
 
 	"github.com/alecthomas/kong"
 	"github.com/gin-gonic/gin"

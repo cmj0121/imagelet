@@ -1,0 +1,12 @@
+.git
+.claude
+bin
+imagelet
+PLAN.md
+LICENSE
+Makefile
+.markdownlint.yaml
+.pre-commit-config.yaml
+.git-commit-template
+.gitignore
+.gitattributes
