@@ -83,7 +83,15 @@ func (h *handler) serve(c *gin.Context) {
 	stale := err != nil && q.Symbol != ""
 	fresh := err == nil
 
-	if !stale && !fresh {
+	switch {
+	case stale:
+		log.Warn().Err(err).Str("symbol", symbol).Msg("quote upstream failed; serving stale cache")
+	case !fresh:
+		// No cached value either — the only signal an operator gets that
+		// Yahoo broke. Retry-After: 60 is the client revalidate hint;
+		// server-side won't actually retry upstream until failureTTL (10m)
+		// elapses, so subsequent 503s come from cached error.
+		log.Warn().Err(err).Str("symbol", symbol).Msg("quote upstream failed; no cached value")
 		c.Header("Retry-After", "60")
 		c.String(http.StatusServiceUnavailable, "quote unavailable\n")
 		return
