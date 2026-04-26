@@ -1,0 +1,28 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          # Read the Go version from go.mod so the workflow tracks the module's
+          # declared toolchain without a separate config to keep in sync.
+          go-version-file: go.mod
+          cache: true
+
+      - run: go vet ./...
+
+      - run: go build ./...
+
+      - run: go test ./... -count=1
