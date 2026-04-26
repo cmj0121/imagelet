@@ -4,7 +4,7 @@
 // date / weekday / zone caption. The wire format is content-negotiated:
 //
 //   - Accept: text/pylon → raw pylon source (callers render it themselves)
-//   - User-Agent contains Mozilla → image/svg+xml
+//   - User-Agent contains Mozilla → image/png
 //   - everything else → text/plain; charset=utf-8 (ASCII)
 //
 // The service is reusable: external consumers can either call Register on
@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog/log"
 
 	"github.com/cmj0121/imagelet/middleware"
 	"github.com/cmj0121/imagelet/render"
@@ -50,13 +51,20 @@ func Handler(c *gin.Context) {
 	}
 
 	mode := middleware.GetMode(c)
-	body := render.Banner(head, sub, mode)
-	if mode == render.ModeSVG {
-		c.Data(http.StatusOK, "image/svg+xml", []byte(body))
+	body, err := render.Banner(head, sub, mode)
+	if err != nil {
+		// PNG rendering can fail (font init, encode error). Fall back to
+		// ASCII so the caller still gets *something* and the failure is
+		// logged.
+		log.Error().Err(err).Stringer("mode", mode).Msg("render banner")
+		body, _ = render.Banner(head, sub, render.ModeASCII)
+		mode = render.ModeASCII
+	}
+	if mode == render.ModePNG {
+		c.Data(http.StatusOK, "image/png", body)
 		return
 	}
-	// ModeASCII or unknown — plain text is universally readable.
-	c.String(http.StatusOK, "%s", body)
+	c.Data(http.StatusOK, "text/plain; charset=utf-8", body)
 }
 
 // headline returns the wall-clock time as HH:MM. render.Banner replaces the

@@ -1,6 +1,7 @@
 package now_test
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -32,14 +33,12 @@ var asciiShapeRe = regexp.MustCompile(`(?s)\A\s*┌[─]+┐\s*\n(?:\s*│[^\n]*
 // is read at request time.
 var asciiSubtitleRe = regexp.MustCompile(`\d{4}-\d{2}-\d{2} [A-Z]{3} UTC[+-]\d+`)
 
-// svgRe matches an <svg> document containing the same caption format. The
-// caption is in a non-bannered borderless box, so the literal text survives
-// pylon's SVG path as a <text> element.
-var svgRe = regexp.MustCompile(`(?s)<svg[^>]*>.*\d{4}-\d{2}-\d{2} [A-Z]{3} UTC[+-]\d+.*</svg>`)
-
 // pylonSourceRe matches the exact two-element pylon source render.BannerSource
 // emits: `[ HH MM | banner ]\n( YYYY-MM-DD DAY UTC±H )`. Anchored.
 var pylonSourceRe = regexp.MustCompile(`\A\[ \d{2} \d{2} \| banner \]\n\( \d{4}-\d{2}-\d{2} [A-Z]{3} UTC[+-]\d+ \)\z`)
+
+// pngMagic is the 8-byte PNG file signature.
+var pngMagic = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
 
 // TestNowRespectsCFTimezone pins the contract that /now's subtitle reflects
 // the timezone resolved by middleware.TimezoneDetector from the CF-Timezone
@@ -76,26 +75,29 @@ func TestNow(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	tests := []struct {
-		name        string
-		ua          string
-		accept      string
-		ctTypePfx   string
-		bodyPattern *regexp.Regexp
-		matchSubtitleSeparately bool
+		name      string
+		ua        string
+		accept    string
+		ctTypePfx string
+		// bodyMatch is one of: a regexp (text body), pngMagic sentinel, or nil.
+		// asciiSubtitle is true when the body is a text path that should also
+		// match the subtitle regex.
+		bodyPattern   *regexp.Regexp
+		bodyIsPNG     bool
+		asciiSubtitle bool
 	}{
 		{
-			name:                    "cli_returns_ascii_banner",
-			ua:                      "curl/8.4.0",
-			ctTypePfx:               "text/plain",
-			bodyPattern:             asciiShapeRe,
-			matchSubtitleSeparately: true,
+			name:          "cli_returns_ascii_banner",
+			ua:            "curl/8.4.0",
+			ctTypePfx:     "text/plain",
+			bodyPattern:   asciiShapeRe,
+			asciiSubtitle: true,
 		},
 		{
-			name:                    "browser_returns_svg",
-			ua:                      "Mozilla/5.0",
-			ctTypePfx:               "image/svg+xml",
-			bodyPattern:             svgRe,
-			matchSubtitleSeparately: true,
+			name:      "browser_returns_png",
+			ua:        "Mozilla/5.0",
+			ctTypePfx: "image/png",
+			bodyIsPNG: true,
 		},
 		{
 			name:        "accept_text_pylon_returns_source",
@@ -128,14 +130,20 @@ func TestNow(t *testing.T) {
 				t.Errorf("Content-Type = %q, want prefix %q", got, tc.ctTypePfx)
 			}
 
-			body := rec.Body.String()
-			if !tc.bodyPattern.MatchString(body) {
+			body := rec.Body.Bytes()
+			if tc.bodyIsPNG {
+				if !bytes.HasPrefix(body, pngMagic) {
+					t.Errorf("body missing PNG magic bytes; first 8 bytes = %x", body[:min(8, len(body))])
+				}
+				if len(body) == 0 {
+					t.Errorf("body is empty")
+				}
+				return
+			}
+			if tc.bodyPattern != nil && !tc.bodyPattern.Match(body) {
 				t.Errorf("body does not match %s\n--- body ---\n%s", tc.bodyPattern, body)
 			}
-			// For ASCII / SVG paths the subtitle format is checked separately
-			// because the body regex is structural; the text/pylon source
-			// already pins the subtitle format.
-			if tc.matchSubtitleSeparately && !asciiSubtitleRe.MatchString(body) {
+			if tc.asciiSubtitle && !asciiSubtitleRe.Match(body) {
 				t.Errorf("body missing subtitle pattern %s\n--- body ---\n%s", asciiSubtitleRe, body)
 			}
 		})

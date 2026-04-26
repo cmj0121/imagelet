@@ -47,7 +47,7 @@ func TestNewInstallsClientDetector(t *testing.T) {
 		want render.Mode
 	}{
 		{"curl/8.4.0", render.ModeASCII},
-		{"Mozilla/5.0", render.ModeSVG},
+		{"Mozilla/5.0", render.ModePNG},
 	}
 
 	for _, tc := range tests {
@@ -58,6 +58,43 @@ func TestNewInstallsClientDetector(t *testing.T) {
 
 		if got, want := rec.Body.String(), tc.want.String(); got != want {
 			t.Errorf("ua=%q: mode = %q, want %q", tc.ua, got, want)
+		}
+	}
+}
+
+// TestNewInstallsRegionDetector pins that server.New preinstalls the
+// region middleware: a probe handler reading middleware.GetCountry must
+// observe the 2-letter country code resolved from the CF-IPCountry header
+// (uppercased), or "US" as the safe default when the header is absent.
+// Without RegionDetector in the chain, GetCountry would always return "US",
+// so the lowercase "tw" and "JP" cases would fail.
+func TestNewInstallsRegionDetector(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	r := server.New()
+	r.GET("/probe", func(c *gin.Context) {
+		c.String(http.StatusOK, middleware.GetCountry(c))
+	})
+
+	tests := []struct {
+		header string
+		want   string
+	}{
+		{"", "US"},
+		{"tw", "TW"},
+		{"JP", "JP"},
+	}
+
+	for _, tc := range tests {
+		req := httptest.NewRequest(http.MethodGet, "/probe", nil)
+		if tc.header != "" {
+			req.Header.Set("CF-IPCountry", tc.header)
+		}
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+
+		if got := rec.Body.String(); got != tc.want {
+			t.Errorf("CF-IPCountry=%q: country = %q, want %q", tc.header, got, tc.want)
 		}
 	}
 }

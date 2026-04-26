@@ -1,6 +1,7 @@
 package render_test
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 
@@ -8,7 +9,11 @@ import (
 )
 
 func TestBannerASCII(t *testing.T) {
-	got := render.Banner("13:45", "2026-04-25 SAT UTC+8", render.ModeASCII)
+	body, err := render.Banner("13:45", "2026-04-25 SAT UTC+8", render.ModeASCII)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	got := string(body)
 
 	wantSubstrings := []string{
 		"┌",                    // pylon native frame corner
@@ -33,40 +38,38 @@ func TestBannerASCII(t *testing.T) {
 	}
 }
 
-func TestBannerSVG(t *testing.T) {
-	got := render.Banner("13:45", "2026-04-25 SAT UTC+8", render.ModeSVG)
-
-	wantSubstrings := []string{
-		"<svg",
-		"</svg>",
-		"2026-04-25 SAT UTC+8",
+func TestBannerPNG(t *testing.T) {
+	body, err := render.Banner("13:45", "2026-04-25 SAT UTC+8", render.ModePNG)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
 	}
-	for _, sub := range wantSubstrings {
-		if !strings.Contains(got, sub) {
-			t.Errorf("SVG output missing %q\n--- output (first 200 bytes) ---\n%s", sub, got[:min(200, len(got))])
-		}
+	if !bytes.HasPrefix(body, pngMagic) {
+		t.Errorf("PNG output missing magic bytes; first 8 bytes = %x", body[:min(8, len(body))])
 	}
-
-	if strings.HasSuffix(got, "\n") {
-		t.Errorf("SVG output must not end with \\n")
+	if len(body) == 0 {
+		t.Errorf("PNG output is empty")
+	}
+	if bytes.HasSuffix(body, []byte("\n")) {
+		t.Errorf("PNG output must not end with \\n")
 	}
 }
 
 // TestBannerColonSubstitution pins the contract that `:` in the headline is
 // replaced with a space before reaching pylon, so the rendered output does
 // not include the `?`-glyph fallback that pylon's banner font emits for
-// unknown characters. Without the substitution, `13:45` would render with a
-// `?` shape between the digit pairs.
-//
-// The check looks for the recognizable `?` glyph row: pylon's ASCII banner
-// `?` glyph contains the substring `### ` followed by content that includes
-// `?` punctuation in some rows. The cheapest robust pin is to render `13:45`
-// vs `13 45` and assert the outputs are identical (the substitution should
+// unknown characters. The cheapest robust pin is to render `13:45` vs
+// `13 45` and assert the outputs are identical (the substitution should
 // produce the same bytes either way).
 func TestBannerColonSubstitution(t *testing.T) {
-	withColon := render.Banner("13:45", "x", render.ModeASCII)
-	withSpace := render.Banner("13 45", "x", render.ModeASCII)
-	if withColon != withSpace {
+	withColon, err := render.Banner("13:45", "x", render.ModeASCII)
+	if err != nil {
+		t.Fatalf("withColon err: %v", err)
+	}
+	withSpace, err := render.Banner("13 45", "x", render.ModeASCII)
+	if err != nil {
+		t.Fatalf("withSpace err: %v", err)
+	}
+	if !bytes.Equal(withColon, withSpace) {
 		t.Errorf("Banner with `:` should match Banner with ` ` after substitution\n--- with colon ---\n%s\n--- with space ---\n%s", withColon, withSpace)
 	}
 }
@@ -74,10 +77,13 @@ func TestBannerColonSubstitution(t *testing.T) {
 func TestBannerEmptyHeadline(t *testing.T) {
 	// Empty/whitespace-only headline must not panic; Banner substitutes the
 	// shared placeholder, mirroring Box's contract.
-	for _, mode := range []render.Mode{render.ModeASCII, render.ModeSVG} {
-		got := render.Banner("", "x", mode)
-		if got == "" {
-			t.Errorf("Banner(\"\", _, %v) returned empty string; expected placeholder substitution", mode)
+	for _, mode := range []render.Mode{render.ModeASCII, render.ModePNG} {
+		body, err := render.Banner("", "x", mode)
+		if err != nil {
+			t.Fatalf("Banner(\"\", _, %v) err: %v", mode, err)
+		}
+		if len(body) == 0 {
+			t.Errorf("Banner(\"\", _, %v) returned empty body; expected placeholder substitution", mode)
 		}
 	}
 }

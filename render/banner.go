@@ -13,22 +13,24 @@ import (
 // Both render paths use pylon's native default theme — Unicode box-drawing
 // frame plus ANSI Shadow block-letter banner glyphs — so a UTF-8-capable
 // terminal and a browser see the same visual. ASCII appends a trailing
-// newline; SVG does not. Input normalization (empty fallback, colon
+// newline; PNG does not. Input normalization (empty fallback, colon
 // substitution) lives in BannerSource.
-func Banner(headline, subtitle string, mode Mode) string {
+//
+// PNG rendering can fail (font init, encode error). Callers should branch
+// on err and fall back to ASCII to keep the response from 5xx-ing on a
+// transient pylon problem.
+func Banner(headline, subtitle string, mode Mode) ([]byte, error) {
 	ast := pylon.Parse(BannerSource(headline, subtitle))
-	switch mode {
-	case ModeSVG:
-		return pylon.RenderSVG(ast)
-	default:
-		return pylon.RenderASCII(ast) + "\n"
+	if mode == ModePNG {
+		return pylon.RenderPNG(ast)
 	}
+	return []byte(pylon.RenderASCII(ast) + "\n"), nil
 }
 
 // BannerSource returns the pylon source string Banner parses and renders.
 // Callers that want to ship the raw source to clients (so the client can
 // render it themselves) can use this directly without going through
-// pylon.Parse / RenderASCII / RenderSVG.
+// pylon.Parse / RenderASCII / RenderPNG.
 //
 // Two boundary normalizations apply:
 //

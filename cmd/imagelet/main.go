@@ -23,6 +23,9 @@ import (
 	"github.com/cmj0121/imagelet/logger"
 	"github.com/cmj0121/imagelet/server"
 	"github.com/cmj0121/imagelet/service/now"
+	"github.com/cmj0121/imagelet/service/stock"
+	"github.com/cmj0121/imagelet/service/stock/quote/cached"
+	"github.com/cmj0121/imagelet/service/stock/quote/yahoo"
 )
 
 // cli defines the top-level kong CLI flags.
@@ -60,6 +63,12 @@ func main() {
 
 	r := server.New()
 	now.Register(r)
+
+	// Build the cached Yahoo provider once so the in-memory cache (and its
+	// singleflight stampede control) is shared across all /stock requests;
+	// constructing per-request would defeat the cache.
+	quoteProvider := cached.New(yahoo.New())
+	stock.Register(r, quoteProvider)
 
 	addr := net.JoinHostPort(c.Host, strconv.Itoa(c.Port))
 	srv := &http.Server{

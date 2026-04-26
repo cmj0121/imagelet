@@ -4,7 +4,7 @@
 
 ## Quickstart
 
-A minimal Go web service that frames small bits of data as ASCII or SVG, picked per request
+A minimal Go web service that frames small bits of data as ASCII or PNG, picked per request
 based on the caller's `User-Agent`.
 
 ```bash
@@ -85,15 +85,16 @@ to work — this is a one-time per-package action, not workflow-controllable.
 
 ## Routes
 
-| Method | Path   | Description                                                      |
-| ------ | ------ | ---------------------------------------------------------------- |
-| `GET`  | `/`    | Returns `200 No Content`. Liveness probe.                        |
-| `GET`  | `/now` | Banner-rendered current time with date / weekday / zone caption. |
+| Method | Path     | Description                                                      |
+| ------ | -------- | ---------------------------------------------------------------- |
+| `GET`  | `/`      | Returns `200 No Content`. Liveness probe.                        |
+| `GET`  | `/now`   | Banner-rendered current time with date / weekday / zone caption. |
+| `GET`  | `/stock` | Banner-rendered regional stock-index quote.                      |
 
 `/now` content-negotiates per request:
 
 - `Accept: text/pylon` — raw pylon source, so callers can render it themselves.
-- `User-Agent` contains `Mozilla` — `image/svg+xml`.
+- `User-Agent` contains `Mozilla` — `image/png`.
 - Anything else — `text/plain; charset=utf-8`.
 
 Both rendered paths use pylon's native theme — Unicode frame plus ANSI Shadow block
@@ -114,12 +115,59 @@ $ curl http://localhost:8080/now
              2026-04-25 SAT UTC+8
 ```
 
-Browsers see the same banner wrapped in a self-contained `<svg>` document — pylon paints
-the solid `█` blocks as `<rect>` elements so it scales crisply.
+Browsers receive the same banner as a PNG (pylon rasterizes pylon glyphs to a self-contained
+`image/png` payload).
 
 When the request carries Cloudflare's `CF-Timezone` header (e.g. `Asia/Taipei`),
 `/now` renders in the caller's local zone — the subtitle's `UTC±H` offset shifts
 accordingly. Missing or unparseable values fall back to the server's local zone.
+
+`/stock` follows the same negotiation matrix as `/now` (raw `text/pylon`, PNG for
+`Mozilla` user-agents, ASCII otherwise) but renders the caller's regional stock
+index instead of the wall clock. The country comes from Cloudflare's `CF-IPCountry`
+header and falls back to `US` when the header is missing or unrecognized; the
+`?region=XX` query parameter overrides the header (handy for local dev and CI).
+Region codes are two-letter ISO 3166-1 alpha-2, case-insensitive.
+
+| Country           | Symbol   | Index              |
+| ----------------- | -------- | ------------------ |
+| TW                | `^TWII`  | TAIEX              |
+| US                | `^GSPC`  | S&P 500            |
+| JP                | `^N225`  | Nikkei 225         |
+| HK                | `^HSI`   | Hang Seng          |
+| GB                | `^FTSE`  | FTSE 100           |
+| DE                | `^GDAXI` | DAX                |
+| _other / missing_ | `^GSPC`  | (default fallback) |
+
+The caption underneath the price banner reads
+`<symbol>  <arrow> <signed-pct>%  <price> <currency>  <date>`. Two prefixes can
+appear: `CLOSED ·` outside trading hours, `STALE ·` when the upstream fetch
+failed and the response is being served from cache. `STALE ·` wins over
+`CLOSED ·` — data integrity beats market-state hints.
+
+Every rendered response sets `Cache-Control: public, max-age=60`, so a CDN can
+absorb traffic spikes (contrast with `/now`'s `no-store`). Content-Type
+negotiation matches `/now`; `Accept: text/pylon` returns the raw banner source.
+
+Failure modes:
+
+- Upstream fetch fails AND no cached value: `503 Service Unavailable` with
+  `Retry-After: 60` and a plain-text body `quote unavailable\n`.
+- Upstream fetch fails AND cache hit: `200 OK` with the cached quote and a
+  `STALE ·` prefix on the caption.
+
+```bash
+curl http://localhost:8080/stock                       # ASCII, default region (US -> ^GSPC)
+curl 'http://localhost:8080/stock?region=TW'           # ASCII, override to TAIEX
+curl -A 'Mozilla/5.0' -o stock.png http://localhost:8080/stock
+```
+
+The PNG variant uses `-o` because the body is binary; the `-A 'Mozilla/5.0'`
+flag is what flips the negotiator into the PNG path.
+
+Quotes are sourced from Yahoo Finance's unofficial v8 chart API. The provider is
+hidden behind `quote.Provider`, so swapping in a different upstream is one file.
+The cache absorbs short outages — see the failure modes above.
 
 ## Project layout
 
@@ -128,10 +176,11 @@ Top-level packages are importable; `internal/` is not used.
 ```text
 cmd/imagelet/      # binary entry point
 server/            # core router — Recovery + Logger + ClientDetector preinstalled
-middleware/        # reusable gin middlewares (ClientDetector + GetMode)
+middleware/        # reusable gin middlewares (ClientDetector + GetMode, RegionDetector + GetCountry)
 render/            # pylon-backed renderers (Box, Banner, Mode)
 logger/            # zerolog setup with TTY-aware console / JSON switching
 service/now/       # the /now plugin (Register + Handler)
+service/stock/     # the /stock plugin — regional index quote (Yahoo Finance + cache)
 ```
 
 Mount imagelet's pieces inside any gin-based application:
@@ -142,11 +191,15 @@ import (
 
     "github.com/cmj0121/imagelet/server"
     nowsvc "github.com/cmj0121/imagelet/service/now"
+    stocksvc "github.com/cmj0121/imagelet/service/stock"
+    "github.com/cmj0121/imagelet/service/stock/quote/cached"
+    "github.com/cmj0121/imagelet/service/stock/quote/yahoo"
 )
 
 func main() {
-    r := server.New()      // engine with all middleware + GET /
-    nowsvc.Register(r)     // mounts GET /now with content negotiation
+    r := server.New()                              // engine with all middleware + GET /
+    nowsvc.Register(r)                             // mounts GET /now
+    stocksvc.Register(r, cached.New(yahoo.New())) // mounts GET /stock with cache
     http.ListenAndServe(":8080", r)
 }
 ```

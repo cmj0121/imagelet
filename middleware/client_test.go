@@ -20,9 +20,9 @@ func TestClientDetector(t *testing.T) {
 		want render.Mode
 	}{
 		{"empty_ua", "", render.ModeASCII},
-		{"chrome_browser", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", render.ModeSVG},
-		{"firefox_browser", "Mozilla/5.0 (Windows NT 10.0) Gecko/20100101 Firefox/121.0", render.ModeSVG},
-		{"mozilla_lowercase", "mozilla/5.0 weird-bot", render.ModeSVG},
+		{"chrome_browser", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", render.ModePNG},
+		{"firefox_browser", "Mozilla/5.0 (Windows NT 10.0) Gecko/20100101 Firefox/121.0", render.ModePNG},
+		{"mozilla_lowercase", "mozilla/5.0 weird-bot", render.ModePNG},
 		{"curl", "curl/8.4.0", render.ModeASCII},
 		{"wget", "Wget/1.21.4", render.ModeASCII},
 		{"go_http_client", "Go-http-client/1.1", render.ModeASCII},
