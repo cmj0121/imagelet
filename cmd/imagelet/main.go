@@ -22,12 +22,20 @@ import (
 
 	"github.com/cmj0121/imagelet/logger"
 	"github.com/cmj0121/imagelet/server"
+	"github.com/cmj0121/imagelet/service/index"
 	"github.com/cmj0121/imagelet/service/notfound"
 	"github.com/cmj0121/imagelet/service/now"
 	"github.com/cmj0121/imagelet/service/stock"
 	"github.com/cmj0121/imagelet/service/stock/quote/cached"
 	"github.com/cmj0121/imagelet/service/stock/quote/yahoo"
 )
+
+// version is stamped at link time via -ldflags="-X main.version=…".
+// The Makefile defaults it to "dev"; the Dockerfile defaults to
+// "docker"; the release.yml workflow passes the docker/metadata-action
+// resolved tag (e.g. "0.1.0" or "main-1234abc"). Reported in GET /'s
+// rendered body.
+var version = "dev"
 
 // cli defines the top-level kong CLI flags.
 type cli struct {
@@ -63,6 +71,7 @@ func main() {
 	gin.DefaultErrorWriter = log.Logger
 
 	r := server.New()
+	index.Register(r, version)
 	now.Register(r)
 
 	// Build the cached Yahoo provider once so the in-memory cache (and its
