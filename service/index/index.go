@@ -36,41 +36,36 @@ const (
 // Register mounts GET / to a handler closure rendering "IMAGELET"
 // over the tagline and "<repo> · <version>". version is typically
 // the binary's main.version (set via -ldflags="-X main.version=…").
+// The pylon source is constant for the binary's lifetime, so the
+// handler pre-renders ASCII bytes and PNG bytes once at registration
+// time and the request path becomes "branch + write".
 func Register(r gin.IRouter, version string) {
 	src := bannerSource(DefaultTagline, DefaultRepo, version)
-	r.GET("/", handler(src))
-}
+	ast := pylon.Parse(src)
+	asciiBody := []byte(pylon.RenderASCII(ast) + "\n")
+	pngBody, err := pylon.RenderPNG(ast)
+	if err != nil {
+		// Failing here at startup is louder and easier to chase than
+		// failing per-request. The render is deterministic — if it
+		// works once it works forever.
+		log.Error().Err(err).Msg("pre-render index png")
+		pngBody = nil
+	}
+	pylonBody := []byte(src + "\n")
 
-// handler returns the gin handler bound to a pre-built pylon source.
-// Pre-building means the source string lives in closure state instead
-// of being assembled per-request (3-line fmt.Sprintf isn't expensive
-// but / is the most-hit route — paying for it once at startup is free).
-func handler(src string) gin.HandlerFunc {
-	return func(c *gin.Context) {
+	r.GET("/", func(c *gin.Context) {
 		c.Header("Cache-Control", "public, max-age=3600")
 
 		if strings.Contains(c.GetHeader("Accept"), "text/pylon") {
-			c.Data(http.StatusOK, "text/pylon", []byte(src+"\n"))
+			c.Data(http.StatusOK, "text/pylon", pylonBody)
 			return
 		}
-
-		mode := middleware.GetMode(c)
-		ast := pylon.Parse(src)
-
-		if mode == render.ModePNG {
-			body, err := pylon.RenderPNG(ast)
-			if err == nil {
-				c.Data(http.StatusOK, "image/png", body)
-				return
-			}
-			// PNG render failure (font init, encode error) falls
-			// through to ASCII so the caller still gets *something*.
-			log.Error().Err(err).Msg("render index png")
+		if middleware.GetMode(c) == render.ModePNG && pngBody != nil {
+			c.Data(http.StatusOK, "image/png", pngBody)
+			return
 		}
-
-		body := pylon.RenderASCII(ast) + "\n"
-		c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(body))
-	}
+		c.Data(http.StatusOK, "text/plain; charset=utf-8", asciiBody)
+	})
 }
 
 // bannerSource composes the pylon source: a banner-rendered IMAGELET

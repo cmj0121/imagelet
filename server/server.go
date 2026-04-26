@@ -1,11 +1,9 @@
 // Package server builds the gin engine for the imagelet HTTP service.
 //
-// New() returns an engine with gin.Recovery, gin.Logger,
-// middleware.TimezoneDetector, middleware.ClientDetector, and
-// middleware.RegionDetector preinstalled, plus a no-op /healthz
-// liveness handler. Service plugins (service/index for /, service/now,
-// service/stock, ...) mount their own routes on top via their own
-// Register functions; server itself stays service-agnostic so external
+// New() returns an engine with the imagelet middleware chain
+// preinstalled plus a no-op /healthz liveness handler. Service
+// plugins (in service/...) mount their own routes via their own
+// Register helpers; server itself stays service-agnostic so external
 // consumers can pick which services they want.
 package server
 
