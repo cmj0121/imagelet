@@ -2,7 +2,7 @@
 //
 // Middlewares here are intended to be installed on any imagelet gin.Engine
 // (production or downstream consumer) without coupling to specific routes.
-// Currently exposes ClientDetector for ASCII/SVG content negotiation; future
+// Currently exposes ClientDetector for ASCII/PNG content negotiation; future
 // middlewares (auth, request id, etc.) belong alongside it.
 package middleware
 
@@ -31,7 +31,7 @@ const uaLogLimit = 120
 //
 // Classification rule:
 //   - empty UA                              -> render.ModeASCII (safe default)
-//   - UA contains "Mozilla" (case-insens.)  -> render.ModeSVG (browsers)
+//   - UA contains "Mozilla" (case-insens.)  -> render.ModePNG (browsers)
 //   - everything else                       -> render.ModeASCII (CLI tools)
 //
 // The decision is logged at debug level so operators can confirm the rule
@@ -58,7 +58,7 @@ func ClientDetector() gin.HandlerFunc {
 // GetMode returns the render.Mode chosen by ClientDetector for the current
 // request. If ClientDetector was not installed (or the value is missing for
 // any other reason) GetMode returns render.ModeASCII as the safe default —
-// plain text is universally readable, SVG is not.
+// plain text is universally readable, PNG is not.
 func GetMode(c *gin.Context) render.Mode {
 	v, ok := c.Get(modeKey)
 	if !ok {
@@ -75,7 +75,7 @@ func GetMode(c *gin.Context) render.Mode {
 // exercise it directly without spinning up a gin engine.
 func classify(ua string) render.Mode {
 	if strings.Contains(strings.ToLower(ua), "mozilla") {
-		return render.ModeSVG
+		return render.ModePNG
 	}
 	return render.ModeASCII
 }

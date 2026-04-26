@@ -1,55 +1,61 @@
 package render_test
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 
 	"github.com/cmj0121/imagelet/render"
 )
 
-func TestBox(t *testing.T) {
-	tests := []struct {
-		name string
-		text string
-		mode render.Mode
-		want []string // substrings the output must contain
-	}{
-		{
-			name: "ascii_time",
-			text: "13:45",
-			mode: render.ModeASCII,
-			want: []string{"+", "-", "|", "13:45"},
-		},
-		{
-			name: "ascii_letters",
-			text: "abc",
-			mode: render.ModeASCII,
-			want: []string{"+", "-", "|", "abc"},
-		},
-		{
-			name: "svg_time",
-			text: "13:45",
-			mode: render.ModeSVG,
-			want: []string{"<svg", "</svg>", "13:45"},
-		},
-	}
+// pngMagic is the 8-byte PNG file signature.
+var pngMagic = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := render.Box(tc.text, tc.mode)
-			for _, sub := range tc.want {
-				if !strings.Contains(got, sub) {
-					t.Errorf("output missing %q\n--- output ---\n%s", sub, got)
-				}
+func TestBox(t *testing.T) {
+	t.Run("ascii_time", func(t *testing.T) {
+		body, err := render.Box("13:45", render.ModeASCII)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		got := string(body)
+		for _, sub := range []string{"+", "-", "|", "13:45"} {
+			if !strings.Contains(got, sub) {
+				t.Errorf("ASCII output missing %q\n--- output ---\n%s", sub, got)
 			}
-			if tc.mode == render.ModeASCII && !strings.HasSuffix(got, "\n") {
-				t.Errorf("ASCII output must end with \\n, got %q", got[max(0, len(got)-5):])
+		}
+		if !strings.HasSuffix(got, "\n") {
+			t.Errorf("ASCII output must end with \\n")
+		}
+	})
+
+	t.Run("ascii_letters", func(t *testing.T) {
+		body, err := render.Box("abc", render.ModeASCII)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		got := string(body)
+		for _, sub := range []string{"+", "-", "|", "abc"} {
+			if !strings.Contains(got, sub) {
+				t.Errorf("ASCII output missing %q\n--- output ---\n%s", sub, got)
 			}
-			if tc.mode == render.ModeSVG && strings.HasSuffix(got, "\n") {
-				t.Errorf("SVG output must not end with \\n")
-			}
-		})
-	}
+		}
+	})
+
+	t.Run("png_time", func(t *testing.T) {
+		body, err := render.Box("13:45", render.ModePNG)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if !bytes.HasPrefix(body, pngMagic) {
+			t.Errorf("PNG output missing magic bytes; first 8 bytes = %x", body[:min(8, len(body))])
+		}
+		if len(body) == 0 {
+			t.Errorf("PNG output is empty")
+		}
+		if bytes.HasSuffix(body, []byte("\n")) {
+			t.Errorf("PNG output must not end with \\n")
+		}
+	})
 }
 
 func TestModeString(t *testing.T) {
@@ -58,7 +64,7 @@ func TestModeString(t *testing.T) {
 		want string
 	}{
 		{render.ModeASCII, "ascii"},
-		{render.ModeSVG, "svg"},
+		{render.ModePNG, "png"},
 		{render.Mode(99), "ascii"},
 	}
 	for _, tc := range cases {
@@ -71,10 +77,13 @@ func TestModeString(t *testing.T) {
 func TestBoxEmptyInput(t *testing.T) {
 	// Box substitutes a placeholder for empty/whitespace-only input because
 	// pylon.Parse panics on `[  ]`. This test pins that contract.
-	for _, mode := range []render.Mode{render.ModeASCII, render.ModeSVG} {
-		got := render.Box("", mode)
-		if got == "" {
-			t.Errorf("Box(\"\", %v) returned empty string; expected placeholder substitution", mode)
+	for _, mode := range []render.Mode{render.ModeASCII, render.ModePNG} {
+		body, err := render.Box("", mode)
+		if err != nil {
+			t.Fatalf("Box(\"\", %v) err: %v", mode, err)
+		}
+		if len(body) == 0 {
+			t.Errorf("Box(\"\", %v) returned empty body; expected placeholder substitution", mode)
 		}
 	}
 }
