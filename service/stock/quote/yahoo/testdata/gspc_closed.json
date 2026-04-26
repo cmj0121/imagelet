@@ -1,0 +1,84 @@
+{
+  "chart": {
+    "result": [
+      {
+        "meta": {
+          "currency": "USD",
+          "symbol": "^GSPC",
+          "exchangeName": "SNP",
+          "fullExchangeName": "SNP",
+          "instrumentType": "INDEX",
+          "firstTradeDate": -1325583000,
+          "regularMarketTime": 1700000000,
+          "hasPrePostMarketData": false,
+          "gmtoffset": -14400,
+          "timezone": "EDT",
+          "exchangeTimezoneName": "America/New_York",
+          "regularMarketPrice": 7165.08,
+          "fiftyTwoWeekHigh": 7168.59,
+          "fiftyTwoWeekLow": 5433.24,
+          "regularMarketDayHigh": 7168.59,
+          "regularMarketDayLow": 7112.82,
+          "regularMarketVolume": 3179035000,
+          "longName": "S&P 500",
+          "shortName": "S&P 500",
+          "chartPreviousClose": 7137.9,
+          "priceHint": 2,
+          "currentTradingPeriod": {
+            "pre": {
+              "timezone": "EDT",
+              "start": 1777017600,
+              "end": 1777037400,
+              "gmtoffset": -14400
+            },
+            "regular": {
+              "timezone": "EDT",
+              "start": 1700000000,
+              "end": 1700020000,
+              "gmtoffset": -14400
+            },
+            "post": {
+              "timezone": "EDT",
+              "start": 1777060800,
+              "end": 1777075200,
+              "gmtoffset": -14400
+            }
+          },
+          "dataGranularity": "1d",
+          "range": "2d",
+          "validRanges": [
+            "1d",
+            "5d",
+            "1mo",
+            "3mo",
+            "6mo",
+            "1y",
+            "2y",
+            "5y",
+            "10y",
+            "ytd",
+            "max"
+          ]
+        },
+        "timestamp": [1776951000, 1777037400],
+        "indicators": {
+          "quote": [
+            {
+              "close": [7108.39990234375, 7165.080078125],
+              "high": [7147.77978515625, 7168.58984375],
+              "low": [7046.5498046875, 7112.81982421875],
+              "open": [7118.7998046875, 7136.47998046875],
+              "volume": [5307260000, 4608830000]
+            }
+          ],
+          "adjclose": [
+            {
+              "adjclose": [7108.39990234375, 7165.080078125]
+            }
+          ]
+        }
+      }
+    ],
+    "error": null
+  }
+}
