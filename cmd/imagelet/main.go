@@ -28,6 +28,9 @@ import (
 	"github.com/cmj0121/imagelet/service/stock"
 	"github.com/cmj0121/imagelet/service/stock/quote/cached"
 	"github.com/cmj0121/imagelet/service/stock/quote/yahoo"
+	"github.com/cmj0121/imagelet/service/weather"
+	weathercache "github.com/cmj0121/imagelet/service/weather/forecast/cached"
+	"github.com/cmj0121/imagelet/service/weather/forecast/openmeteo"
 )
 
 // version is stamped at link time via -ldflags="-X main.version=…".
@@ -79,6 +82,12 @@ func main() {
 	// constructing per-request would defeat the cache.
 	quoteProvider := cached.New(yahoo.New())
 	stock.Register(r, quoteProvider)
+
+	// Same one-shot construction for the weather provider — shared cache
+	// across /weather requests, and the cap-stale-on-fail behavior makes
+	// this provider stricter than its /stock counterpart.
+	forecastProvider := weathercache.New(openmeteo.New())
+	weather.Register(r, forecastProvider)
 
 	// NoRoute fallback — must be installed last so every other route had
 	// a chance to claim its path first.
