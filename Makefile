@@ -2,6 +2,12 @@ SUBDIR :=
 
 DOCKER_IMAGE ?= imagelet:dev
 
+# VERSION stamps the binary's `main.version` via -ldflags. Override on
+# release: `make build VERSION=v0.2.0`. The value surfaces in `GET /`
+# alongside the repo URL.
+VERSION ?= dev
+LDFLAGS := -ldflags "-s -w -X main.version=$(VERSION)"
+
 .PHONY: all clean test run build upgrade docker-build docker-run help $(SUBDIR)
 
 all: $(SUBDIR) 		# default action
@@ -19,7 +25,7 @@ run:				# run in the local environment
 	go run ./cmd/imagelet
 
 build:				# build the binary/library
-	go build -o bin/imagelet ./cmd/imagelet
+	go build $(LDFLAGS) -o bin/imagelet ./cmd/imagelet
 
 docker-build:		# build the Docker image (override with DOCKER_IMAGE=...)
 	docker build -t $(DOCKER_IMAGE) .
