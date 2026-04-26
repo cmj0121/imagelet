@@ -22,6 +22,7 @@ import (
 
 	"github.com/cmj0121/imagelet/logger"
 	"github.com/cmj0121/imagelet/server"
+	"github.com/cmj0121/imagelet/service/notfound"
 	"github.com/cmj0121/imagelet/service/now"
 	"github.com/cmj0121/imagelet/service/stock"
 	"github.com/cmj0121/imagelet/service/stock/quote/cached"
@@ -69,6 +70,10 @@ func main() {
 	// constructing per-request would defeat the cache.
 	quoteProvider := cached.New(yahoo.New())
 	stock.Register(r, quoteProvider)
+
+	// NoRoute fallback — must be installed last so every other route had
+	// a chance to claim its path first.
+	notfound.Register(r)
 
 	addr := net.JoinHostPort(c.Host, strconv.Itoa(c.Port))
 	srv := &http.Server{
