@@ -1,11 +1,10 @@
 // Package server builds the gin engine for the imagelet HTTP service.
 //
-// New() returns an engine with gin.Recovery, gin.Logger,
-// middleware.TimezoneDetector, middleware.ClientDetector, and
-// middleware.RegionDetector preinstalled, plus a no-op root handler.
-// Service plugins (service/now, service/stock, ...) mount their own
-// routes on top via their own Register functions; server itself stays
-// service-agnostic so external consumers can pick which services they want.
+// New() returns an engine with the imagelet middleware chain
+// preinstalled plus a no-op /healthz liveness handler. Service
+// plugins (in service/...) mount their own routes via their own
+// Register helpers; server itself stays service-agnostic so external
+// consumers can pick which services they want.
 package server
 
 import (
@@ -35,8 +34,9 @@ import (
 //     branch on country (e.g. service/stock picking a regional index) without
 //     re-parsing the header on every request.
 //
-// The root GET / handler is also registered. Callers mount additional
-// services with their Register helpers.
+// GET /healthz is also registered as the always-empty liveness probe.
+// Callers mount additional services (including the rendered GET /
+// landing page from service/index) via their Register helpers.
 func New() *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -44,11 +44,15 @@ func New() *gin.Engine {
 	r.Use(middleware.TimezoneDetector())
 	r.Use(middleware.ClientDetector())
 	r.Use(middleware.RegionDetector())
-	r.GET("/", rootHandler)
+	r.GET("/healthz", healthzHandler)
 	return r
 }
 
-// rootHandler responds with HTTP 200 and an empty body.
-func rootHandler(c *gin.Context) {
+// healthzHandler responds with HTTP 200 and an empty body. This is the
+// dedicated liveness probe for orchestrators (Kubernetes, Compose,
+// Fly): it never renders, never reaches an upstream, never allocates.
+// GET / is a rendered landing page now and unsuitable for high-rate
+// probes.
+func healthzHandler(c *gin.Context) {
 	c.Status(http.StatusOK)
 }

@@ -43,5 +43,10 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Stamp main.version so `GET /` reports the release tag (or
+          # "main-<sha>" on default-branch pushes). docker/metadata-action
+          # already exports `version` for both shapes.
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

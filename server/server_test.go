@@ -12,12 +12,12 @@ import (
 	"github.com/cmj0121/imagelet/server"
 )
 
-func TestRootReturns200Empty(t *testing.T) {
+func TestHealthzReturns200Empty(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	router := server.New()
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 
 	router.ServeHTTP(rec, req)
 
