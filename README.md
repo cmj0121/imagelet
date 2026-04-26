@@ -198,9 +198,11 @@ The cache absorbs short outages — see the failure modes above.
 
 Unmatched paths fall through to a `404` page: pylon-rendered `404` banner stacked
 above a fake Python traceback with the requested path injected into the panic
-message and the trailing field. Browsers (`Mozilla` UA) get the banner-only PNG
-— the traceback is a terminal-only easter egg. `Accept: text/pylon` returns the
-bare banner source.
+message and the trailing field. Both ASCII and PNG paths show the same content —
+the PNG is composed locally (pylon banner above, traceback drawn with
+`basicfont` below) because pylon's parser would shred the trace's parens and
+brackets. `Accept: text/pylon` returns the bare banner source (the traceback
+isn't pylon syntax).
 
 ```bash
 curl -s http://localhost:8080/no-such-route

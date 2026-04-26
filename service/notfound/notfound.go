@@ -6,8 +6,10 @@
 //
 //   - Accept: text/pylon → raw banner source (no traceback; the
 //     traceback isn't pylon syntax)
-//   - User-Agent contains Mozilla → image/png (banner-only; the
-//     Python traceback is a terminal-only easter egg)
+//   - User-Agent contains Mozilla → image/png with banner AND
+//     traceback (composed locally — pylon's parser eats parens, so
+//     we render the banner via pylon and draw the literal traceback
+//     text below it with basicfont)
 //   - everything else → text/plain; charset=utf-8 with banner +
 //     traceback concatenated
 //
@@ -18,13 +20,21 @@
 package notfound
 
 import (
+	"bytes"
 	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
 	"net/http"
 	"strings"
 
 	"github.com/cmj0121/pylon/src/go/pkg/pylon"
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
+	"golang.org/x/image/font"
+	"golang.org/x/image/font/basicfont"
+	"golang.org/x/image/math/fixed"
 
 	"github.com/cmj0121/imagelet/middleware"
 	"github.com/cmj0121/imagelet/render"
@@ -56,26 +66,119 @@ func Handler(c *gin.Context) {
 	}
 
 	mode := middleware.GetMode(c)
+	traceback := pythonTraceback(path, method)
 
 	if mode == render.ModePNG {
-		// Browser path: just the banner. The Python-traceback joke is
-		// a terminal-only gift; visitors using a browser get the clean
-		// 404 signal without 20 lines of mock stack trace.
-		body, err := pylon.RenderPNG(pylon.Parse(bannerSource))
+		body, err := composePNG(traceback)
 		if err == nil {
 			c.Data(http.StatusNotFound, "image/png", body)
 			return
 		}
-		// PNG render failure (font init, encode error) falls through
-		// to the ASCII path so the caller still gets *something*.
-		log.Error().Err(err).Msg("render 404 png")
+		// Composition failure (font init, encode error, banner PNG
+		// decode) falls through to ASCII so the caller still gets
+		// *something* — and the operator gets a log line to chase.
+		log.Error().Err(err).Msg("compose 404 png")
 	}
 
 	bannerASCII := pylon.RenderASCII(pylon.Parse(bannerSource))
-	traceback := pythonTraceback(path, method)
 	body := bannerASCII + "\n" + traceback + "\n"
 	c.Data(http.StatusNotFound, "text/plain; charset=utf-8", []byte(body))
 }
+
+// composePNG renders the banner via pylon, decodes the resulting PNG,
+// and draws the literal traceback text below it on a single canvas so
+// the Mozilla path matches the ASCII path's content (banner + every
+// line of the Python trace). Pylon's parser would shred the trace's
+// parens / brackets if we fed it through pylon directly — local
+// composition with basicfont sidesteps that.
+//
+// Layout:
+//
+//	┌──────────────────────────┐
+//	│   pylon banner image     │   ← decoded as-is, centered if
+//	└──────────────────────────┘     narrower than canvas width
+//	  Traceback (...)               ← drawn with basicfont.Face7x13
+//	    File "...", line ...        ← left-padded by composePadding px
+//	    ...                          (light background, navy ink to
+//	  KeyError: ...                  match pylon's default theme)
+func composePNG(traceback string) ([]byte, error) {
+	bannerBytes, err := pylon.RenderPNG(pylon.Parse(bannerSource))
+	if err != nil {
+		return nil, fmt.Errorf("render banner: %w", err)
+	}
+	bannerImg, err := png.Decode(bytes.NewReader(bannerBytes))
+	if err != nil {
+		return nil, fmt.Errorf("decode banner png: %w", err)
+	}
+
+	face := basicfont.Face7x13
+	cellW := face.Advance
+	lineH := face.Height
+	ascent := face.Ascent
+
+	lines := strings.Split(traceback, "\n")
+	maxCols := 0
+	for _, l := range lines {
+		if w := len(l); w > maxCols {
+			maxCols = w
+		}
+	}
+
+	bannerW := bannerImg.Bounds().Dx()
+	bannerH := bannerImg.Bounds().Dy()
+	textW := maxCols*cellW + 2*composePadding
+	textH := len(lines)*lineH + composePadding
+
+	canvasW := bannerW
+	if textW > canvasW {
+		canvasW = textW
+	}
+	canvasH := bannerH + composeGap + textH
+
+	canvas := image.NewRGBA(image.Rect(0, 0, canvasW, canvasH))
+	draw.Draw(canvas, canvas.Bounds(), &image.Uniform{composeBG}, image.Point{}, draw.Src)
+
+	// Center the banner horizontally; clamp to 0 if it's wider than
+	// canvas (won't happen with current sizes but guards future tweaks).
+	bannerX := (canvasW - bannerW) / 2
+	if bannerX < 0 {
+		bannerX = 0
+	}
+	draw.Draw(canvas,
+		image.Rect(bannerX, 0, bannerX+bannerW, bannerH),
+		bannerImg, image.Point{}, draw.Over)
+
+	drawer := &font.Drawer{
+		Dst:  canvas,
+		Src:  &image.Uniform{composeInk},
+		Face: face,
+	}
+	for i, line := range lines {
+		drawer.Dot = fixed.Point26_6{
+			X: fixed.I(composePadding),
+			Y: fixed.I(bannerH + composeGap + ascent + i*lineH),
+		}
+		drawer.DrawString(line)
+	}
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, canvas); err != nil {
+		return nil, fmt.Errorf("encode png: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// Composition constants. composeBG and composeInk match pylon's
+// default light theme so the banner blends into the canvas.
+const (
+	composePadding = 16
+	composeGap     = 12
+)
+
+var (
+	composeBG  = color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
+	composeInk = color.RGBA{R: 0x0f, G: 0x1c, B: 0x2d, A: 0xff}
+)
 
 // pythonTraceback returns the literal Python-style traceback body
 // with path injected into the panic messages and the trailing

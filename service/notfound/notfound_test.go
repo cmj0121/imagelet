@@ -1,6 +1,8 @@
 package notfound_test
 
 import (
+	"bytes"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -76,7 +78,7 @@ func TestASCIIBodyContainsBannerAndTraceback(t *testing.T) {
 	}
 }
 
-func TestBrowserGetsPNGBannerOnly(t *testing.T) {
+func TestBrowserGetsPNGWithBannerAndTraceback(t *testing.T) {
 	r := newRouter()
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/missing", nil)
@@ -99,6 +101,19 @@ func TestBrowserGetsPNGBannerOnly(t *testing.T) {
 		if body[i] != b {
 			t.Fatalf("byte %d = 0x%02x, want 0x%02x (PNG magic mismatch)", i, body[i], b)
 		}
+	}
+
+	// Pin that the PNG is the composed banner+traceback variant, not
+	// the older banner-only one. Pylon's bare 404 banner renders at
+	// ~140 px tall; the composed canvas adds the traceback below, so
+	// any height clearly above the banner-only baseline confirms the
+	// composition pass ran. 300 px is a comfortable threshold.
+	cfg, err := png.DecodeConfig(bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("decode png config: %v", err)
+	}
+	if cfg.Height < 300 {
+		t.Errorf("png height = %d, want >= 300 (banner-only is ~140; composed should clear it)", cfg.Height)
 	}
 }
 
