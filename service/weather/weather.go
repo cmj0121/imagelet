@@ -1,7 +1,8 @@
 // Package weather mounts GET /weather: today's weather rendered as a hero
 // image — ASCII condition icon to the left of a pylon-rendered temperature
-// banner, with four caption lines below (condition + location, feels-like +
-// wind, today's high/low, sunrise/sunset).
+// banner, with up to five caption lines below (condition + location,
+// feels-like + wind, today's high/low, optional humidity/UV/precip extras,
+// sunrise/sunset).
 //
 // Wire format mirrors /now and /stock:
 //
@@ -232,10 +233,12 @@ func resolveUnit(c *gin.Context) forecast.Unit {
 	return forecast.UnitMetric
 }
 
-// buildCaptions assembles the four caption lines. STALE prefix lives only
-// on the first line so the visual loudness sits next to the condition name.
+// buildCaptions assembles the caption lines. STALE prefix lives only on
+// the first line so the visual loudness sits next to the condition name.
 // Numeric formatting rounds to int for legibility; the banner carries the
-// precise temperature.
+// precise temperature. The humidity/UV/precip line is omitted entirely
+// when the upstream provided none of the three (Open-Meteo can serve a
+// minimal forecast that skips daily extras).
 func buildCaptions(f forecast.Forecast, word, location string, stale bool) []string {
 	prefix := ""
 	if stale {
@@ -249,12 +252,34 @@ func buildCaptions(f forecast.Forecast, word, location string, stale bool) []str
 	wind := strconv.FormatFloat(math.Round(f.WindSpeed), 'f', 0, 64)
 	high := strconv.FormatFloat(math.Round(f.HighToday), 'f', 0, 64)
 	low := strconv.FormatFloat(math.Round(f.LowToday), 'f', 0, 64)
-	return []string{
+	out := []string{
 		fmt.Sprintf("%s%s in %s", prefix, titledWord, location),
 		fmt.Sprintf("feels %s%s  wind %s %s", feels, f.TempUnit, wind, f.WindUnit),
 		fmt.Sprintf("high %s%s / low %s%s", high, f.TempUnit, low, f.TempUnit),
-		fmt.Sprintf("sunrise %s  sunset %s", trimHour(f.Sunrise.Format("15:04")), trimHour(f.Sunset.Format("15:04"))),
 	}
+	if extras := buildExtrasLine(f); extras != "" {
+		out = append(out, extras)
+	}
+	out = append(out, fmt.Sprintf("sunrise %s  sunset %s",
+		trimHour(f.Sunrise.Format("15:04")), trimHour(f.Sunset.Format("15:04"))))
+	return out
+}
+
+// buildExtrasLine renders "humidity 47%  UV 9  rain 20%" — each segment is
+// included only when the upstream supplied the field. Returns "" when none
+// of the three are present so the caller skips the row entirely.
+func buildExtrasLine(f forecast.Forecast) string {
+	var parts []string
+	if f.Humidity > 0 {
+		parts = append(parts, fmt.Sprintf("humidity %d%%", f.Humidity))
+	}
+	if f.UVIndexMax > 0 {
+		parts = append(parts, fmt.Sprintf("UV %.0f", f.UVIndexMax))
+	}
+	if f.PrecipProbability > 0 {
+		parts = append(parts, fmt.Sprintf("rain %d%%", f.PrecipProbability))
+	}
+	return strings.Join(parts, "  ")
 }
 
 // trimHour strips a single leading zero from "HH:MM" so 05:42 reads 5:42.

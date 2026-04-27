@@ -19,19 +19,22 @@ import (
 // human-readable string ("Taipei (TW)") from Cloudflare geo headers with a
 // fallback lookup map.
 type Forecast struct {
-	Location    string    // human-readable place name (e.g., "Taipei (TW)"); empty from upstream providers
-	Temperature float64   // current temperature
-	FeelsLike   float64   // apparent temperature
-	WeatherCode int       // Open-Meteo WMO weather code
-	WindSpeed   float64   // current wind speed in chosen unit
-	IsDay       bool      // daylight at observation time
-	HighToday   float64   // today's high
-	LowToday    float64   // today's low
-	Sunrise     time.Time // local-zone sunrise for today
-	Sunset      time.Time // local-zone sunset for today
-	TempUnit    string    // "°C" or "°F"
-	WindUnit    string    // "km/h" or "mph"
-	AsOf        time.Time // observation time (current.time from Open-Meteo)
+	Location          string    // human-readable place name (e.g., "Taipei (TW)"); empty from upstream providers
+	Temperature       float64   // current temperature
+	FeelsLike         float64   // apparent temperature
+	Humidity          int       // current relative humidity, 0..100; 0 means upstream omitted
+	WeatherCode       int       // Open-Meteo WMO weather code
+	WindSpeed         float64   // current wind speed in chosen unit
+	IsDay             bool      // daylight at observation time
+	HighToday         float64   // today's high
+	LowToday          float64   // today's low
+	UVIndexMax        float64   // today's UV index peak; 0 means upstream omitted
+	PrecipProbability int       // today's max precipitation probability, 0..100
+	Sunrise           time.Time // local-zone sunrise for today
+	Sunset            time.Time // local-zone sunset for today
+	TempUnit          string    // "°C" or "°F"
+	WindUnit          string    // "km/h" or "mph"
+	AsOf              time.Time // observation time (current.time from Open-Meteo)
 }
 
 // Unit selects the unit system requested from the upstream. The provider

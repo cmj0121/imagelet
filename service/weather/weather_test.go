@@ -65,22 +65,27 @@ func (s *spyProvider) last() (spyCall, bool) {
 
 // freshForecast returns a deterministic Forecast in Asia/Taipei. Sample
 // values match PLAN: 24.3C, feels 23.0, code 2 (partly cloudy), wind 12,
-// high 26 / low 19, fixed sunrise/sunset times.
+// high 26 / low 19, fixed sunrise/sunset times. Humidity/UV/precip set
+// so the extras-line is rendered (omitted-when-all-zero is exercised by
+// TestExtrasLineOmittedWhenAbsent).
 func freshForecast() forecast.Forecast {
 	loc, _ := time.LoadLocation("Asia/Taipei")
 	return forecast.Forecast{
-		Temperature: 24.3,
-		FeelsLike:   23.0,
-		WeatherCode: 2,
-		WindSpeed:   12.0,
-		IsDay:       true,
-		HighToday:   26.0,
-		LowToday:    19.0,
-		Sunrise:     time.Date(2026, 4, 26, 5, 42, 0, 0, loc),
-		Sunset:      time.Date(2026, 4, 26, 18, 24, 0, 0, loc),
-		TempUnit:    "°C",
-		WindUnit:    "km/h",
-		AsOf:        time.Date(2026, 4, 26, 12, 0, 0, 0, loc),
+		Temperature:       24.3,
+		FeelsLike:         23.0,
+		Humidity:          47,
+		WeatherCode:       2,
+		WindSpeed:         12.0,
+		IsDay:             true,
+		HighToday:         26.0,
+		LowToday:          19.0,
+		UVIndexMax:        9.0,
+		PrecipProbability: 20,
+		Sunrise:           time.Date(2026, 4, 26, 5, 42, 0, 0, loc),
+		Sunset:            time.Date(2026, 4, 26, 18, 24, 0, 0, loc),
+		TempUnit:          "°C",
+		WindUnit:          "km/h",
+		AsOf:              time.Date(2026, 4, 26, 12, 0, 0, 0, loc),
 	}
 }
 
@@ -113,7 +118,8 @@ func TestServeASCII(t *testing.T) {
 		t.Errorf("Cache-Control = %q, want %q", got, "public, max-age=600")
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Taipei", "feels", "wind", "high", "low", "sunrise", "sunset", "°C"} {
+	for _, want := range []string{"Taipei", "feels", "wind", "high", "low", "sunrise", "sunset", "°C",
+		"humidity 47%", "UV 9", "rain 20%"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q\n--- body ---\n%s", want, body)
 		}
@@ -366,5 +372,40 @@ func TestSTALEWinsOverNothing(t *testing.T) {
 	}
 	if strings.Contains(body, "STALE") {
 		t.Errorf("STALE leaked into pylon source\n--- body ---\n%s", body)
+	}
+}
+
+// TestExtrasLineOmittedWhenAbsent confirms the humidity/UV/precip caption
+// row is dropped entirely when the upstream supplied none of the three —
+// a row of three empty segments would look broken, an absent row reads
+// as "Open-Meteo skipped these today" without leaking the implementation.
+func TestExtrasLineOmittedWhenAbsent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	f := freshForecast()
+	f.Humidity = 0
+	f.UVIndexMax = 0
+	f.PrecipProbability = 0
+	r := newRouter(fakeProvider{f: f})
+
+	req := httptest.NewRequest(http.MethodGet, "/weather", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, unwanted := range []string{"humidity", "UV", "rain"} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("absent extras row leaked %q\n--- body ---\n%s", unwanted, body)
+		}
+	}
+	// Sanity: the still-required rows are intact.
+	for _, want := range []string{"feels", "high", "sunrise"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q\n--- body ---\n%s", want, body)
+		}
 	}
 }
