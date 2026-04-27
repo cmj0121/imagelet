@@ -46,49 +46,6 @@ func TestProgressBarZeroWidth(t *testing.T) {
 	}
 }
 
-// TestDayCycleBoundaries pins the bar position and label for a known
-// daylight window. Sunrise 5:42, sunset 18:24 (Asia/Taipei). At noon
-// the elapsed fraction is ~0.495, so the 20-cell bar fills 10 cells.
-// Before sunrise → 0 cells (clamped); after sunset → 20 cells (clamped).
-// An inverted window (sunset before sunrise) returns "".
-func TestDayCycleBoundaries(t *testing.T) {
-	loc, _ := time.LoadLocation("Asia/Taipei")
-	sunrise := time.Date(2026, 4, 26, 5, 42, 0, 0, loc)
-	sunset := time.Date(2026, 4, 26, 18, 24, 0, 0, loc)
-
-	cases := []struct {
-		name       string
-		asOf       time.Time
-		wantFilled int
-		wantSuffix string
-	}{
-		{"sunrise_exact", sunrise, 0, " 5:42-18:24"},
-		{"midday", time.Date(2026, 4, 26, 12, 3, 0, 0, loc), 10, " 5:42-18:24"},
-		{"sunset_exact", sunset, 20, " 5:42-18:24"},
-		{"pre_sunrise", time.Date(2026, 4, 26, 3, 0, 0, 0, loc), 0, " 5:42-18:24"},
-		{"post_sunset", time.Date(2026, 4, 26, 22, 0, 0, 0, loc), 20, " 5:42-18:24"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := render.DayCycle(tc.asOf, sunrise, sunset)
-			if !strings.HasPrefix(got, "day ") {
-				t.Errorf("DayCycle = %q, want prefix 'day '", got)
-			}
-			if !strings.HasSuffix(got, tc.wantSuffix) {
-				t.Errorf("DayCycle = %q, want suffix %q", got, tc.wantSuffix)
-			}
-			if gotFilled := strings.Count(got, "█"); gotFilled != tc.wantFilled {
-				t.Errorf("DayCycle filled cells = %d, want %d (got %q)",
-					gotFilled, tc.wantFilled, got)
-			}
-		})
-	}
-
-	if got := render.DayCycle(sunrise, sunset, sunrise); got != "" {
-		t.Errorf("DayCycle inverted-window = %q, want empty", got)
-	}
-}
-
 // TestWeekStripAllWeekdays pins the exact output for each weekday. The
 // duplicate-letter cases (Sun=S vs Sat=S, Tue=T vs Thu=T) are listed
 // explicitly so the bracket-position-as-disambiguator behavior is

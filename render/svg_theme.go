@@ -36,8 +36,7 @@ var svgBackgroundRect = []byte(`<rect width="100%" height="100%" fill="` + SVGBa
 //     default white, HTML body color, terminal preview).
 //  2. Pylon's default light-theme ink (pylonLightInk) is replaced with
 //     SVGForeground wherever it appears — `<style>` blocks, per-text
-//     fill attributes, and any embedded inner-SVG payload (e.g. the
-//     pylon banner nested inside service/weather/composeSVG).
+//     fill attributes, and any embedded inner-SVG payload.
 //
 // Idempotent: a second call detects the existing background rect via a
 // bytes-contains check on the marker and skips the inject step. The
