@@ -54,13 +54,18 @@ func TestBannerPNG(t *testing.T) {
 	}
 }
 
-// TestBannerColonSubstitution pins the contract that `:` in the headline is
-// replaced with a space before reaching pylon, so the rendered output does
-// not include the `?`-glyph fallback that pylon's banner font emits for
-// unknown characters. The cheapest robust pin is to render `13:45` vs
-// `13 45` and assert the outputs are identical (the substitution should
-// produce the same bytes either way).
-func TestBannerColonSubstitution(t *testing.T) {
+// TestBannerColonRendersAsGlyph pins that `:` in the headline reaches pylon
+// untouched and renders as the `:` banner glyph (two stacked block dots) —
+// not as the `?`-glyph fallback for unknown chars. Pylon v0.2 added the
+// printable-ASCII symbol set to the default banner font, including `:`,
+// so the historical colon-to-space substitution is no longer needed. The
+// regression we guard against: a future change re-introducing the
+// substitution and silently breaking clock-style headlines like `13:45`.
+//
+// Concrete check: `13:45` and `13 45` must NOT render identically anymore;
+// the colon variant carries an extra block of glyph rows where the space
+// variant carries blank rows. Comparing byte length is the cheapest signal.
+func TestBannerColonRendersAsGlyph(t *testing.T) {
 	withColon, err := render.Banner("13:45", "x", render.ModeASCII)
 	if err != nil {
 		t.Fatalf("withColon err: %v", err)
@@ -69,8 +74,8 @@ func TestBannerColonSubstitution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("withSpace err: %v", err)
 	}
-	if !bytes.Equal(withColon, withSpace) {
-		t.Errorf("Banner with `:` should match Banner with ` ` after substitution\n--- with colon ---\n%s\n--- with space ---\n%s", withColon, withSpace)
+	if bytes.Equal(withColon, withSpace) {
+		t.Errorf("Banner(`13:45`) should differ from Banner(`13 45`) — colon should render as glyph, not be substituted to space\n--- output ---\n%s", withColon)
 	}
 }
 

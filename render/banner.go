@@ -13,8 +13,7 @@ import (
 // Both render paths use pylon's native default theme — Unicode box-drawing
 // frame plus ANSI Shadow block-letter banner glyphs — so a UTF-8-capable
 // terminal and a browser see the same visual. ASCII appends a trailing
-// newline; PNG does not. Input normalization (empty fallback, colon
-// substitution) lives in BannerSource.
+// newline; PNG does not. Empty-headline normalization lives in BannerSource.
 //
 // PNG rendering can fail (font init, encode error). Callers should branch
 // on err and fall back to ASCII to keep the response from 5xx-ing on a
@@ -32,18 +31,11 @@ func Banner(headline, subtitle string, mode Mode) ([]byte, error) {
 // render it themselves) can use this directly without going through
 // pylon.Parse / RenderASCII / RenderPNG.
 //
-// Two boundary normalizations apply:
-//
-//   - Empty or whitespace-only headline is replaced with the shared `?`
-//     placeholder; pylon panics on bracketed whitespace-only labels.
-//   - `:` in the headline is substituted with a space; pylon's banner font
-//     has no `:` glyph, so without this the colon would fall back to a `?`
-//     shape between the digit pairs. The eye reads the resulting gap as a
-//     clock separator.
+// Empty or whitespace-only headline is replaced with the shared `?`
+// placeholder; pylon panics on bracketed whitespace-only labels.
 func BannerSource(headline, subtitle string) string {
 	if strings.TrimSpace(headline) == "" {
 		headline = emptyPlaceholder
 	}
-	headline = strings.ReplaceAll(headline, ":", " ")
 	return fmt.Sprintf("[ %s | banner ]\n( %s )", headline, subtitle)
 }

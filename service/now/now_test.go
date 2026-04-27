@@ -34,8 +34,9 @@ var asciiShapeRe = regexp.MustCompile(`(?s)\A\s*┌[─]+┐\s*\n(?:\s*│[^\n]*
 var asciiSubtitleRe = regexp.MustCompile(`\d{4}-\d{2}-\d{2} [A-Z]{3} UTC[+-]\d+`)
 
 // pylonSourceRe matches the exact two-element pylon source render.BannerSource
-// emits: `[ HH MM | banner ]\n( YYYY-MM-DD DAY UTC±H )`. Anchored.
-var pylonSourceRe = regexp.MustCompile(`\A\[ \d{2} \d{2} \| banner \]\n\( \d{4}-\d{2}-\d{2} [A-Z]{3} UTC[+-]\d+ \)\z`)
+// emits: `[ HH:MM | banner ]\n( YYYY-MM-DD DAY UTC±H )`. Anchored. Pylon v0.2's
+// default banner font has a `:` glyph, so the headline reaches pylon untouched.
+var pylonSourceRe = regexp.MustCompile(`\A\[ \d{2}:\d{2} \| banner \]\n\( \d{4}-\d{2}-\d{2} [A-Z]{3} UTC[+-]\d+ \)\z`)
 
 // pngMagic is the 8-byte PNG file signature.
 var pngMagic = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}

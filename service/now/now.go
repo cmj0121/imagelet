@@ -67,9 +67,7 @@ func Handler(c *gin.Context) {
 	c.Data(http.StatusOK, "text/plain; charset=utf-8", body)
 }
 
-// headline returns the wall-clock time as HH:MM. render.Banner replaces the
-// `:` with a space at its boundary because pylon's banner font has no `:`
-// glyph; the gap reads as a clock separator.
+// headline returns the wall-clock time as HH:MM.
 func headline(t time.Time) string {
 	return t.Format("15:04")
 }
