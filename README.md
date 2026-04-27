@@ -152,25 +152,24 @@ and ASCII paths are unaffected; pylon's PNG keeps its own theme-locked
 colors, terminals draw their own background.
 
 Both rendered paths use pylon's native theme — Unicode frame plus ANSI Shadow block
-letters — so the visual is identical across consumers. Three borderless caption
-rows sit under the banner: the ISO date with the UTC offset, a Sunday-first
-weekday strip with the current day in angle brackets, and a 20-cell `█`/`░`
-year-progress bar. The strip uses angle brackets instead of square brackets
-because pylon's parser would treat literal `[M]` as a nested bordered-box and
-shred the layout. Every response sets `Cache-Control: no-store`.
+letters — so the visual is identical across consumers. Two borderless caption
+rows sit under the banner: a combined date+UTC and Sunday-first weekday strip
+joined by a `·` middle-dot, and a 20-cell `█`/`░` year-progress bar. The
+weekday strip uses angle brackets (`<M>`) instead of square brackets because
+pylon's parser would treat literal `[M]` as a nested bordered-box and shred
+the layout. Every response sets `Cache-Control: no-store`.
 
 ```text
 $ curl http://localhost:8080/now
    ┌───────────────────────────────────────────┐
-   │    ██╗ █████╗          ██████╗ ██████╗    │
-   │   ███║██╔══██╗   ██   ██╔═████╗╚════██╗   │
-   │   ╚██║╚██████║   ██   ██║██╔██║ █████╔╝   │
-   │    ██║ ╚═══██║        ████╔╝██║ ╚═══██╗   │
-   │    ██║ █████╔╝   ██   ╚██████╔╝██████╔╝   │
-   │    ╚═╝ ╚════╝    ██    ╚═════╝ ╚═════╝    │
+   │    ██╗ █████╗          ██████╗  █████╗    │
+   │   ███║██╔══██╗   ██   ██╔═████╗██╔══██╗   │
+   │   ╚██║╚██████║   ██   ██║██╔██║╚██████║   │
+   │    ██║ ╚═══██║        ████╔╝██║ ╚═══██║   │
+   │    ██║ █████╔╝   ██   ╚██████╔╝ █████╔╝   │
+   │    ╚═╝ ╚════╝    ██    ╚═════╝  ╚════╝    │
    └───────────────────────────────────────────┘
-                 2026-04-27 UTC+8
-                  S <M> T W T F S
+        2026-04-27 UTC+8 · S <M> T W T F S
            year ██████░░░░░░░░░░░░░░ 32%
 ```
 

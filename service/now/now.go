@@ -1,12 +1,13 @@
 // Package now exposes the /now service: GET /now returns the current time
 // in the caller's resolved timezone (via middleware.TimezoneDetector, with
 // fallback to the server's local zone) as a pylon banner stacked above
-// three borderless caption rows:
+// two borderless caption rows:
 //
-//  1. `YYYY-MM-DD UTC±H` — date and signed integer-hour UTC offset.
-//  2. `S <M> T W T F S`  — Sunday-first weekday strip with the current
-//     day in angle brackets (visual replacement for the textual `MON`).
-//  3. `year ██████░░░░░░░░░░░░░░ NN%` — 20-cell year-progress meter.
+//  1. `YYYY-MM-DD UTC±H · S <M> T W T F S` — date + UTC offset on the
+//     left, Sunday-first weekday strip with the current day in angle
+//     brackets on the right, joined by a `·` middle-dot separator. The
+//     visual strip replaces the textual `MON` weekday name.
+//  2. `year ██████░░░░░░░░░░░░░░ NN%` — 20-cell year-progress meter.
 //
 // The wire format is content-negotiated:
 //
@@ -44,7 +45,7 @@ func Register(r gin.IRouter) {
 // Handler responds with the current time in the caller's timezone (resolved
 // by middleware.TimezoneDetector from the CF-Timezone header, falling back
 // to the server's local zone when no header is present), banner-rendered
-// with three borderless caption rows underneath (date+UTC, weekday strip,
+// with two borderless caption rows underneath (date+UTC · weekday strip,
 // year-progress). Accept: text/pylon (or ?format=pylon) takes precedence
 // over the User-Agent-based mode and returns the raw pylon source so
 // callers can render it themselves. Cache-Control: no-store is set on
@@ -91,16 +92,18 @@ func headline(t time.Time) string {
 	return t.Format("15:04")
 }
 
-// metadataLines returns the three borderless caption rows shown under the
-// time banner: date + UTC offset, weekday strip, year-progress. Each row
-// stands alone — the visual stack is the layout, not a `·` separator
-// joining everything in one line. The weekday name (`MON`) is dropped
-// from row 1; row 2's WeekStrip is the visual replacement.
+// metadataLines returns the two borderless caption rows shown under the
+// time banner. Row 1 carries date + UTC offset on the left and the
+// weekday strip on the right, joined by a `·` middle-dot separator —
+// the same field-separator glyph the codebase uses elsewhere (e.g.
+// /stock's STALE prefix). Row 2 is the year-progress meter on its own
+// line. The textual weekday name (`MON`) is dropped; WeekStrip is its
+// visual replacement.
 func metadataLines(t time.Time) []string {
 	_, off := t.Zone()
 	return []string{
-		fmt.Sprintf("%s UTC%+d", t.Format("2006-01-02"), off/3600),
-		render.WeekStrip(t),
+		fmt.Sprintf("%s UTC%+d · %s",
+			t.Format("2006-01-02"), off/3600, render.WeekStrip(t)),
 		render.YearProgress(t),
 	}
 }
