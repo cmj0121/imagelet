@@ -192,12 +192,13 @@ inside the price banner's outer frame:
 - 52-week-range progress bar — same shape, year-scale span.
 - For TW visitors: a thin `─ ─ ─ ─` divider, then 三大法人 institutional
   flow (外資 / 投信 / 自營 / 合計) and 融資/融券 margin balance rows
-  sourced from TWSE's legacy openapi. Path 1 region-conditional CN/EN: the
-  ASCII surface uses Chinese labels (terminal CJK fonts cover them); the
-  PNG surface uses English labels (`basicfont.Face7x13` has zero CJK
-  coverage and would render Chinese characters as tofu). The TW block is
-  best-effort enrichment — TWSE upstream errors silently omit it without
-  affecting the base render.
+  sourced from TWSE's legacy openapi. Region-conditional CN/EN labels split
+  by surface: plain text (ASCII + `text/pylon`, both terminal-shaped) gets
+  Chinese; banner-and-font surfaces (PNG and SVG) get English so the visual
+  output is consistent. PNG can't help it (`basicfont.Face7x13` has zero CJK
+  coverage and would render tofu); SVG joins PNG by choice. The TW block
+  is best-effort enrichment — TWSE upstream errors silently omit it
+  without affecting the base render.
 
 Every rendered response sets `Cache-Control: public, max-age=60`, so a CDN can
 absorb traffic spikes (contrast with `/now`'s `no-store`). Content-Type
@@ -247,10 +248,11 @@ Yilan, Taiwan (3h ago)` from USGS's `fdsnws/event/1/query`. Failures or
    current time falls in the daylight window (`render.DayCycle`).
 
 The PNG path composes the same layout locally with `basicfont` for the icon
-and pylon's PNG for the banner — same trick `/404` uses, axis flipped. TW
-visitors on the ASCII surface get Chinese labels (Path 1 CN/EN: 體感, 風速,
-高/低, 濕度, 紫外線, 降雨, 空污, 地震, 日); the PNG surface stays English
-because `basicfont.Face7x13` has no CJK glyphs.
+and pylon's PNG for the banner — same trick `/404` uses, axis flipped. CN/EN
+labels split by surface (same rule as `/stock`): plain text gets Chinese
+(體感, 風速, 高/低, 濕度, 紫外線, 降雨, 空污, 地震, 日); banner-and-font
+surfaces (PNG, and SVG-coerced-to-PNG) stay English so the visual output
+is consistent across devices.
 
 `/weather` honors `?format=png` like the other routes but coerces
 `?format=svg` to PNG in v1 — the icon-left composition uses a `basicfont`

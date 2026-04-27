@@ -463,6 +463,43 @@ func TestServeTWPathPNGUsesEnglishLabels(t *testing.T) {
 	}
 }
 
+// TestServeTWPathSVGUsesEnglishLabels pins the consistency rule: SVG
+// joins PNG on the visual / banner-and-font surface, so its TW block
+// uses EN labels (not CN). Plain text — ASCII and text/pylon — keeps
+// CN. Asserting on the body is direct: SVG <text> elements carry the
+// label runs verbatim.
+func TestServeTWPathSVGUsesEnglishLabels(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "^TWII"
+	q.Currency = "TWD"
+	r := newRouterWithTWSE(fakeProvider{q: q}, fakeTWSE{d: freshTW()})
+
+	req := httptest.NewRequest(http.MethodGet, "/stock?format=svg", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "image/svg+xml" {
+		t.Errorf("Content-Type = %q, want image/svg+xml", got)
+	}
+	body := rec.Body.String()
+	for _, cn := range []string{"三大法人", "外資", "投信", "自營", "融資餘額", "融券餘額"} {
+		if strings.Contains(body, cn) {
+			t.Errorf("SVG body contains CN label %q (should be EN)\n--- body ---\n%s", cn, body)
+		}
+	}
+	// At least one EN TW-enrichment label must be present so the test
+	// fails loudly if the TW block disappears altogether.
+	if !strings.Contains(body, "foreign") && !strings.Contains(body, "margin") {
+		t.Errorf("SVG body missing EN TW-enrichment labels (foreign/margin)\n--- body ---\n%s", body)
+	}
+}
+
 // TestServeTWUpstreamFailureKeepsBaseRender pins the best-effort
 // contract: if TWSE upstream errors, /stock still renders the base
 // quote view (banner + caption + bars), just without the TW block.
