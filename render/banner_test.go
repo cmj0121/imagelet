@@ -138,17 +138,23 @@ func TestBannerSVG(t *testing.T) {
 		t.Fatalf("unexpected err: %v", err)
 	}
 	got := string(body)
-	// xmlns + explicit width/height are the iOS-Safari load-bearing attrs.
+	// xmlns + explicit width/height are the iOS-Safari load-bearing attrs;
+	// the GitHub-dark palette markers prove PaintSVG ran.
 	for _, sub := range []string{
 		"<svg ",
 		`xmlns="http://www.w3.org/2000/svg"`,
 		`width="`,
 		`height="`,
+		`fill="#0d1117"`,
+		"#c9d1d9",
 		"</svg>",
 	} {
 		if !strings.Contains(got, sub) {
 			t.Errorf("SVG output missing %q\n--- output ---\n%s", sub, got)
 		}
+	}
+	if strings.Contains(got, "#0f1c2d") {
+		t.Errorf("SVG output still contains pylon default ink #0f1c2d (PaintSVG miss)\n--- output ---\n%s", got)
 	}
 	if bytes.HasSuffix(body, []byte("\n")) {
 		t.Errorf("SVG output must not end with \\n")
