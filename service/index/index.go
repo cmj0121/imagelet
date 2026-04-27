@@ -3,8 +3,11 @@
 // repo URL paired with the build version. The wire format is content-
 // negotiated like /now and /stock:
 //
-//   - Accept: text/pylon → raw banner source
-//   - User-Agent contains Mozilla → image/png
+//   - Accept: text/pylon OR ?format=pylon → raw banner source
+//   - ?format=html or User-Agent contains Mozilla → text/html (inline SVG)
+//   - ?format=svg → image/svg+xml
+//   - ?format=png → image/png
+//   - ?format=ascii → text/plain; charset=utf-8 (ASCII)
 //   - everything else → text/plain; charset=utf-8 (ASCII)
 //
 // The handler closes over a fixed (tagline, repo, version) tuple so
@@ -16,7 +19,6 @@ package index
 import (
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/cmj0121/pylon/src/go/pkg/pylon"
 	"github.com/gin-gonic/gin"
@@ -51,17 +53,28 @@ func Register(r gin.IRouter, version string) {
 		log.Error().Err(err).Msg("pre-render index png")
 		pngBody = nil
 	}
+	svgBody := []byte(pylon.RenderSVG(ast))
+	htmlBody := render.WrapHTML(svgBody)
 	pylonBody := []byte(src + "\n")
 
 	r.GET("/", func(c *gin.Context) {
 		c.Header("Cache-Control", "public, max-age=3600")
 
-		if strings.Contains(c.GetHeader("Accept"), "text/pylon") {
+		if middleware.WantsPylonSource(c) {
 			c.Data(http.StatusOK, "text/pylon", pylonBody)
 			return
 		}
-		if middleware.GetMode(c) == render.ModePNG && pngBody != nil {
+		mode := middleware.ResolveMode(c)
+		if mode == render.ModePNG && pngBody != nil {
 			c.Data(http.StatusOK, "image/png", pngBody)
+			return
+		}
+		if mode == render.ModeSVG {
+			c.Data(http.StatusOK, "image/svg+xml", svgBody)
+			return
+		}
+		if mode == render.ModeHTML {
+			c.Data(http.StatusOK, "text/html; charset=utf-8", htmlBody)
 			return
 		}
 		c.Data(http.StatusOK, "text/plain; charset=utf-8", asciiBody)

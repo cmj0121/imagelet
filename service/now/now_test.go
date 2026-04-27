@@ -82,12 +82,14 @@ func TestNow(t *testing.T) {
 		name      string
 		ua        string
 		accept    string
+		query     string
 		ctTypePfx string
 		// bodyMatch is one of: a regexp (text body), pngMagic sentinel, or nil.
 		// asciiSubtitle is true when the body is a text path that should also
 		// match the subtitle regex.
 		bodyPattern   *regexp.Regexp
 		bodyIsPNG     bool
+		bodyIsHTML    bool
 		asciiSubtitle bool
 	}{
 		{
@@ -98,8 +100,15 @@ func TestNow(t *testing.T) {
 			asciiSubtitle: true,
 		},
 		{
-			name:      "browser_returns_png",
-			ua:        "Mozilla/5.0",
+			name:       "browser_returns_html",
+			ua:         "Mozilla/5.0",
+			ctTypePfx:  "text/html",
+			bodyIsHTML: true,
+		},
+		{
+			name:      "format_png_returns_png",
+			ua:        "curl/8.4.0",
+			query:     "format=png",
 			ctTypePfx: "image/png",
 			bodyIsPNG: true,
 		},
@@ -110,13 +119,24 @@ func TestNow(t *testing.T) {
 			ctTypePfx:   "text/pylon",
 			bodyPattern: pylonSourceRe,
 		},
+		{
+			name:        "format_pylon_query_returns_source",
+			ua:          "Mozilla/5.0",
+			query:       "format=pylon",
+			ctTypePfx:   "text/pylon",
+			bodyPattern: pylonSourceRe,
+		},
 	}
 
 	r := newRouter()
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/now", nil)
+			path := "/now"
+			if tc.query != "" {
+				path += "?" + tc.query
+			}
+			req := httptest.NewRequest(http.MethodGet, path, nil)
 			req.Header.Set("User-Agent", tc.ua)
 			if tc.accept != "" {
 				req.Header.Set("Accept", tc.accept)
@@ -144,11 +164,54 @@ func TestNow(t *testing.T) {
 				}
 				return
 			}
+			if tc.bodyIsHTML {
+				bodyStr := string(body)
+				for _, sub := range []string{"<!DOCTYPE html>", "<svg ", "</svg>", "</html>"} {
+					if !strings.Contains(bodyStr, sub) {
+						t.Errorf("HTML body missing %q\n--- body ---\n%s", sub, bodyStr)
+					}
+				}
+				return
+			}
 			if tc.bodyPattern != nil && !tc.bodyPattern.Match(body) {
 				t.Errorf("body does not match %s\n--- body ---\n%s", tc.bodyPattern, body)
 			}
 			if tc.asciiSubtitle && !asciiSubtitleRe.Match(body) {
 				t.Errorf("body missing subtitle pattern %s\n--- body ---\n%s", asciiSubtitleRe, body)
+			}
+		})
+	}
+}
+
+func TestNowFormatSVG(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := newRouter()
+
+	// ?format=svg overrides UA in both directions: a curl UA gets SVG, a
+	// browser UA also gets SVG (the explicit query wins over the default
+	// PNG path).
+	for _, ua := range []string{"curl/8.4.0", "Mozilla/5.0"} {
+		t.Run(ua, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/now?format=svg", nil)
+			req.Header.Set("User-Agent", ua)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			if got := rec.Header().Get("Content-Type"); got != "image/svg+xml" {
+				t.Errorf("Content-Type = %q, want image/svg+xml", got)
+			}
+			if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+				t.Errorf("Cache-Control = %q, want no-store", got)
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, `xmlns="http://www.w3.org/2000/svg"`) {
+				t.Errorf("body missing xmlns; got:\n%s", body)
+			}
+			if !strings.Contains(body, "<svg ") || !strings.Contains(body, "</svg>") {
+				t.Errorf("body not bracketed by <svg> tags; got:\n%s", body)
 			}
 		})
 	}

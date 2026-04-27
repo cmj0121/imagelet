@@ -47,7 +47,7 @@ func TestNewInstallsClientDetector(t *testing.T) {
 		want render.Mode
 	}{
 		{"curl/8.4.0", render.ModeASCII},
-		{"Mozilla/5.0", render.ModePNG},
+		{"Mozilla/5.0", render.ModeHTML},
 	}
 
 	for _, tc := range tests {

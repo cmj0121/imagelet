@@ -10,18 +10,27 @@ import (
 // Banner renders BannerSource(headline, subtitle) through pylon — the source
 // is `[ headline | banner ]` over a borderless `( subtitle )` caption, so a
 // single render call produces a banner frame stacked over a centered caption.
-// Both render paths use pylon's native default theme — Unicode box-drawing
-// frame plus ANSI Shadow block-letter banner glyphs — so a UTF-8-capable
-// terminal and a browser see the same visual. ASCII appends a trailing
-// newline; PNG does not. Empty-headline normalization lives in BannerSource.
+// All four render paths use pylon's native default theme — Unicode box-
+// drawing frame plus ANSI Shadow block-letter banner glyphs — so a UTF-8-
+// capable terminal, a browser, and an SVG-capable viewer see the same
+// visual. ASCII appends a trailing newline; PNG, SVG, and HTML do not.
+// Empty-headline normalization lives in BannerSource.
 //
 // PNG rendering can fail (font init, encode error). Callers should branch
 // on err and fall back to ASCII to keep the response from 5xx-ing on a
-// transient pylon problem.
+// transient pylon problem. SVG and HTML rendering are pure string assembly
+// and never error; the wrapper keeps the (body, err) shape for caller
+// uniformity. ModeHTML wraps the SVG output in WrapHTML.
 func Banner(headline, subtitle string, mode Mode) ([]byte, error) {
 	ast := pylon.Parse(BannerSource(headline, subtitle))
 	if mode == ModePNG {
 		return pylon.RenderPNG(ast)
+	}
+	if mode == ModeSVG {
+		return []byte(pylon.RenderSVG(ast)), nil
+	}
+	if mode == ModeHTML {
+		return WrapHTML([]byte(pylon.RenderSVG(ast))), nil
 	}
 	return []byte(pylon.RenderASCII(ast) + "\n"), nil
 }
@@ -46,12 +55,18 @@ func BannerSource(headline, subtitle string) string {
 // share a single outer box. Empty `lines` falls back to plain Banner with
 // no subtitle (renders cleanly).
 //
-// Trailing newline appended for ASCII; PNG keeps raw bytes. Same error
-// handling as Banner.
+// Trailing newline appended for ASCII; PNG, SVG, and HTML keep raw bytes.
+// Same error handling as Banner. ModeHTML wraps the SVG in WrapHTML.
 func BannerStack(headline string, lines []string, mode Mode) ([]byte, error) {
 	ast := pylon.Parse(BannerStackSource(headline, lines))
 	if mode == ModePNG {
 		return pylon.RenderPNG(ast)
+	}
+	if mode == ModeSVG {
+		return []byte(pylon.RenderSVG(ast)), nil
+	}
+	if mode == ModeHTML {
+		return WrapHTML([]byte(pylon.RenderSVG(ast))), nil
 	}
 	return []byte(pylon.RenderASCII(ast) + "\n"), nil
 }

@@ -3,8 +3,11 @@
 // for US) as a pylon banner stacked above a multi-row data box. The wire
 // format mirrors /now -- content-negotiated:
 //
-//   - Accept: text/pylon → raw pylon source (callers render it themselves)
-//   - User-Agent contains Mozilla → image/png
+//   - Accept: text/pylon OR ?format=pylon → raw pylon source
+//   - ?format=html or User-Agent contains Mozilla → text/html (inline SVG)
+//   - ?format=svg → image/svg+xml
+//   - ?format=png → image/png
+//   - ?format=ascii → text/plain; charset=utf-8 (ASCII)
 //   - everything else → text/plain; charset=utf-8 (ASCII)
 //
 // Region resolution: ?region= query takes precedence over the country code
@@ -139,28 +142,27 @@ func (h *handler) serve(c *gin.Context) {
 
 	headline := strconv.FormatFloat(q.Last, 'f', 2, 64)
 
-	mode := middleware.GetMode(c)
-
-	// Build the bare pylon source first; it's identical for the
-	// text/pylon short-circuit and serves as input to BannerStack for
-	// the rendered surfaces. Path 1 region-conditional formatting picks
-	// CN labels for ASCII / EN for PNG (and text/pylon mirrors ASCII --
-	// terminal-shaped clients get CJK).
-	useEnglish := mode == render.ModePNG
-	lines := buildLines(symbol, q, tw, stale, useEnglish)
-
 	c.Header("Cache-Control", "public, max-age=60")
 
-	// Mirrors /now: Accept: text/pylon short-circuits to the raw source.
-	if strings.Contains(c.GetHeader("Accept"), "text/pylon") {
-		// text/pylon clients are typically renderer-shaped (terminal-y),
-		// so use the ASCII variant labels. PNG-bound clients don't
-		// generally request text/pylon; if they do, the pylon source
-		// they get back will need their own renderer to handle CJK.
+	// Pylon-source short-circuit: bare source, ASCII label set. text/pylon
+	// clients are typically renderer-shaped (terminal-y), so they get CN
+	// labels via the ASCII path; honors both Accept: text/pylon and
+	// ?format=pylon for header/query parity.
+	if middleware.WantsPylonSource(c) {
 		asciiLines := buildLines(symbol, q, tw, stale, false)
 		c.Data(http.StatusOK, "text/pylon", []byte(render.BannerStackSource(headline, asciiLines)))
 		return
 	}
+
+	mode := middleware.ResolveMode(c)
+
+	// CN labels appear only on the plain-text surface (ASCII, terminal-
+	// shaped). PNG sticks to EN (basicfont.Face7x13 is CJK-blank). SVG
+	// and HTML — both Cascadia/Menlo-driven via pylon's <style> — also
+	// stick to EN so the visual surfaces stay byte-identical at the
+	// label level and CDNs / proxies see one rendered shape.
+	useEnglish := mode == render.ModePNG || mode == render.ModeSVG || mode == render.ModeHTML
+	lines := buildLines(symbol, q, tw, stale, useEnglish)
 
 	body, rerr := render.BannerStack(headline, lines, mode)
 	if rerr != nil {
@@ -170,6 +172,14 @@ func (h *handler) serve(c *gin.Context) {
 	}
 	if mode == render.ModePNG {
 		c.Data(http.StatusOK, "image/png", body)
+		return
+	}
+	if mode == render.ModeSVG {
+		c.Data(http.StatusOK, "image/svg+xml", body)
+		return
+	}
+	if mode == render.ModeHTML {
+		c.Data(http.StatusOK, "text/html; charset=utf-8", body)
 		return
 	}
 	c.Data(http.StatusOK, "text/plain; charset=utf-8", body)

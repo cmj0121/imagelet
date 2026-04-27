@@ -5,8 +5,11 @@
 // bar is a 20-cell `█`/`░` meter showing how far through the calendar year
 // the visitor is. The wire format is content-negotiated:
 //
-//   - Accept: text/pylon → raw pylon source (callers render it themselves)
-//   - User-Agent contains Mozilla → image/png
+//   - Accept: text/pylon OR ?format=pylon → raw pylon source
+//   - ?format=html or User-Agent contains Mozilla → text/html (inline SVG)
+//   - ?format=svg → image/svg+xml
+//   - ?format=png → image/png
+//   - ?format=ascii → text/plain; charset=utf-8 (ASCII)
 //   - everything else → text/plain; charset=utf-8 (ASCII)
 //
 // The service is reusable: external consumers can either call Register on
@@ -47,23 +50,32 @@ func Handler(c *gin.Context) {
 	sub := subtitle(t)
 
 	c.Header("Cache-Control", "no-store")
-	if strings.Contains(c.GetHeader("Accept"), "text/pylon") {
+	if middleware.WantsPylonSource(c) {
 		c.Data(http.StatusOK, "text/pylon", []byte(render.BannerSource(head, sub)))
 		return
 	}
 
-	mode := middleware.GetMode(c)
+	mode := middleware.ResolveMode(c)
 	body, err := render.Banner(head, sub, mode)
 	if err != nil {
 		// PNG rendering can fail (font init, encode error). Fall back to
 		// ASCII so the caller still gets *something* and the failure is
-		// logged.
+		// logged. SVG and HTML rendering are pure string assembly and
+		// never error.
 		log.Error().Err(err).Stringer("mode", mode).Msg("render banner")
 		body, _ = render.Banner(head, sub, render.ModeASCII)
 		mode = render.ModeASCII
 	}
 	if mode == render.ModePNG {
 		c.Data(http.StatusOK, "image/png", body)
+		return
+	}
+	if mode == render.ModeSVG {
+		c.Data(http.StatusOK, "image/svg+xml", body)
+		return
+	}
+	if mode == render.ModeHTML {
+		c.Data(http.StatusOK, "text/html; charset=utf-8", body)
 		return
 	}
 	c.Data(http.StatusOK, "text/plain; charset=utf-8", body)

@@ -218,14 +218,15 @@ func TestServeASCIITWPathPath1CN(t *testing.T) {
 	}
 }
 
-// TestServeTWBrowserGetsENLabels confirms the PNG path stays English
-// even for TW visitors — basicfont.Face7x13 has zero CJK coverage so
-// CN labels would render as tofu rectangles.
-func TestServeTWBrowserGetsENLabels(t *testing.T) {
+// TestServeTWBrowserGetsENLabelsOnPNG confirms the PNG path stays English
+// even for TW visitors — basicfont.Face7x13 has zero CJK coverage so CN
+// labels would render as tofu rectangles. Browser UA default is now HTML;
+// the PNG path is reached via explicit ?format=png.
+func TestServeTWBrowserGetsENLabelsOnPNG(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := newRouter(fakeProvider{f: freshForecast()})
 
-	req := httptest.NewRequest(http.MethodGet, "/weather", nil)
+	req := httptest.NewRequest(http.MethodGet, "/weather?format=png", nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 	req.Header.Set("CF-IPCountry", "TW")
 	rec := httptest.NewRecorder()
@@ -238,19 +239,22 @@ func TestServeTWBrowserGetsENLabels(t *testing.T) {
 		t.Errorf("Content-Type = %q, want image/png", got)
 	}
 	// Body is binary PNG so we can't grep for labels; the smoke check is
-	// that the PNG is returned (size already validated by TestServeBrowserGetsPNG).
-	// Label EN-ness is enforced structurally by resolveCaptionLang: PNG
-	// path always picks langEN regardless of country.
+	// that the PNG is returned. Label EN-ness is enforced structurally by
+	// resolveCaptionLang: PNG path always picks langEN regardless of country.
 	if !bytes.HasPrefix(rec.Body.Bytes(), pngMagic) {
 		t.Errorf("body missing PNG magic — TW PNG path should still render")
 	}
 }
 
-func TestServeBrowserGetsPNG(t *testing.T) {
+// TestServeFormatPNG exercises the explicit PNG path that browsers and
+// non-browser clients alike can reach via ?format=png. Browser UA default
+// emits HTML now (TestServeBrowserGetsHTML), so this is the surface for
+// callers wanting raw PNG bytes.
+func TestServeFormatPNG(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := newRouter(fakeProvider{f: freshForecast()})
 
-	req := httptest.NewRequest(http.MethodGet, "/weather", nil)
+	req := httptest.NewRequest(http.MethodGet, "/weather?format=png", nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 	req.Header.Set("CF-IPCountry", "TW")
 	rec := httptest.NewRecorder()
@@ -283,6 +287,69 @@ func TestServeBrowserGetsPNG(t *testing.T) {
 	// alone is ~140 px tall. >=180 is a safe lower bound.
 	if h < 180 {
 		t.Errorf("png height = %d, want >= 180 (banner + captions row)", h)
+	}
+}
+
+// TestServeBrowserGetsHTML confirms the new browser UA default: HTML
+// wrapping an inline composeSVG of icon + banner + captions. This
+// replaces the prior PNG default; raw PNG is still reachable via
+// ?format=png (TestServeFormatPNG).
+func TestServeBrowserGetsHTML(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := newRouter(fakeProvider{f: freshForecast()})
+
+	req := httptest.NewRequest(http.MethodGet, "/weather", nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/html; charset=utf-8", got)
+	}
+	body := rec.Body.String()
+	for _, sub := range []string{"<!DOCTYPE html>", "<svg ", "</svg>", "</html>"} {
+		if !strings.Contains(body, sub) {
+			t.Errorf("HTML body missing %q\n--- body ---\n%s", sub, body)
+		}
+	}
+}
+
+// TestServeFormatSVG exercises the SVG path now that /weather has a real
+// SVG icon compositor (replaces the former v1 SVG→PNG coercion). Asserts
+// content-type, well-formed outer SVG, and the inline pylon banner via
+// the translate-group marker.
+func TestServeFormatSVG(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := newRouter(fakeProvider{f: freshForecast()})
+
+	for _, ua := range []string{"curl/8.4.0", "Mozilla/5.0"} {
+		t.Run(ua, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/weather?format=svg", nil)
+			req.Header.Set("User-Agent", ua)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			if got := rec.Header().Get("Content-Type"); got != "image/svg+xml" {
+				t.Errorf("Content-Type = %q, want image/svg+xml", got)
+			}
+			body := rec.Body.String()
+			for _, sub := range []string{
+				`<svg xmlns="http://www.w3.org/2000/svg"`,
+				`<g transform="translate(`,
+				"</svg>",
+			} {
+				if !strings.Contains(body, sub) {
+					t.Errorf("SVG body missing %q\n--- body ---\n%s", sub, body)
+				}
+			}
+		})
 	}
 }
 

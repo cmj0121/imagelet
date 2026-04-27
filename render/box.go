@@ -6,8 +6,9 @@
 //
 //   - Box, Banner, BannerStack, BannerSource — pylon-source primitives shared
 //     by /now, /stock, /weather, /404, and /
-//   - Mode (ASCII / PNG) — wire-format selector resolved from the request UA
-//     by middleware.ClientDetector
+//   - Mode (ASCII / PNG / SVG) — wire-format selector resolved from the request
+//     UA by middleware.ClientDetector, optionally overridden by ?format= via
+//     middleware.ResolveMode
 //   - ProgressBar, YearProgress, DayCycle — `█`/`░` text-bar fragments used
 //     in subtitles and caption rows
 //   - StripPylonSyntax, TrimHour — sanitization and small string helpers
@@ -25,7 +26,10 @@ import (
 )
 
 // Mode picks the wire format the renderer emits. ASCII is plain text; PNG
-// is a pylon-rendered raster image (the browser default).
+// is a pylon-rendered raster image; SVG is a self-contained pylon-rendered
+// SVG document; HTML is a self-contained HTML5 document inlining the SVG
+// (the browser default). Pylon source bypasses the renderer entirely and is
+// negotiated by middleware.WantsPylonSource, not via this enum.
 type Mode int
 
 const (
@@ -35,18 +39,35 @@ const (
 	// ModePNG renders to a PNG raster (binary). Pylon embeds JetBrains Mono
 	// for glyph metrics, so the output is self-contained.
 	ModePNG
+	// ModeSVG renders to a self-contained SVG document. Pylon emits xmlns,
+	// explicit width/height/viewBox, inline <style>, and uses textLength +
+	// lengthAdjust="spacingAndGlyphs" so the cell grid stays aligned even
+	// when the browser falls back from Cascadia/JetBrains to a system mono
+	// (Menlo on iOS). XML-special chars in text content are escaped by pylon.
+	ModeSVG
+	// ModeHTML renders to a self-contained HTML5 document with the SVG
+	// inlined in the body. Adds a viewport meta and a centering page style
+	// so a top-level browser navigation reads cleanly on mobile. The inline
+	// SVG itself is identical to what ModeSVG would emit, so URLs that have
+	// historically been embedded as `<img src="…">` should switch to
+	// `?format=png` (or `?format=svg`) to keep the raw-image contract.
+	ModeHTML
 )
 
 const emptyPlaceholder = "?"
 
-// String returns a stable lowercase label for the mode ("ascii" or "png").
-// Implements fmt.Stringer so render.Mode interpolates cleanly in logs and
-// test output. Unknown modes default to "ascii" — the safe rendering
-// fallback used elsewhere in this package.
+// String returns a stable lowercase label for the mode ("ascii", "png",
+// "svg", "html"). Implements fmt.Stringer so render.Mode interpolates
+// cleanly in logs and test output. Unknown modes default to "ascii" — the
+// safe rendering fallback used elsewhere in this package.
 func (m Mode) String() string {
 	switch m {
 	case ModePNG:
 		return "png"
+	case ModeSVG:
+		return "svg"
+	case ModeHTML:
+		return "html"
 	default:
 		return "ascii"
 	}
@@ -77,6 +98,15 @@ func Box(text string, mode Mode) ([]byte, error) {
 	if mode == ModePNG {
 		// Native theme for PNG — Unicode frame, no `theme: ascii` frontmatter.
 		return pylon.RenderPNG(pylon.Parse(fmt.Sprintf("[ %s ]", text)))
+	}
+	if mode == ModeSVG {
+		// Native theme for SVG so the painted grid matches what a browser
+		// shows for the PNG variant.
+		return []byte(pylon.RenderSVG(pylon.Parse(fmt.Sprintf("[ %s ]", text)))), nil
+	}
+	if mode == ModeHTML {
+		svg := pylon.RenderSVG(pylon.Parse(fmt.Sprintf("[ %s ]", text)))
+		return WrapHTML([]byte(svg)), nil
 	}
 	src := fmt.Sprintf("---\ntheme: ascii\n---\n[ %s ]", text)
 	return []byte(pylon.RenderASCII(pylon.Parse(src)) + "\n"), nil

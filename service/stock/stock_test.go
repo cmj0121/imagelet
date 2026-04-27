@@ -207,7 +207,7 @@ func TestServeUnavailableWhenNoCacheAndError(t *testing.T) {
 	}
 }
 
-func TestServeBrowserGetsPNG(t *testing.T) {
+func TestServeBrowserGetsHTML(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := newRouter(fakeProvider{q: freshQuote()})
 
@@ -219,11 +219,34 @@ func TestServeBrowserGetsPNG(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if got := rec.Header().Get("Content-Type"); got != "image/png" {
-		t.Errorf("Content-Type = %q, want image/png", got)
+	if got := rec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/html; charset=utf-8", got)
 	}
 	if got := rec.Header().Get("Cache-Control"); got != "public, max-age=60" {
 		t.Errorf("Cache-Control = %q, want %q", got, "public, max-age=60")
+	}
+	body := rec.Body.String()
+	for _, sub := range []string{"<!DOCTYPE html>", "<svg ", "</svg>", "</html>"} {
+		if !strings.Contains(body, sub) {
+			t.Errorf("HTML body missing %q\n--- body ---\n%s", sub, body)
+		}
+	}
+}
+
+func TestServeFormatPNG(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := newRouter(fakeProvider{q: freshQuote()})
+
+	req := httptest.NewRequest(http.MethodGet, "/stock?format=png", nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "image/png" {
+		t.Errorf("Content-Type = %q, want image/png", got)
 	}
 	body := rec.Body.Bytes()
 	if !bytes.HasPrefix(body, pngMagic) {
@@ -260,6 +283,37 @@ func TestServeAcceptPylonReturnsRawSource(t *testing.T) {
 	}
 	if !strings.Contains(body, "^GSPC") {
 		t.Errorf("body missing symbol\n--- body ---\n%s", body)
+	}
+}
+
+func TestServeFormatSVGOverridesUA(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := newRouter(fakeProvider{q: freshQuote()})
+
+	for _, ua := range []string{"curl/8.4.0", "Mozilla/5.0"} {
+		t.Run(ua, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/stock?format=svg", nil)
+			req.Header.Set("User-Agent", ua)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			if got := rec.Header().Get("Content-Type"); got != "image/svg+xml" {
+				t.Errorf("Content-Type = %q, want image/svg+xml", got)
+			}
+			if got := rec.Header().Get("Cache-Control"); got != "public, max-age=60" {
+				t.Errorf("Cache-Control = %q, want public, max-age=60", got)
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, `xmlns="http://www.w3.org/2000/svg"`) {
+				t.Errorf("body missing xmlns; got:\n%s", body)
+			}
+			if !strings.Contains(body, "<svg ") || !strings.Contains(body, "</svg>") {
+				t.Errorf("body not bracketed by <svg> tags; got:\n%s", body)
+			}
+		})
 	}
 }
 
@@ -407,7 +461,9 @@ func TestServeTWPathPNGUsesEnglishLabels(t *testing.T) {
 	q.Currency = "TWD"
 	r := newRouterWithTWSE(fakeProvider{q: q}, fakeTWSE{d: freshTW()})
 
-	req := httptest.NewRequest(http.MethodGet, "/stock", nil)
+	// Browser UA default is now HTML — the PNG path is reached via
+	// explicit ?format=png. Same EN-label rule still applies.
+	req := httptest.NewRequest(http.MethodGet, "/stock?format=png", nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 	req.Header.Set("CF-IPCountry", "TW")
 	rec := httptest.NewRecorder()
@@ -429,6 +485,43 @@ func TestServeTWPathPNGUsesEnglishLabels(t *testing.T) {
 	// rendered image (those lines compress to a chunky blob).
 	if len(body) < 5000 {
 		t.Errorf("PNG size = %d bytes, want >= 5000 (TW block likely missing)", len(body))
+	}
+}
+
+// TestServeTWPathSVGUsesEnglishLabels pins the consistency rule: SVG
+// joins PNG on the visual / banner-and-font surface, so its TW block
+// uses EN labels (not CN). Plain text — ASCII and text/pylon — keeps
+// CN. Asserting on the body is direct: SVG <text> elements carry the
+// label runs verbatim.
+func TestServeTWPathSVGUsesEnglishLabels(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "^TWII"
+	q.Currency = "TWD"
+	r := newRouterWithTWSE(fakeProvider{q: q}, fakeTWSE{d: freshTW()})
+
+	req := httptest.NewRequest(http.MethodGet, "/stock?format=svg", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "image/svg+xml" {
+		t.Errorf("Content-Type = %q, want image/svg+xml", got)
+	}
+	body := rec.Body.String()
+	for _, cn := range []string{"三大法人", "外資", "投信", "自營", "融資餘額", "融券餘額"} {
+		if strings.Contains(body, cn) {
+			t.Errorf("SVG body contains CN label %q (should be EN)\n--- body ---\n%s", cn, body)
+		}
+	}
+	// At least one EN TW-enrichment label must be present so the test
+	// fails loudly if the TW block disappears altogether.
+	if !strings.Contains(body, "foreign") && !strings.Contains(body, "margin") {
+		t.Errorf("SVG body missing EN TW-enrichment labels (foreign/margin)\n--- body ---\n%s", body)
 	}
 }
 

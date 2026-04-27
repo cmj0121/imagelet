@@ -56,11 +56,33 @@ func TestRootASCIIHasBannerAndCaptions(t *testing.T) {
 	}
 }
 
-func TestRootBrowserGetsPNG(t *testing.T) {
+func TestRootBrowserGetsHTML(t *testing.T) {
 	r := newRouter("v1.2.3")
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0")
+
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/html; charset=utf-8", got)
+	}
+	body := rec.Body.String()
+	for _, sub := range []string{"<!DOCTYPE html>", "<svg ", "</svg>", "</html>"} {
+		if !strings.Contains(body, sub) {
+			t.Errorf("HTML body missing %q\n--- body ---\n%s", sub, body)
+		}
+	}
+}
+
+func TestRootFormatPNG(t *testing.T) {
+	r := newRouter("v1.2.3")
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/?format=png", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
 
 	r.ServeHTTP(rec, req)
 
@@ -79,6 +101,61 @@ func TestRootBrowserGetsPNG(t *testing.T) {
 		if body[i] != b {
 			t.Fatalf("byte %d = 0x%02x, want 0x%02x (PNG magic mismatch)", i, body[i], b)
 		}
+	}
+}
+
+func TestRootFormatPylonQueryEqualsAcceptHeader(t *testing.T) {
+	// ?format=pylon should produce the same response shape as
+	// Accept: text/pylon — header/query parity.
+	r := newRouter("v1.2.3")
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/?format=pylon", nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/pylon" {
+		t.Errorf("Content-Type = %q, want text/pylon", got)
+	}
+	if !strings.Contains(rec.Body.String(), "[ IMAGELET | banner ]") {
+		t.Errorf("body missing banner source line; got:\n%s", rec.Body.String())
+	}
+}
+
+func TestRootFormatAscii(t *testing.T) {
+	// ?format=ascii overrides Mozilla UA's HTML default.
+	r := newRouter("v1.2.3")
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/?format=ascii", nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/plain") {
+		t.Errorf("Content-Type = %q, want text/plain prefix", got)
+	}
+}
+
+func TestRootFormatHTMLOverridesUA(t *testing.T) {
+	// ?format=html wins over curl UA (which would default to ASCII).
+	r := newRouter("v1.2.3")
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/?format=html", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/html; charset=utf-8", got)
 	}
 }
 
@@ -105,6 +182,35 @@ func TestRootAcceptPylonReturnsRawSource(t *testing.T) {
 	}
 	if !strings.Contains(body, index.DefaultRepo+" · v1.2.3") {
 		t.Errorf("body missing repo · version; got:\n%s", body)
+	}
+}
+
+func TestRootFormatSVGOverridesUA(t *testing.T) {
+	// ?format=svg wins over a non-Mozilla UA (would otherwise resolve to ASCII)
+	// and over a Mozilla UA (would otherwise resolve to PNG). Pin both.
+	r := newRouter("v1.2.3")
+
+	for _, ua := range []string{"curl/8.4.0", "Mozilla/5.0"} {
+		t.Run(ua, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/?format=svg", nil)
+			req.Header.Set("User-Agent", ua)
+			r.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			if got := rec.Header().Get("Content-Type"); got != "image/svg+xml" {
+				t.Errorf("Content-Type = %q, want image/svg+xml", got)
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, `xmlns="http://www.w3.org/2000/svg"`) {
+				t.Errorf("body missing xmlns; got:\n%s", body)
+			}
+			if !strings.Contains(body, "<svg ") || !strings.Contains(body, "</svg>") {
+				t.Errorf("body not bracketed by <svg> tags; got:\n%s", body)
+			}
+		})
 	}
 }
 
