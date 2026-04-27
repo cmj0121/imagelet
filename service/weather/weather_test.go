@@ -184,7 +184,7 @@ func TestServeAcceptPylonReturnsBareBannerSource(t *testing.T) {
 		t.Errorf("Content-Type = %q, want prefix text/pylon", got)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "[ 24.3 | banner ]") {
+	if !strings.Contains(body, "[ 24.3 | banner:mini ]") {
 		t.Errorf("body missing bare banner source\n--- body ---\n%s", body)
 	}
 	for _, unwanted := range []string{"feels", "wind", "sunrise", "Taipei", "STALE"} {
@@ -361,7 +361,7 @@ func TestSTALEWinsOverNothing(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "[ 24.3 | banner ]") {
+	if !strings.Contains(body, "[ 24.3 | banner:mini ]") {
 		t.Errorf("body missing bare banner source\n--- body ---\n%s", body)
 	}
 	if strings.Contains(body, "STALE") {

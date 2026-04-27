@@ -155,9 +155,12 @@ func (h *handler) serve(c *gin.Context) {
 
 // headlineSource is the pylon source rendered as the temperature banner.
 // Single-line on purpose — captions are rendered separately so pylon's
-// box stacking doesn't get confused by the longer caption rows.
+// box stacking doesn't get confused by the longer caption rows. Uses
+// pylon's `banner:mini` variant — the 3-row mini font balances better
+// against the 5-row ASCII condition icon than the 6-row default ANSI
+// shadow font.
 func headlineSource(headline string) string {
-	return fmt.Sprintf("[ %s | banner ]", headline)
+	return fmt.Sprintf("[ %s | banner:mini ]", headline)
 }
 
 // resolveLocation returns the (lat, lon, locationLabel) the handler renders
