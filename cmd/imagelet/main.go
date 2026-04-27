@@ -28,6 +28,7 @@ import (
 	"github.com/cmj0121/imagelet/service/stock"
 	"github.com/cmj0121/imagelet/service/stock/quote/cached"
 	"github.com/cmj0121/imagelet/service/stock/quote/yahoo"
+	"github.com/cmj0121/imagelet/service/stock/twse"
 	"github.com/cmj0121/imagelet/service/weather"
 	weathercache "github.com/cmj0121/imagelet/service/weather/forecast/cached"
 	"github.com/cmj0121/imagelet/service/weather/forecast/openmeteo"
@@ -81,7 +82,11 @@ func main() {
 	// singleflight stampede control) is shared across all /stock requests;
 	// constructing per-request would defeat the cache.
 	quoteProvider := cached.New(yahoo.New())
-	stock.Register(r, quoteProvider)
+	// TW-only enrichment provider: 三大法人 + market margin balance from
+	// TWSE legacy openapi. Cached with 4h success / 30m failure TTL since
+	// TWSE publishes daily (~16:00 Asia/Taipei).
+	twseProvider := twse.NewCached(twse.New())
+	stock.Register(r, quoteProvider, twseProvider)
 
 	// Same one-shot construction for the weather provider — shared cache
 	// across /weather requests, and the cap-stale-on-fail behavior makes

@@ -39,3 +39,32 @@ func BannerSource(headline, subtitle string) string {
 	}
 	return fmt.Sprintf("[ %s | banner ]\n( %s )", headline, subtitle)
 }
+
+// BannerStack renders BannerStackSource through pylon -- a banner stacked
+// over a multi-line bordered box. Used by /stock and /weather V1 layouts
+// where multiple caption rows (header / data / bars / divider / TW-block)
+// share a single outer box. Empty `lines` falls back to plain Banner with
+// no subtitle (renders cleanly).
+//
+// Trailing newline appended for ASCII; PNG keeps raw bytes. Same error
+// handling as Banner.
+func BannerStack(headline string, lines []string, mode Mode) ([]byte, error) {
+	ast := pylon.Parse(BannerStackSource(headline, lines))
+	if mode == ModePNG {
+		return pylon.RenderPNG(ast)
+	}
+	return []byte(pylon.RenderASCII(ast) + "\n"), nil
+}
+
+// BannerStackSource builds the pylon source `[ headline | banner ]\n[ line1\nline2\n... ]`.
+// Empty `lines` collapses to a banner-only source. Empty headline falls
+// back to the shared `?` placeholder (mirroring BannerSource).
+func BannerStackSource(headline string, lines []string) string {
+	if strings.TrimSpace(headline) == "" {
+		headline = emptyPlaceholder
+	}
+	if len(lines) == 0 {
+		return fmt.Sprintf("[ %s | banner ]", headline)
+	}
+	return fmt.Sprintf("[ %s | banner ]\n[ %s ]", headline, strings.Join(lines, "\n"))
+}

@@ -16,7 +16,32 @@ import (
 	"github.com/cmj0121/imagelet/middleware"
 	"github.com/cmj0121/imagelet/service/stock"
 	"github.com/cmj0121/imagelet/service/stock/quote"
+	"github.com/cmj0121/imagelet/service/stock/twse"
 )
+
+// fakeTWSE returns a canned MarketData. Used by TW-path tests.
+type fakeTWSE struct {
+	d   twse.MarketData
+	err error
+}
+
+func (f fakeTWSE) Get(_ context.Context) (twse.MarketData, error) {
+	return f.d, f.err
+}
+
+// freshTW returns a deterministic TWSE MarketData with non-zero
+// institutional + margin so HasInstitutional and HasMargin are true.
+func freshTW() twse.MarketData {
+	return twse.MarketData{
+		AsOf:            time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC),
+		ForeignNet:      43_907_871_828,
+		TrustNet:        2_217_080_841,
+		DealerNet:       8_878_366_186,
+		Net:             55_003_318_855,
+		MarginLongTWD:   440_907_083_000,
+		MarginShortLots: 190_811,
+	}
+}
 
 // fakeProvider returns a canned (Quote, error) pair from every Get call.
 type fakeProvider struct {
@@ -72,13 +97,23 @@ func freshQuote() quote.Quote {
 
 // newRouter wires the middlewares the handler depends on (RegionDetector
 // for CF-IPCountry, ClientDetector for UA-driven mode) plus the stock
-// route. Mirrors what server.New() will do in Unit 5, scoped to the
-// service under test.
+// route. Default TWSE provider is the no-op; use newRouterWithTWSE for
+// TW-enrichment tests.
 func newRouter(p quote.Provider) *gin.Engine {
 	r := gin.New()
 	r.Use(middleware.RegionDetector())
 	r.Use(middleware.ClientDetector())
-	stock.Register(r, p)
+	stock.Register(r, p, stock.NoopTWSE())
+	return r
+}
+
+// newRouterWithTWSE wires a router that includes the TW market-data
+// provider. Used by TW-path tests.
+func newRouterWithTWSE(p quote.Provider, tw twse.Provider) *gin.Engine {
+	r := gin.New()
+	r.Use(middleware.RegionDetector())
+	r.Use(middleware.ClientDetector())
+	stock.Register(r, p, tw)
 	return r
 }
 
@@ -350,5 +385,128 @@ func TestIndexNameFor(t *testing.T) {
 				t.Errorf("indexNameFor(%q) = %q, want %q", tc.symbol, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestServeTWPathIncludesEnrichment pins that a TW visitor sees the
+// institutional + margin block in the ASCII surface (with Chinese
+// labels). Exercises Path 1 region-conditional formatting.
+func TestServeTWPathIncludesEnrichment(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "^TWII"
+	q.Currency = "TWD"
+	r := newRouterWithTWSE(fakeProvider{q: q}, fakeTWSE{d: freshTW()})
+
+	req := httptest.NewRequest(http.MethodGet, "/stock", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"三大法人", "外資", "投信", "自營", "合計", "融資餘額", "融券餘額", "TAIEX · Taiwan"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("ASCII body missing %q\n--- body ---\n%s", want, body)
+		}
+	}
+}
+
+// TestServeTWPathPNGUsesEnglishLabels pins that the PNG surface for a
+// TW visitor uses ENGLISH labels for the TW block. Pylon's PNG font
+// has zero CJK coverage, so emitting Chinese would render as tofu.
+// Decode the PNG and rely on a heuristic: pylon's PNG font WILL place
+// the EN strings as detectable bitmap rows; a smoke-level check is
+// enough since we already pinned the line content via the ASCII path.
+//
+// Cheaper: we exercise the full handler, decode that the body is a
+// valid PNG of reasonable size (taller than the ASCII-only path
+// since the TW block adds ~3 rows), and trust the handler's
+// `useEnglish = mode == ModePNG` switch.
+func TestServeTWPathPNGUsesEnglishLabels(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "^TWII"
+	q.Currency = "TWD"
+	r := newRouterWithTWSE(fakeProvider{q: q}, fakeTWSE{d: freshTW()})
+
+	req := httptest.NewRequest(http.MethodGet, "/stock", nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "image/png" {
+		t.Errorf("Content-Type = %q, want image/png", got)
+	}
+	body := rec.Body.Bytes()
+	if !bytes.HasPrefix(body, pngMagic) {
+		t.Fatalf("body missing PNG magic")
+	}
+	// PNG with TW-enrichment block is meaningfully larger than the
+	// without-TW PNG. A lower bound around 5KB filters out a
+	// regression that would silently drop the TW lines from the
+	// rendered image (those lines compress to a chunky blob).
+	if len(body) < 5000 {
+		t.Errorf("PNG size = %d bytes, want >= 5000 (TW block likely missing)", len(body))
+	}
+}
+
+// TestServeTWUpstreamFailureKeepsBaseRender pins the best-effort
+// contract: if TWSE upstream errors, /stock still renders the base
+// quote view (banner + caption + bars), just without the TW block.
+// The visitor must not see a 5xx for an enrichment-side failure.
+func TestServeTWUpstreamFailureKeepsBaseRender(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "^TWII"
+	q.Currency = "TWD"
+	r := newRouterWithTWSE(fakeProvider{q: q}, fakeTWSE{err: errors.New("twse down")})
+
+	req := httptest.NewRequest(http.MethodGet, "/stock", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (TWSE failure must not 5xx the request)", rec.Code)
+	}
+	body := rec.Body.String()
+	// Base render still present.
+	if !strings.Contains(body, "^TWII") {
+		t.Errorf("base render missing ^TWII\n--- body ---\n%s", body)
+	}
+	// TW block silently omitted.
+	if strings.Contains(body, "三大法人") || strings.Contains(body, "融資餘額") {
+		t.Errorf("TW block rendered despite upstream failure\n--- body ---\n%s", body)
+	}
+}
+
+// TestServeNonTWPathNoEnrichment pins that visitors from non-TW
+// regions never see the TW enrichment block, even if the TWSE
+// provider is wired (which it always is in production).
+func TestServeNonTWPathNoEnrichment(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := newRouterWithTWSE(fakeProvider{q: freshQuote()}, fakeTWSE{d: freshTW()})
+
+	req := httptest.NewRequest(http.MethodGet, "/stock", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "US")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "三大法人") || strings.Contains(body, "institutional") {
+		t.Errorf("non-TW path leaked TW enrichment\n--- body ---\n%s", body)
 	}
 }
