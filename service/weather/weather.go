@@ -260,8 +260,18 @@ func buildCaptions(f forecast.Forecast, word, location string, stale bool) []str
 	if extras := buildExtrasLine(f); extras != "" {
 		out = append(out, extras)
 	}
-	out = append(out, fmt.Sprintf("sunrise %s  sunset %s",
-		trimHour(f.Sunrise.Format("15:04")), trimHour(f.Sunset.Format("15:04"))))
+	// Day-cycle bar replaces the standalone "sunrise X  sunset Y" row —
+	// the bar's HH:MM endpoints carry the same data with a glanceable
+	// position marker for "where in the day are we right now."
+	if cycle := render.DayCycle(f.AsOf, f.Sunrise, f.Sunset); cycle != "" {
+		out = append(out, cycle)
+	} else {
+		// Polar-night / pre-sunrise-data fallback: the bar collapses to ""
+		// when the daylight window is empty/inverted; keep the literal
+		// sunrise+sunset times so the row isn't lost entirely.
+		out = append(out, fmt.Sprintf("sunrise %s  sunset %s",
+			trimHour(f.Sunrise.Format("15:04")), trimHour(f.Sunset.Format("15:04"))))
+	}
 	return out
 }
 

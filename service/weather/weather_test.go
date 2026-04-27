@@ -118,8 +118,9 @@ func TestServeASCII(t *testing.T) {
 		t.Errorf("Cache-Control = %q, want %q", got, "public, max-age=600")
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Taipei", "feels", "wind", "high", "low", "sunrise", "sunset", "°C",
-		"humidity 47%", "UV 9", "rain 20%"} {
+	for _, want := range []string{"Taipei", "feels", "wind", "high", "low", "°C",
+		"humidity 47%", "UV 9", "rain 20%",
+		"day ", "5:42-18:24"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q\n--- body ---\n%s", want, body)
 		}
@@ -402,8 +403,9 @@ func TestExtrasLineOmittedWhenAbsent(t *testing.T) {
 			t.Errorf("absent extras row leaked %q\n--- body ---\n%s", unwanted, body)
 		}
 	}
-	// Sanity: the still-required rows are intact.
-	for _, want := range []string{"feels", "high", "sunrise"} {
+	// Sanity: the still-required rows are intact (day-cycle replaces the
+	// standalone sunrise/sunset row).
+	for _, want := range []string{"feels", "high", "day "} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q\n--- body ---\n%s", want, body)
 		}
