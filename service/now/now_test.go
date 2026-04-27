@@ -29,14 +29,17 @@ func newRouter() *gin.Engine {
 var asciiShapeRe = regexp.MustCompile(`(?s)\A\s*┌[─]+┐\s*\n(?:\s*│[^\n]*│\s*\n){6,}\s*└[─]+┘\s*\n[^\n]*\n\z`)
 
 // asciiSubtitleRe pins the caption format: ISO date, uppercase 3-letter
-// weekday, signed integer-hour UTC offset. Survives DST because the offset
-// is read at request time.
-var asciiSubtitleRe = regexp.MustCompile(`\d{4}-\d{2}-\d{2} [A-Z]{3} UTC[+-]\d+`)
+// weekday, signed integer-hour UTC offset, then a `·` separator and a
+// year-progress fragment (`year` + 20-cell `█`/`░` bar + percent).
+// Survives DST because the offset is read at request time.
+var asciiSubtitleRe = regexp.MustCompile(`\d{4}-\d{2}-\d{2} [A-Z]{3} UTC[+-]\d+ · year [█░]{20} \d{1,3}%`)
 
 // pylonSourceRe matches the exact two-element pylon source render.BannerSource
-// emits: `[ HH:MM | banner ]\n( YYYY-MM-DD DAY UTC±H )`. Anchored. Pylon v0.2's
-// default banner font has a `:` glyph, so the headline reaches pylon untouched.
-var pylonSourceRe = regexp.MustCompile(`\A\[ \d{2}:\d{2} \| banner \]\n\( \d{4}-\d{2}-\d{2} [A-Z]{3} UTC[+-]\d+ \)\z`)
+// emits: `[ HH:MM | banner ]\n( YYYY-MM-DD DAY UTC±H · year █░ NN% )`.
+// Anchored. Pylon v0.2's default banner font has a `:` glyph, so the
+// headline reaches pylon untouched. The year-progress bar is appended to
+// the subtitle (option C from the design session).
+var pylonSourceRe = regexp.MustCompile(`\A\[ \d{2}:\d{2} \| banner \]\n\( \d{4}-\d{2}-\d{2} [A-Z]{3} UTC[+-]\d+ · year [█░]{20} \d{1,3}% \)\z`)
 
 // pngMagic is the 8-byte PNG file signature.
 var pngMagic = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}

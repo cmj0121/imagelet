@@ -72,14 +72,19 @@ func headline(t time.Time) string {
 	return t.Format("15:04")
 }
 
-// subtitle returns YYYY-MM-DD DAY UTC±H — ISO date, uppercase 3-letter
-// weekday, signed integer-hour offset. ASCII-safe (no `/`, no Unicode) so
-// it survives intact through every render path including raw pylon source.
+// subtitle returns `YYYY-MM-DD DAY UTC±H · year █░ NN%` — ISO date,
+// uppercase 3-letter weekday, signed integer-hour offset, and a 20-cell
+// year-progress bar showing how far through the calendar year the visitor
+// is. The progress fragment is appended after a `·` separator so the date
+// and the year-meter share one subtitle box (option C from the design
+// session). The bar uses `█` and `░`, both EAW-ambiguous so the row stays
+// uniform-width in CJK terminals.
 func subtitle(t time.Time) string {
 	_, off := t.Zone()
-	return fmt.Sprintf("%s %s UTC%+d",
+	return fmt.Sprintf("%s %s UTC%+d · %s",
 		t.Format("2006-01-02"),
 		strings.ToUpper(t.Format("Mon")),
 		off/3600,
+		render.YearProgress(t),
 	)
 }
