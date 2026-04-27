@@ -27,6 +27,17 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
+// twLoc is Asia/Taipei resolved once at package init. tzdata is bundled via
+// the time/tzdata import in cmd/imagelet/main.go so LoadLocation should not
+// fail in any deploy target; the FixedZone fallback covers stripped images.
+var twLoc = func() *time.Location {
+	loc, err := time.LoadLocation("Asia/Taipei")
+	if err != nil {
+		return time.FixedZone("Asia/Taipei", 8*3600)
+	}
+	return loc
+}()
+
 const (
 	// defaultBFI82UEndpoint returns the daily aggregate three-institutional
 	// flow with one row per category (自營商 self-trade, 自營商 hedge, 投信,
@@ -133,11 +144,7 @@ const maxLookbackDays = 7
 // fallback. Partial-day data (BFI present, MARGN missing or vice
 // versa) is returned as-is; the renderer gates on Has* per-row.
 func (p *HTTPProvider) Get(ctx context.Context) (MarketData, error) {
-	tw, err := time.LoadLocation("Asia/Taipei")
-	if err != nil {
-		tw = time.FixedZone("Asia/Taipei", 8*3600)
-	}
-	now := time.Now().In(tw)
+	now := time.Now().In(twLoc)
 
 	for daysBack := 0; daysBack < maxLookbackDays; daysBack++ {
 		probe := now.AddDate(0, 0, -daysBack)
@@ -306,11 +313,7 @@ func parseTWSEDate(s string) time.Time {
 	if len(s) != 8 {
 		return time.Time{}
 	}
-	tw, err := time.LoadLocation("Asia/Taipei")
-	if err != nil {
-		tw = time.FixedZone("Asia/Taipei", 8*3600)
-	}
-	t, err := time.ParseInLocation("20060102", s, tw)
+	t, err := time.ParseInLocation("20060102", s, twLoc)
 	if err != nil {
 		return time.Time{}
 	}

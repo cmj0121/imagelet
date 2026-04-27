@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cmj0121/pylon/src/go/pkg/pylon"
@@ -112,7 +113,34 @@ func (h *handler) serve(c *gin.Context) {
 	lat, lon, location := h.resolveLocation(c)
 	unit := resolveUnit(c)
 
-	f, err := h.forecast.Get(c.Request.Context(), lat, lon, unit)
+	// Fan out the three independent upstreams concurrently. Forecast gates
+	// the response; AQI + quake are best-effort enrichment whose errors
+	// silently drop the respective caption row. Cold-cache p95 is now
+	// max(t_forecast, t_aqi, t_quake) instead of the serial sum.
+	ctx := c.Request.Context()
+	var (
+		f     forecast.Forecast
+		err   error
+		aqi   airquality.Reading
+		aqErr error
+		quake earthquake.Event
+		qkErr error
+		wg    sync.WaitGroup
+	)
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		f, err = h.forecast.Get(ctx, lat, lon, unit)
+	}()
+	go func() {
+		defer wg.Done()
+		aqi, aqErr = h.airquality.Get(ctx, lat, lon)
+	}()
+	go func() {
+		defer wg.Done()
+		quake, qkErr = h.earthquake.Get(ctx, lat, lon)
+	}()
+	wg.Wait()
 
 	// cached.Provider returns (cachedForecast, err) on stale-serve and
 	// (zero Forecast, err) past failureTTL. TempUnit is the "have data"
@@ -137,17 +165,11 @@ func (h *handler) serve(c *gin.Context) {
 	bucket := BucketOf(f.WeatherCode, f.IsDay)
 	word := Word(f.WeatherCode)
 
-	// AQI + earthquake are best-effort enrichment. Errors silently drop the
-	// respective caption row; they never 5xx the base render. Logging is
-	// debug-level since transient upstream blips are common (free tier,
-	// no SLA).
-	aqi, aqErr := h.airquality.Get(c.Request.Context(), lat, lon)
 	if aqErr != nil {
 		log.Debug().Err(aqErr).Float64("lat", lat).Float64("lon", lon).
 			Msg("airquality upstream failed; omitting AQI row")
 		aqi = airquality.Reading{}
 	}
-	quake, qkErr := h.earthquake.Get(c.Request.Context(), lat, lon)
 	if qkErr != nil {
 		log.Debug().Err(qkErr).Float64("lat", lat).Float64("lon", lon).
 			Msg("earthquake upstream failed; omitting quake row")
@@ -355,10 +377,10 @@ func buildCaptions(f forecast.Forecast, word, location string, stale bool,
 		// sunrise+sunset times so the row isn't lost entirely.
 		if lang == langCN {
 			out = append(out, fmt.Sprintf("日出 %s  日落 %s",
-				trimHour(f.Sunrise.Format("15:04")), trimHour(f.Sunset.Format("15:04"))))
+				render.TrimHour(f.Sunrise.Format("15:04")), render.TrimHour(f.Sunset.Format("15:04"))))
 		} else {
 			out = append(out, fmt.Sprintf("sunrise %s  sunset %s",
-				trimHour(f.Sunrise.Format("15:04")), trimHour(f.Sunset.Format("15:04"))))
+				render.TrimHour(f.Sunrise.Format("15:04")), render.TrimHour(f.Sunset.Format("15:04"))))
 		}
 	}
 	return out
@@ -459,12 +481,6 @@ func buildExtrasLine(f forecast.Forecast, lang captionLang) string {
 		}
 	}
 	return strings.Join(parts, "  ")
-}
-
-// trimHour strips a single leading zero from "HH:MM" so 05:42 reads 5:42.
-// Times >= 10:00 pass through unchanged.
-func trimHour(s string) string {
-	return strings.TrimPrefix(s, "0")
 }
 
 // composeASCII lays the icon left of the banner, one row per banner row,

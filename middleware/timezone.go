@@ -1,11 +1,40 @@
 package middleware
 
 import (
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
 )
+
+// locationCache memoizes time.LoadLocation results across requests. Keys are
+// IANA zone names (a small finite set, ~600 in tzdata); values are pointers
+// shared by every request from the same zone. A negative cache entry (nil
+// value) avoids re-parsing known-bad header values like "America/Bogus".
+var locationCache sync.Map
+
+// resolveLocation returns the cached *time.Location for the given IANA zone
+// name, parsing once on first encounter. Returns nil for empty input or for
+// names time.LoadLocation rejects. Safe for concurrent use.
+func resolveLocation(name string) *time.Location {
+	if name == "" {
+		return nil
+	}
+	if v, ok := locationCache.Load(name); ok {
+		if v == nil {
+			return nil
+		}
+		return v.(*time.Location)
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		locationCache.Store(name, (*time.Location)(nil))
+		return nil
+	}
+	locationCache.Store(name, loc)
+	return loc
+}
 
 // locationKey is the gin-context key under which TimezoneDetector stores the
 // resolved *time.Location. The "imagelet." prefix namespaces it so it cannot
@@ -35,10 +64,10 @@ const cfTimezoneHeader = "CF-Timezone"
 func TimezoneDetector() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if name := c.GetHeader(cfTimezoneHeader); name != "" {
-			if loc, err := time.LoadLocation(name); err == nil {
+			if loc := resolveLocation(name); loc != nil {
 				c.Set(locationKey, loc)
 			} else if e := log.Debug(); e.Enabled() {
-				e.Str("cf_timezone", name).Err(err).Msg("invalid timezone")
+				e.Str("cf_timezone", name).Msg("invalid timezone")
 			}
 		}
 		c.Next()

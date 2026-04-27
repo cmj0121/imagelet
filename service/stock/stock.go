@@ -26,7 +26,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -80,28 +79,6 @@ const progressBarWidth = 20
 // line via ZWSP causes a PNG width-measurement artifact, so we use a
 // visible separator instead.
 const vDivider = "─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─"
-
-// pylonBracketRe matches a complete pair of round or square brackets and
-// their contents. Pylon parses `(...)` as a borderless box and `[...]` as
-// a framed box; an unsanitized symbol or currency name containing either
-// pair would smuggle a nested element into the caption and break the
-// rendered output. Unmatched brackets are deliberately left alone (we
-// only strip *complete* pairs).
-var pylonBracketRe = regexp.MustCompile(`\(([^()]*)\)|\[([^\[\]]*)\]`)
-
-// pylonAmpRefRe matches `&` immediately followed by a Ref-trigger char
-// (`[A-Za-z_]`, mirroring pylon's parser.go refRe). Without intervention
-// pylon parses `&P` as an inline Ref node and fragments the row -- "S&P
-// 500" renders as 3 stacked rows. The fix is a regex-driven space insert
-// (" & "): pylon's regex stops matching, the `&` glyph itself stays
-// visible, and every render path (terminal + JetBrains Mono PNG +
-// text/pylon source) shows the literal "S & P 500".
-//
-// Invisible substitutes were tried first and rejected: U+FF06 fullwidth
-// `＆` and U+200C ZWNJ are both absent from JetBrains Mono and render as
-// `?` tofu in the PNG path. A regular space is the only universally-
-// rendered separator.
-var pylonAmpRefRe = regexp.MustCompile(`&([A-Za-z_])`)
 
 // indexNameFor returns the human-readable header line for symbol, or
 // empty string if symbol isn't in indexNameBySymbol. Callers MUST handle
@@ -214,7 +191,7 @@ func buildLines(symbol string, q quote.Quote, tw twse.MarketData, stale, useEngl
 	lines := make([]string, 0, 10)
 
 	if name := indexNameFor(symbol); name != "" {
-		lines = append(lines, stripPylonSyntax(name))
+		lines = append(lines, render.StripPylonSyntax(name))
 	}
 
 	prefix := ""
@@ -228,7 +205,7 @@ func buildLines(symbol string, q quote.Quote, tw twse.MarketData, stale, useEngl
 	if q.ChangePercent() < 0 {
 		arrow = "▼"
 	}
-	caption := stripPylonSyntax(fmt.Sprintf(
+	caption := render.StripPylonSyntax(fmt.Sprintf(
 		"%s%s  %s %+.2f%%  %s %s  %s",
 		prefix, symbol, arrow, q.ChangePercent(),
 		formatPrice(q.Last), q.Currency,
@@ -272,7 +249,7 @@ func formatInstitutional(tw twse.MarketData, useEnglish bool) string {
 		arrow = "▼"
 	}
 	if useEnglish {
-		return stripPylonSyntax(fmt.Sprintf(
+		return render.StripPylonSyntax(fmt.Sprintf(
 			"institutional  foreign %s  trust %s  dealer %s  net %s %s",
 			formatNTDBillions(tw.ForeignNet),
 			formatNTDBillions(tw.TrustNet),
@@ -280,7 +257,7 @@ func formatInstitutional(tw twse.MarketData, useEnglish bool) string {
 			arrow, formatNTDBillions(tw.Net),
 		))
 	}
-	return stripPylonSyntax(fmt.Sprintf(
+	return render.StripPylonSyntax(fmt.Sprintf(
 		"三大法人  外資 %s  投信 %s  自營 %s  合計 %s %s",
 		formatNTDBillions(tw.ForeignNet),
 		formatNTDBillions(tw.TrustNet),
@@ -296,13 +273,13 @@ func formatInstitutional(tw twse.MarketData, useEnglish bool) string {
 // lot of typically 1000 shares). EN converts to international units.
 func formatMargin(tw twse.MarketData, useEnglish bool) string {
 	if useEnglish {
-		return stripPylonSyntax(fmt.Sprintf(
+		return render.StripPylonSyntax(fmt.Sprintf(
 			"margin long %s TWD  margin short %s lots",
 			formatLargeNumber(tw.MarginLongTWD),
 			formatLargeNumber(tw.MarginShortLots),
 		))
 	}
-	return stripPylonSyntax(fmt.Sprintf(
+	return render.StripPylonSyntax(fmt.Sprintf(
 		"融資餘額 %s  融券餘額 %s",
 		formatTWDInYi(tw.MarginLongTWD),
 		formatLotsInWan(tw.MarginShortLots),
@@ -439,25 +416,6 @@ func formatPrice(v float64) string {
 	}
 	b.WriteString(fracPart)
 	return b.String()
-}
-
-// stripPylonSyntax removes complete `(...)` and `[...]` pairs (and their
-// contents) from s, neutralizes any `&[A-Za-z_]` that would otherwise
-// parse as a pylon Ref node by spacing the `&` away from the following
-// letter, and collapses the resulting whitespace. The literal `&` glyph
-// survives, so "S&P 500" renders as "S & P 500" — brand-recognizable on
-// every surface (terminal + JetBrains Mono PNG + text/pylon source).
-//
-// Standalone `&` ("A & B", "Tom & Jerry") and `&` before non-letters
-// pass through unchanged. strings.Fields collapses any doubled spaces
-// the substitution produces.
-//
-// The `^` in `^GSPC` etc. is pylon-safe and left alone; the `·` prefix
-// separator is also preserved.
-func stripPylonSyntax(s string) string {
-	cleaned := pylonBracketRe.ReplaceAllString(s, "")
-	cleaned = pylonAmpRefRe.ReplaceAllString(cleaned, " & $1")
-	return strings.Join(strings.Fields(cleaned), " ")
 }
 
 // noopTWSE is a `twse.Provider` that returns ErrUnavailable so callers

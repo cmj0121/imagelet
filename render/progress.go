@@ -65,14 +65,12 @@ func DayCycle(asOf, sunrise, sunset time.Time) string {
 	pct := elapsed / span
 	return fmt.Sprintf("day %s %s-%s",
 		ProgressBar(pct, width),
-		trimHour(sunrise.Format("15:04")),
-		trimHour(sunset.Format("15:04")))
+		TrimHour(sunrise.Format("15:04")),
+		TrimHour(sunset.Format("15:04")))
 }
 
-// trimHour strips a single leading zero from "HH:MM" so 05:42 reads 5:42.
-// Times >= 10:00 pass through unchanged. Local mirror — keeping the helper
-// inside render avoids round-tripping caption-format concerns through the
-// service layer.
-func trimHour(s string) string {
+// TrimHour strips a single leading zero from "HH:MM" so 05:42 reads 5:42.
+// Times >= 10:00 pass through unchanged.
+func TrimHour(s string) string {
 	return strings.TrimPrefix(s, "0")
 }
