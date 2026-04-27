@@ -200,8 +200,8 @@ Region codes are two-letter ISO 3166-1 alpha-2, case-insensitive.
 | DE                | `^GDAXI` | DAX                |
 | _other / missing_ | `^GSPC`  | (default fallback) |
 
-The render is a single bordered box (V1 layout) with multiple rows stacked
-inside the price banner's outer frame:
+The render is a price banner with borderless caption rows stacked underneath
+(matching `/now`'s layout):
 
 - Index name header (`TAIEX · Taiwan`, `S&P 500 · United States`, …).
 - Symbol + arrow + signed pct + price + currency + date caption. Two prefixes

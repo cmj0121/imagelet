@@ -150,7 +150,7 @@ func (h *handler) serve(c *gin.Context) {
 	// ?format=pylon for header/query parity.
 	if middleware.WantsPylonSource(c) {
 		asciiLines := buildLines(symbol, q, tw, stale, false)
-		c.Data(http.StatusOK, "text/pylon", []byte(render.BannerStackSource(headline, asciiLines)))
+		c.Data(http.StatusOK, "text/pylon", []byte(render.BannerSourceMulti(headline, asciiLines)))
 		return
 	}
 
@@ -164,10 +164,10 @@ func (h *handler) serve(c *gin.Context) {
 	useEnglish := mode == render.ModePNG || mode == render.ModeSVG || mode == render.ModeHTML
 	lines := buildLines(symbol, q, tw, stale, useEnglish)
 
-	body, rerr := render.BannerStack(headline, lines, mode)
+	body, rerr := render.BannerMulti(headline, lines, mode)
 	if rerr != nil {
-		log.Error().Err(rerr).Stringer("mode", mode).Msg("render banner stack")
-		body, _ = render.BannerStack(headline, lines, render.ModeASCII)
+		log.Error().Err(rerr).Stringer("mode", mode).Msg("render banner multi")
+		body, _ = render.BannerMulti(headline, lines, render.ModeASCII)
 		mode = render.ModeASCII
 	}
 	if mode == render.ModePNG {
