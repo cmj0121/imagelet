@@ -82,7 +82,7 @@ func TestBannerColonRendersAsGlyph(t *testing.T) {
 func TestBannerEmptyHeadline(t *testing.T) {
 	// Empty/whitespace-only headline must not panic; Banner substitutes the
 	// shared placeholder, mirroring Box's contract.
-	for _, mode := range []render.Mode{render.ModeASCII, render.ModePNG} {
+	for _, mode := range []render.Mode{render.ModeASCII, render.ModePNG, render.ModeSVG} {
 		body, err := render.Banner("", "x", mode)
 		if err != nil {
 			t.Fatalf("Banner(\"\", _, %v) err: %v", mode, err)
@@ -90,5 +90,63 @@ func TestBannerEmptyHeadline(t *testing.T) {
 		if len(body) == 0 {
 			t.Errorf("Banner(\"\", _, %v) returned empty body; expected placeholder substitution", mode)
 		}
+	}
+}
+
+func TestBannerSVG(t *testing.T) {
+	body, err := render.Banner("13:45", "2026-04-25 SAT UTC+8", render.ModeSVG)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	got := string(body)
+	// xmlns + explicit width/height are the iOS-Safari load-bearing attrs.
+	for _, sub := range []string{
+		"<svg ",
+		`xmlns="http://www.w3.org/2000/svg"`,
+		`width="`,
+		`height="`,
+		"</svg>",
+	} {
+		if !strings.Contains(got, sub) {
+			t.Errorf("SVG output missing %q\n--- output ---\n%s", sub, got)
+		}
+	}
+	if bytes.HasSuffix(body, []byte("\n")) {
+		t.Errorf("SVG output must not end with \\n")
+	}
+}
+
+func TestBannerStackSVG(t *testing.T) {
+	body, err := render.BannerStack("S&P 500", []string{"row one", "row two"}, render.ModeSVG)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	got := string(body)
+	if !strings.Contains(got, "<svg ") {
+		t.Errorf("BannerStack SVG missing <svg root\n--- output ---\n%s", got)
+	}
+	// Multi-row stack must produce more than one <text> element so callers
+	// know caption rows actually rendered.
+	if n := strings.Count(got, "<text "); n < 2 {
+		t.Errorf("BannerStack SVG has %d <text> elements, want >= 2\n--- output ---\n%s", n, got)
+	}
+}
+
+// TestBannerSVGEscapesXML pins that pylon (or imagelet) escapes XML special
+// chars in text content. /404 injects the requested path into the response;
+// `/<script>` reaching an SVG `<text>` element unescaped would be a stored
+// XSS vector for direct-navigation viewers (sandboxed in <img>, but not in
+// iframes or top-level loads).
+func TestBannerSVGEscapesXML(t *testing.T) {
+	body, err := render.Banner("hi", "<script>alert(1)</script>", render.ModeSVG)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	got := string(body)
+	if strings.Contains(got, "<script>") {
+		t.Errorf("SVG contains literal <script> — XML escape failed\n--- output ---\n%s", got)
+	}
+	if !strings.Contains(got, "&lt;script&gt;") {
+		t.Errorf("SVG missing escaped &lt;script&gt;\n--- output ---\n%s", got)
 	}
 }

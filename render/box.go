@@ -6,8 +6,9 @@
 //
 //   - Box, Banner, BannerStack, BannerSource — pylon-source primitives shared
 //     by /now, /stock, /weather, /404, and /
-//   - Mode (ASCII / PNG) — wire-format selector resolved from the request UA
-//     by middleware.ClientDetector
+//   - Mode (ASCII / PNG / SVG) — wire-format selector resolved from the request
+//     UA by middleware.ClientDetector, optionally overridden by ?format= via
+//     middleware.ResolveMode
 //   - ProgressBar, YearProgress, DayCycle — `█`/`░` text-bar fragments used
 //     in subtitles and caption rows
 //   - StripPylonSyntax, TrimHour — sanitization and small string helpers
@@ -25,7 +26,8 @@ import (
 )
 
 // Mode picks the wire format the renderer emits. ASCII is plain text; PNG
-// is a pylon-rendered raster image (the browser default).
+// is a pylon-rendered raster image (the browser default); SVG is a
+// self-contained pylon-rendered SVG document opt-in via `?format=svg`.
 type Mode int
 
 const (
@@ -35,11 +37,17 @@ const (
 	// ModePNG renders to a PNG raster (binary). Pylon embeds JetBrains Mono
 	// for glyph metrics, so the output is self-contained.
 	ModePNG
+	// ModeSVG renders to a self-contained SVG document. Pylon emits xmlns,
+	// explicit width/height/viewBox, inline <style>, and uses textLength +
+	// lengthAdjust="spacingAndGlyphs" so the cell grid stays aligned even
+	// when the browser falls back from Cascadia/JetBrains to a system mono
+	// (Menlo on iOS). XML-special chars in text content are escaped by pylon.
+	ModeSVG
 )
 
 const emptyPlaceholder = "?"
 
-// String returns a stable lowercase label for the mode ("ascii" or "png").
+// String returns a stable lowercase label for the mode ("ascii", "png", "svg").
 // Implements fmt.Stringer so render.Mode interpolates cleanly in logs and
 // test output. Unknown modes default to "ascii" — the safe rendering
 // fallback used elsewhere in this package.
@@ -47,6 +55,8 @@ func (m Mode) String() string {
 	switch m {
 	case ModePNG:
 		return "png"
+	case ModeSVG:
+		return "svg"
 	default:
 		return "ascii"
 	}
@@ -77,6 +87,11 @@ func Box(text string, mode Mode) ([]byte, error) {
 	if mode == ModePNG {
 		// Native theme for PNG — Unicode frame, no `theme: ascii` frontmatter.
 		return pylon.RenderPNG(pylon.Parse(fmt.Sprintf("[ %s ]", text)))
+	}
+	if mode == ModeSVG {
+		// Native theme for SVG so the painted grid matches what a browser
+		// shows for the PNG variant.
+		return []byte(pylon.RenderSVG(pylon.Parse(fmt.Sprintf("[ %s ]", text)))), nil
 	}
 	src := fmt.Sprintf("---\ntheme: ascii\n---\n[ %s ]", text)
 	return []byte(pylon.RenderASCII(pylon.Parse(src)) + "\n"), nil

@@ -56,6 +56,24 @@ func TestBox(t *testing.T) {
 			t.Errorf("PNG output must not end with \\n")
 		}
 	})
+
+	t.Run("svg_time", func(t *testing.T) {
+		body, err := render.Box("13:45", render.ModeSVG)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		got := string(body)
+		// xmlns is the iOS-Safari load-bearing attribute; explicit
+		// width/height likewise — viewBox alone is not enough.
+		for _, sub := range []string{"<svg ", `xmlns="http://www.w3.org/2000/svg"`, `width="`, `height="`, "</svg>"} {
+			if !strings.Contains(got, sub) {
+				t.Errorf("SVG output missing %q\n--- output ---\n%s", sub, got)
+			}
+		}
+		if bytes.HasSuffix(body, []byte("\n")) {
+			t.Errorf("SVG output must not end with \\n")
+		}
+	})
 }
 
 func TestModeString(t *testing.T) {
@@ -65,6 +83,7 @@ func TestModeString(t *testing.T) {
 	}{
 		{render.ModeASCII, "ascii"},
 		{render.ModePNG, "png"},
+		{render.ModeSVG, "svg"},
 		{render.Mode(99), "ascii"},
 	}
 	for _, tc := range cases {
@@ -77,7 +96,7 @@ func TestModeString(t *testing.T) {
 func TestBoxEmptyInput(t *testing.T) {
 	// Box substitutes a placeholder for empty/whitespace-only input because
 	// pylon.Parse panics on `[  ]`. This test pins that contract.
-	for _, mode := range []render.Mode{render.ModeASCII, render.ModePNG} {
+	for _, mode := range []render.Mode{render.ModeASCII, render.ModePNG, render.ModeSVG} {
 		body, err := render.Box("", mode)
 		if err != nil {
 			t.Fatalf("Box(\"\", %v) err: %v", mode, err)
