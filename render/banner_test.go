@@ -114,24 +114,6 @@ func TestBannerHTML(t *testing.T) {
 	}
 }
 
-func TestBannerStackHTML(t *testing.T) {
-	body, err := render.BannerStack("S&P 500", []string{"row one", "row two"}, render.ModeHTML)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	got := string(body)
-	if !strings.Contains(got, "<!DOCTYPE html>") {
-		t.Errorf("BannerStack HTML missing doctype\n--- output ---\n%s", got)
-	}
-	if !strings.Contains(got, "<svg ") {
-		t.Errorf("BannerStack HTML missing inline <svg\n--- output ---\n%s", got)
-	}
-	// Caption rows must reach the inline SVG as <text> elements.
-	if n := strings.Count(got, "<text "); n < 2 {
-		t.Errorf("BannerStack HTML has %d <text> elements, want >= 2\n--- output ---\n%s", n, got)
-	}
-}
-
 func TestBannerSVG(t *testing.T) {
 	body, err := render.Banner("13:45", "2026-04-25 SAT UTC+8", render.ModeSVG)
 	if err != nil {
@@ -158,22 +140,6 @@ func TestBannerSVG(t *testing.T) {
 	}
 	if bytes.HasSuffix(body, []byte("\n")) {
 		t.Errorf("SVG output must not end with \\n")
-	}
-}
-
-func TestBannerStackSVG(t *testing.T) {
-	body, err := render.BannerStack("S&P 500", []string{"row one", "row two"}, render.ModeSVG)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	got := string(body)
-	if !strings.Contains(got, "<svg ") {
-		t.Errorf("BannerStack SVG missing <svg root\n--- output ---\n%s", got)
-	}
-	// Multi-row stack must produce more than one <text> element so callers
-	// know caption rows actually rendered.
-	if n := strings.Count(got, "<text "); n < 2 {
-		t.Errorf("BannerStack SVG has %d <text> elements, want >= 2\n--- output ---\n%s", n, got)
 	}
 }
 

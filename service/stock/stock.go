@@ -71,10 +71,10 @@ var indexNameBySymbol = map[string]string{
 const defaultSymbol = "^GSPC"
 
 // vDivider is the section break between the common data block and the
-// TW-only enrichment block in V1 layout. Alternating `─` + space reads
-// as a thin divider in both ASCII and PNG surfaces -- a true blank
-// line via ZWSP causes a PNG width-measurement artifact, so we use a
-// visible separator instead.
+// TW-only enrichment block. Alternating `─` + space reads as a thin
+// divider in both ASCII and PNG surfaces -- a true blank line via ZWSP
+// causes a PNG width-measurement artifact, so we use a visible separator
+// instead.
 const vDivider = "─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─"
 
 // indexNameFor returns the human-readable header line for symbol, or

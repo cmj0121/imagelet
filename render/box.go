@@ -4,8 +4,8 @@
 // services don't need to know pylon's source-string syntax or theme conventions.
 // Today this package exposes:
 //
-//   - Box, Banner, BannerStack, BannerSource — pylon-source primitives shared
-//     by /now, /stock, /weather, /404, and /
+//   - Box, Banner, BannerMulti, BannerSource, BannerSourceMulti — pylon-source
+//     primitives shared by /now, /stock, /weather, /404, and /
 //   - Mode (ASCII / PNG / SVG) — wire-format selector resolved from the request
 //     UA by middleware.ClientDetector, optionally overridden by ?format= via
 //     middleware.ResolveMode

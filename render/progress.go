@@ -13,8 +13,8 @@ import (
 // EAW-ambiguous so a CJK terminal renders them at uniform 2-cell width and
 // the bar visually stays uniform.
 //
-// Used by `/now` for year-progress, `/stock` for day/52w-range bars, and
-// `/weather` for the day-cycle bar — same visual language across services.
+// Used by `/now` for year-progress and `/weather` for the day-cycle bar —
+// same visual language across services.
 func ProgressBar(pct float64, width int) string {
 	if width <= 0 {
 		return ""
