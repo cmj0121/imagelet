@@ -82,7 +82,7 @@ func TestBannerColonRendersAsGlyph(t *testing.T) {
 func TestBannerEmptyHeadline(t *testing.T) {
 	// Empty/whitespace-only headline must not panic; Banner substitutes the
 	// shared placeholder, mirroring Box's contract.
-	for _, mode := range []render.Mode{render.ModeASCII, render.ModePNG, render.ModeSVG} {
+	for _, mode := range []render.Mode{render.ModeASCII, render.ModePNG, render.ModeSVG, render.ModeHTML} {
 		body, err := render.Banner("", "x", mode)
 		if err != nil {
 			t.Fatalf("Banner(\"\", _, %v) err: %v", mode, err)
@@ -90,6 +90,45 @@ func TestBannerEmptyHeadline(t *testing.T) {
 		if len(body) == 0 {
 			t.Errorf("Banner(\"\", _, %v) returned empty body; expected placeholder substitution", mode)
 		}
+	}
+}
+
+func TestBannerHTML(t *testing.T) {
+	body, err := render.Banner("13:45", "2026-04-25 SAT UTC+8", render.ModeHTML)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	got := string(body)
+	for _, sub := range []string{
+		"<!DOCTYPE html>",
+		"<title>imagelet</title>",
+		"<svg ",
+		`xmlns="http://www.w3.org/2000/svg"`,
+		"2026-04-25 SAT UTC+8",
+		"</svg>",
+		"</html>",
+	} {
+		if !strings.Contains(got, sub) {
+			t.Errorf("HTML output missing %q\n--- output ---\n%s", sub, got)
+		}
+	}
+}
+
+func TestBannerStackHTML(t *testing.T) {
+	body, err := render.BannerStack("S&P 500", []string{"row one", "row two"}, render.ModeHTML)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	got := string(body)
+	if !strings.Contains(got, "<!DOCTYPE html>") {
+		t.Errorf("BannerStack HTML missing doctype\n--- output ---\n%s", got)
+	}
+	if !strings.Contains(got, "<svg ") {
+		t.Errorf("BannerStack HTML missing inline <svg\n--- output ---\n%s", got)
+	}
+	// Caption rows must reach the inline SVG as <text> elements.
+	if n := strings.Count(got, "<text "); n < 2 {
+		t.Errorf("BannerStack HTML has %d <text> elements, want >= 2\n--- output ---\n%s", n, got)
 	}
 }
 

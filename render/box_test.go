@@ -74,6 +74,30 @@ func TestBox(t *testing.T) {
 			t.Errorf("SVG output must not end with \\n")
 		}
 	})
+
+	t.Run("html_time", func(t *testing.T) {
+		body, err := render.Box("13:45", render.ModeHTML)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		got := string(body)
+		// HTML5 doctype + viewport meta + inline SVG are the load-bearing
+		// pieces — without doctype browsers fall to quirks mode, without
+		// viewport meta mobile pinches don't behave, without the inline
+		// `<svg ` the page is empty.
+		for _, sub := range []string{
+			"<!DOCTYPE html>",
+			`<meta name="viewport"`,
+			"<svg ",
+			`xmlns="http://www.w3.org/2000/svg"`,
+			"</svg>",
+			"</html>",
+		} {
+			if !strings.Contains(got, sub) {
+				t.Errorf("HTML output missing %q\n--- output ---\n%s", sub, got)
+			}
+		}
+	})
 }
 
 func TestModeString(t *testing.T) {
@@ -84,6 +108,7 @@ func TestModeString(t *testing.T) {
 		{render.ModeASCII, "ascii"},
 		{render.ModePNG, "png"},
 		{render.ModeSVG, "svg"},
+		{render.ModeHTML, "html"},
 		{render.Mode(99), "ascii"},
 	}
 	for _, tc := range cases {
@@ -96,7 +121,7 @@ func TestModeString(t *testing.T) {
 func TestBoxEmptyInput(t *testing.T) {
 	// Box substitutes a placeholder for empty/whitespace-only input because
 	// pylon.Parse panics on `[  ]`. This test pins that contract.
-	for _, mode := range []render.Mode{render.ModeASCII, render.ModePNG, render.ModeSVG} {
+	for _, mode := range []render.Mode{render.ModeASCII, render.ModePNG, render.ModeSVG, render.ModeHTML} {
 		body, err := render.Box("", mode)
 		if err != nil {
 			t.Fatalf("Box(\"\", %v) err: %v", mode, err)
@@ -104,5 +129,32 @@ func TestBoxEmptyInput(t *testing.T) {
 		if len(body) == 0 {
 			t.Errorf("Box(\"\", %v) returned empty body; expected placeholder substitution", mode)
 		}
+	}
+}
+
+// TestWrapHTML pins the WrapHTML helper's output shape: it must produce a
+// valid HTML5 document with the SVG body inlined verbatim. The marker
+// string is chosen to be SVG-syntactically harmless and unique enough that
+// finding it in the output means the body really was inlined (not, say,
+// stripped or escaped).
+func TestWrapHTML(t *testing.T) {
+	const marker = `<svg id="probe-marker" xmlns="http://www.w3.org/2000/svg"><text>x</text></svg>`
+	out := string(render.WrapHTML([]byte(marker)))
+
+	for _, sub := range []string{
+		"<!DOCTYPE html>",
+		`<meta charset="utf-8">`,
+		`<meta name="viewport"`,
+		"<title>imagelet</title>",
+		`id="probe-marker"`,
+		"</body>",
+		"</html>",
+	} {
+		if !strings.Contains(out, sub) {
+			t.Errorf("WrapHTML output missing %q\n--- output ---\n%s", sub, out)
+		}
+	}
+	if !strings.HasSuffix(out, "\n") {
+		t.Errorf("WrapHTML output must end with \\n for clean file writes")
 	}
 }
