@@ -141,7 +141,7 @@ $ curl http://localhost:8080/now
    │    ██║  ██║       ██║ ██║  ██║ ╚██████╔╝    │
    │    ╚═╝  ╚═╝       ╚═╝ ╚═╝  ╚═╝  ╚═════╝     │
    └─────────────────────────────────────────────┘
-       2026-04-27 Mon UTC+8 · year ██████░░░░░░░░░░░░░░ 32%
+       2026-04-27 MON UTC+8 · year ██████░░░░░░░░░░░░░░ 32%
 ```
 
 Browsers receive the same banner as a PNG (pylon rasterizes pylon glyphs to a self-contained
@@ -210,7 +210,12 @@ flag is what flips the negotiator into the PNG path.
 
 Quotes are sourced from Yahoo Finance's unofficial v8 chart API. The provider is
 hidden behind `quote.Provider`, so swapping in a different upstream is one file.
-The cache absorbs short outages — see the failure modes above.
+Yahoo's cache TTL is 60 s success / 10 m failure — short enough to track
+intraday moves, long enough to avoid rate-limit pressure on the free endpoint.
+The TW enrichment block (`service/stock/twse`) is on a much slower cycle:
+TWSE publishes daily aggregates ~16:00 Asia/Taipei, so its cache uses a 4 h
+success TTL with 30 m back-off on transient errors. The cache absorbs short
+outages — see the failure modes above.
 
 `/weather` follows the `/now` and `/stock` shape with a slight twist: an ASCII
 condition icon is composed to the LEFT of the temperature banner (rendered with
@@ -336,7 +341,7 @@ Top-level packages are importable; `internal/` is not used.
 cmd/imagelet/                    # binary entry point
 server/                          # core router — middleware chain + GET /healthz
 middleware/                      # reusable gin middlewares (ClientDetector + GetMode, RegionDetector + GetCountry)
-render/                          # pylon-backed renderers (Box, Banner, BannerStack, Mode, ProgressBar, DayCycle, YearProgress)
+render/                          # pylon-backed renderers — Box, Banner*, Mode, ProgressBar/YearProgress/DayCycle, sanitizers
 logger/                          # zerolog setup with TTY-aware console / JSON switching
 service/index/                   # the GET / landing page (banner + tagline + repo · version)
 service/now/                     # the /now plugin (Register + Handler)
