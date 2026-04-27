@@ -64,8 +64,16 @@ func TestBox(t *testing.T) {
 		}
 		got := string(body)
 		// xmlns is the iOS-Safari load-bearing attribute; explicit
-		// width/height likewise — viewBox alone is not enough.
-		for _, sub := range []string{"<svg ", `xmlns="http://www.w3.org/2000/svg"`, `width="`, `height="`, "</svg>"} {
+		// width/height likewise — viewBox alone is not enough. The
+		// GitHub-dark fill markers prove PaintSVG ran.
+		for _, sub := range []string{
+			"<svg ",
+			`xmlns="http://www.w3.org/2000/svg"`,
+			`width="`,
+			`height="`,
+			`fill="#0d1117"`,
+			"</svg>",
+		} {
 			if !strings.Contains(got, sub) {
 				t.Errorf("SVG output missing %q\n--- output ---\n%s", sub, got)
 			}
@@ -147,6 +155,9 @@ func TestWrapHTML(t *testing.T) {
 		`<meta name="viewport"`,
 		"<title>imagelet</title>",
 		`id="probe-marker"`,
+		// Body background matches the SVG's painted background so the
+		// inline figure reads seamlessly with the surrounding page.
+		"background:#0d1117",
 		"</body>",
 		"</html>",
 	} {

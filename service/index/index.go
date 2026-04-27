@@ -53,7 +53,7 @@ func Register(r gin.IRouter, version string) {
 		log.Error().Err(err).Msg("pre-render index png")
 		pngBody = nil
 	}
-	svgBody := []byte(pylon.RenderSVG(ast))
+	svgBody := render.PaintSVG([]byte(pylon.RenderSVG(ast)))
 	htmlBody := render.WrapHTML(svgBody)
 	pylonBody := []byte(src + "\n")
 

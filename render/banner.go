@@ -16,21 +16,26 @@ import (
 // visual. ASCII appends a trailing newline; PNG, SVG, and HTML do not.
 // Empty-headline normalization lives in BannerSource.
 //
+// SVG output is post-processed through PaintSVG so the rendered surface
+// uses the GitHub-dark palette by default (background rect + ink swap).
+// HTML mode wraps the painted SVG, so its inline figure inherits the same
+// theme.
+//
 // PNG rendering can fail (font init, encode error). Callers should branch
 // on err and fall back to ASCII to keep the response from 5xx-ing on a
 // transient pylon problem. SVG and HTML rendering are pure string assembly
 // and never error; the wrapper keeps the (body, err) shape for caller
-// uniformity. ModeHTML wraps the SVG output in WrapHTML.
+// uniformity.
 func Banner(headline, subtitle string, mode Mode) ([]byte, error) {
 	ast := pylon.Parse(BannerSource(headline, subtitle))
 	if mode == ModePNG {
 		return pylon.RenderPNG(ast)
 	}
 	if mode == ModeSVG {
-		return []byte(pylon.RenderSVG(ast)), nil
+		return PaintSVG([]byte(pylon.RenderSVG(ast))), nil
 	}
 	if mode == ModeHTML {
-		return WrapHTML([]byte(pylon.RenderSVG(ast))), nil
+		return WrapHTML(PaintSVG([]byte(pylon.RenderSVG(ast)))), nil
 	}
 	return []byte(pylon.RenderASCII(ast) + "\n"), nil
 }
@@ -56,17 +61,18 @@ func BannerSource(headline, subtitle string) string {
 // no subtitle (renders cleanly).
 //
 // Trailing newline appended for ASCII; PNG, SVG, and HTML keep raw bytes.
-// Same error handling as Banner. ModeHTML wraps the SVG in WrapHTML.
+// SVG goes through PaintSVG; HTML wraps the painted SVG. Same error
+// handling as Banner.
 func BannerStack(headline string, lines []string, mode Mode) ([]byte, error) {
 	ast := pylon.Parse(BannerStackSource(headline, lines))
 	if mode == ModePNG {
 		return pylon.RenderPNG(ast)
 	}
 	if mode == ModeSVG {
-		return []byte(pylon.RenderSVG(ast)), nil
+		return PaintSVG([]byte(pylon.RenderSVG(ast))), nil
 	}
 	if mode == ModeHTML {
-		return WrapHTML([]byte(pylon.RenderSVG(ast))), nil
+		return WrapHTML(PaintSVG([]byte(pylon.RenderSVG(ast)))), nil
 	}
 	return []byte(pylon.RenderASCII(ast) + "\n"), nil
 }

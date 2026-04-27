@@ -58,7 +58,7 @@ var (
 var (
 	bannerASCIIBody = []byte(pylon.RenderASCII(pylon.Parse(bannerSource)) + "\n")
 	bannerPylonBody = []byte(bannerSource + "\n")
-	bannerSVGBody   = []byte(pylon.RenderSVG(pylon.Parse(bannerSource)))
+	bannerSVGBody   = render.PaintSVG([]byte(pylon.RenderSVG(pylon.Parse(bannerSource))))
 	bannerHTMLBody  = render.WrapHTML(bannerSVGBody)
 	bannerImg       image.Image
 )

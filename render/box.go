@@ -101,12 +101,13 @@ func Box(text string, mode Mode) ([]byte, error) {
 	}
 	if mode == ModeSVG {
 		// Native theme for SVG so the painted grid matches what a browser
-		// shows for the PNG variant.
-		return []byte(pylon.RenderSVG(pylon.Parse(fmt.Sprintf("[ %s ]", text)))), nil
+		// shows for the PNG variant; PaintSVG layers the GitHub-dark
+		// palette on top.
+		return PaintSVG([]byte(pylon.RenderSVG(pylon.Parse(fmt.Sprintf("[ %s ]", text))))), nil
 	}
 	if mode == ModeHTML {
 		svg := pylon.RenderSVG(pylon.Parse(fmt.Sprintf("[ %s ]", text)))
-		return WrapHTML([]byte(svg)), nil
+		return WrapHTML(PaintSVG([]byte(svg))), nil
 	}
 	src := fmt.Sprintf("---\ntheme: ascii\n---\n[ %s ]", text)
 	return []byte(pylon.RenderASCII(pylon.Parse(src)) + "\n"), nil
