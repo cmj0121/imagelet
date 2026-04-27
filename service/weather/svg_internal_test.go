@@ -6,6 +6,25 @@ import (
 	"testing"
 )
 
+// TestComposeSVGAppliesDarkPalette pins that composeSVG runs the
+// assembled output through render.PaintSVG so both our outer <text>
+// rows AND the embedded pylon banner inherit the GitHub-dark theme.
+// Without this, the pylon-emitted #0f1c2d ink would render as dark navy
+// text on the dark background — invisible to readers.
+func TestComposeSVGAppliesDarkPalette(t *testing.T) {
+	got := composeSVG("23.4", iconTable[BucketCloudy], []string{"clear in Taipei"})
+
+	if !strings.Contains(got, `fill="#0d1117"`) {
+		t.Errorf("composeSVG missing GitHub-dark background fill\n--- output ---\n%s", got)
+	}
+	if !strings.Contains(got, "#c9d1d9") {
+		t.Errorf("composeSVG missing GitHub-dark foreground ink\n--- output ---\n%s", got)
+	}
+	if strings.Contains(got, "#0f1c2d") {
+		t.Errorf("composeSVG still contains pylon default ink #0f1c2d (PaintSVG miss)\n--- output ---\n%s", got)
+	}
+}
+
 // TestComposeSVGStructure pins the three coordinate regions of the
 // composed SVG: outer wrapper, embedded pylon banner, icon text rows,
 // caption text rows. If any region disappears the visual reads as

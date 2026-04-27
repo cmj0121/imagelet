@@ -8,6 +8,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/cmj0121/pylon/src/go/pkg/pylon"
+
+	"github.com/cmj0121/imagelet/render"
 )
 
 // SVG cell geometry mirrors pylon's internal grid (svgCellW=5, svgCellH=13,
@@ -122,7 +124,11 @@ func composeSVG(headline string, icon, captions []string) string {
 	}
 
 	b.WriteString(`</svg>`)
-	return b.String()
+	// Apply the GitHub-dark palette in one pass over the assembled doc.
+	// Our outer <style> uses fill:#0f1c2d and the embedded pylon banner
+	// carries the same; PaintSVG swaps both to #c9d1d9 and prepends the
+	// background <rect>.
+	return string(render.PaintSVG([]byte(b.String())))
 }
 
 // parsePylonSVGSize extracts the (width, height) from pylon's SVG output

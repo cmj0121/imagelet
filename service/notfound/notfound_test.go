@@ -192,6 +192,10 @@ func TestNotFoundFormatSVGReturnsBannerOnly(t *testing.T) {
 			if strings.Contains(body, "Traceback") {
 				t.Errorf("SVG body should not contain traceback prose; got:\n%s", body)
 			}
+			// GitHub-dark palette must be applied (PaintSVG runs at init).
+			if !strings.Contains(body, `fill="#0d1117"`) {
+				t.Errorf("SVG body missing dark background fill; got:\n%s", body)
+			}
 		})
 	}
 }

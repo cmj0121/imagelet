@@ -210,6 +210,10 @@ func TestRootFormatSVGOverridesUA(t *testing.T) {
 			if !strings.Contains(body, "<svg ") || !strings.Contains(body, "</svg>") {
 				t.Errorf("body not bracketed by <svg> tags; got:\n%s", body)
 			}
+			// GitHub-dark palette must be applied (PaintSVG runs at init).
+			if !strings.Contains(body, `fill="#0d1117"`) {
+				t.Errorf("body missing dark background fill; got:\n%s", body)
+			}
 		})
 	}
 }
