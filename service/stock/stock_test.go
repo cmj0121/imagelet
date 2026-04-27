@@ -277,8 +277,8 @@ func TestServeFormatSVGOverridesUA(t *testing.T) {
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200", rec.Code)
 			}
-			if got := rec.Header().Get("Content-Type"); got != "image/svg+xml; charset=utf-8" {
-				t.Errorf("Content-Type = %q, want image/svg+xml; charset=utf-8", got)
+			if got := rec.Header().Get("Content-Type"); got != "image/svg+xml" {
+				t.Errorf("Content-Type = %q, want image/svg+xml", got)
 			}
 			if got := rec.Header().Get("Cache-Control"); got != "public, max-age=60" {
 				t.Errorf("Cache-Control = %q, want public, max-age=60", got)

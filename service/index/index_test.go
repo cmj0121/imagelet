@@ -123,8 +123,8 @@ func TestRootFormatSVGOverridesUA(t *testing.T) {
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200", rec.Code)
 			}
-			if got := rec.Header().Get("Content-Type"); got != "image/svg+xml; charset=utf-8" {
-				t.Errorf("Content-Type = %q, want image/svg+xml; charset=utf-8", got)
+			if got := rec.Header().Get("Content-Type"); got != "image/svg+xml" {
+				t.Errorf("Content-Type = %q, want image/svg+xml", got)
 			}
 			body := rec.Body.String()
 			if !strings.Contains(body, `xmlns="http://www.w3.org/2000/svg"`) {

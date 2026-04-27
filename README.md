@@ -122,7 +122,11 @@ curl http://localhost:8080/
 `/now` content-negotiates per request. Precedence (highest first):
 
 - `Accept: text/pylon` — raw pylon source, so callers can render it themselves.
-- `?format=svg` — `image/svg+xml; charset=utf-8`.
+- `?format=svg` — `image/svg+xml`. RFC 7303 doesn't define a `charset`
+  parameter for this media type, and iOS Safari downloads the response
+  instead of rendering it when the parameter is present. The SVG body
+  carries its own encoding via the XML stream, so the parameter is also
+  redundant.
 - `?format=png` — `image/png`.
 - `User-Agent` contains `Mozilla` — `image/png`.
 - Anything else — `text/plain; charset=utf-8`.

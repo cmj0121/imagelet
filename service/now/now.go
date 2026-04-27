@@ -6,7 +6,7 @@
 // the visitor is. The wire format is content-negotiated:
 //
 //   - Accept: text/pylon → raw pylon source (callers render it themselves)
-//   - ?format=svg → image/svg+xml; charset=utf-8
+//   - ?format=svg → image/svg+xml
 //   - ?format=png → image/png
 //   - User-Agent contains Mozilla → image/png
 //   - everything else → text/plain; charset=utf-8 (ASCII)
@@ -69,7 +69,7 @@ func Handler(c *gin.Context) {
 		return
 	}
 	if mode == render.ModeSVG {
-		c.Data(http.StatusOK, "image/svg+xml; charset=utf-8", body)
+		c.Data(http.StatusOK, "image/svg+xml", body)
 		return
 	}
 	c.Data(http.StatusOK, "text/plain; charset=utf-8", body)

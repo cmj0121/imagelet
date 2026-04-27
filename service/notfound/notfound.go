@@ -98,7 +98,7 @@ func Handler(c *gin.Context) {
 
 	if mode == render.ModeSVG {
 		// Banner-only — same trade-off as the text/pylon short-circuit.
-		c.Data(http.StatusNotFound, "image/svg+xml; charset=utf-8", bannerSVGBody)
+		c.Data(http.StatusNotFound, "image/svg+xml", bannerSVGBody)
 		return
 	}
 

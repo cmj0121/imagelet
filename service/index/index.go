@@ -4,7 +4,7 @@
 // negotiated like /now and /stock:
 //
 //   - Accept: text/pylon → raw banner source
-//   - ?format=svg → image/svg+xml; charset=utf-8
+//   - ?format=svg → image/svg+xml
 //   - ?format=png → image/png
 //   - User-Agent contains Mozilla → image/png
 //   - everything else → text/plain; charset=utf-8 (ASCII)
@@ -69,7 +69,7 @@ func Register(r gin.IRouter, version string) {
 			return
 		}
 		if mode == render.ModeSVG {
-			c.Data(http.StatusOK, "image/svg+xml; charset=utf-8", svgBody)
+			c.Data(http.StatusOK, "image/svg+xml", svgBody)
 			return
 		}
 		c.Data(http.StatusOK, "text/plain; charset=utf-8", asciiBody)
