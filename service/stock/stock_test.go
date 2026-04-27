@@ -207,7 +207,7 @@ func TestServeUnavailableWhenNoCacheAndError(t *testing.T) {
 	}
 }
 
-func TestServeBrowserGetsPNG(t *testing.T) {
+func TestServeBrowserGetsHTML(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := newRouter(fakeProvider{q: freshQuote()})
 
@@ -219,11 +219,34 @@ func TestServeBrowserGetsPNG(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if got := rec.Header().Get("Content-Type"); got != "image/png" {
-		t.Errorf("Content-Type = %q, want image/png", got)
+	if got := rec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/html; charset=utf-8", got)
 	}
 	if got := rec.Header().Get("Cache-Control"); got != "public, max-age=60" {
 		t.Errorf("Cache-Control = %q, want %q", got, "public, max-age=60")
+	}
+	body := rec.Body.String()
+	for _, sub := range []string{"<!DOCTYPE html>", "<svg ", "</svg>", "</html>"} {
+		if !strings.Contains(body, sub) {
+			t.Errorf("HTML body missing %q\n--- body ---\n%s", sub, body)
+		}
+	}
+}
+
+func TestServeFormatPNG(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := newRouter(fakeProvider{q: freshQuote()})
+
+	req := httptest.NewRequest(http.MethodGet, "/stock?format=png", nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "image/png" {
+		t.Errorf("Content-Type = %q, want image/png", got)
 	}
 	body := rec.Body.Bytes()
 	if !bytes.HasPrefix(body, pngMagic) {
@@ -438,7 +461,9 @@ func TestServeTWPathPNGUsesEnglishLabels(t *testing.T) {
 	q.Currency = "TWD"
 	r := newRouterWithTWSE(fakeProvider{q: q}, fakeTWSE{d: freshTW()})
 
-	req := httptest.NewRequest(http.MethodGet, "/stock", nil)
+	// Browser UA default is now HTML — the PNG path is reached via
+	// explicit ?format=png. Same EN-label rule still applies.
+	req := httptest.NewRequest(http.MethodGet, "/stock?format=png", nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 	req.Header.Set("CF-IPCountry", "TW")
 	rec := httptest.NewRecorder()

@@ -82,12 +82,14 @@ func TestNow(t *testing.T) {
 		name      string
 		ua        string
 		accept    string
+		query     string
 		ctTypePfx string
 		// bodyMatch is one of: a regexp (text body), pngMagic sentinel, or nil.
 		// asciiSubtitle is true when the body is a text path that should also
 		// match the subtitle regex.
 		bodyPattern   *regexp.Regexp
 		bodyIsPNG     bool
+		bodyIsHTML    bool
 		asciiSubtitle bool
 	}{
 		{
@@ -98,8 +100,15 @@ func TestNow(t *testing.T) {
 			asciiSubtitle: true,
 		},
 		{
-			name:      "browser_returns_png",
-			ua:        "Mozilla/5.0",
+			name:       "browser_returns_html",
+			ua:         "Mozilla/5.0",
+			ctTypePfx:  "text/html",
+			bodyIsHTML: true,
+		},
+		{
+			name:      "format_png_returns_png",
+			ua:        "curl/8.4.0",
+			query:     "format=png",
 			ctTypePfx: "image/png",
 			bodyIsPNG: true,
 		},
@@ -110,13 +119,24 @@ func TestNow(t *testing.T) {
 			ctTypePfx:   "text/pylon",
 			bodyPattern: pylonSourceRe,
 		},
+		{
+			name:        "format_pylon_query_returns_source",
+			ua:          "Mozilla/5.0",
+			query:       "format=pylon",
+			ctTypePfx:   "text/pylon",
+			bodyPattern: pylonSourceRe,
+		},
 	}
 
 	r := newRouter()
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/now", nil)
+			path := "/now"
+			if tc.query != "" {
+				path += "?" + tc.query
+			}
+			req := httptest.NewRequest(http.MethodGet, path, nil)
 			req.Header.Set("User-Agent", tc.ua)
 			if tc.accept != "" {
 				req.Header.Set("Accept", tc.accept)
@@ -141,6 +161,15 @@ func TestNow(t *testing.T) {
 				}
 				if len(body) == 0 {
 					t.Errorf("body is empty")
+				}
+				return
+			}
+			if tc.bodyIsHTML {
+				bodyStr := string(body)
+				for _, sub := range []string{"<!DOCTYPE html>", "<svg ", "</svg>", "</html>"} {
+					if !strings.Contains(bodyStr, sub) {
+						t.Errorf("HTML body missing %q\n--- body ---\n%s", sub, bodyStr)
+					}
 				}
 				return
 			}

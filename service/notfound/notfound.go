@@ -1,12 +1,14 @@
 // Package notfound exposes the 404 fallback for unmatched routes via
 // gin's r.NoRoute. Same content negotiation as /now and /stock:
-// Accept: text/pylon → bare banner source; ?format=svg → bare banner
-// SVG; ?format=png or Mozilla UA → composed image/png; otherwise →
-// text/plain. The PNG and ASCII paths show the same banner+traceback
-// content; PNG composes locally because pylon's parser would shred the
-// trace's parens and brackets. The SVG path emits the banner only:
-// the traceback can't be pylon-parsed, and a basicfont SVG compositor
-// isn't built yet (v1 limitation tracked in PLAN.md).
+// Accept: text/pylon (or ?format=pylon) → bare banner source;
+// ?format=html or Mozilla UA → text/html with banner-only inline SVG;
+// ?format=svg → bare banner SVG; ?format=png → composed image/png;
+// ?format=ascii or otherwise → text/plain. The PNG and ASCII paths
+// show the same banner + traceback content; PNG composes locally
+// because pylon's parser would shred the trace's parens and brackets.
+// The SVG and HTML paths emit the banner only — the traceback can't
+// be pylon-parsed, and a basicfont SVG compositor isn't built (v1
+// limitation, lower priority than the per-route format support).
 package notfound
 
 import (
@@ -57,6 +59,7 @@ var (
 	bannerASCIIBody = []byte(pylon.RenderASCII(pylon.Parse(bannerSource)) + "\n")
 	bannerPylonBody = []byte(bannerSource + "\n")
 	bannerSVGBody   = []byte(pylon.RenderSVG(pylon.Parse(bannerSource)))
+	bannerHTMLBody  = render.WrapHTML(bannerSVGBody)
 	bannerImg       image.Image
 )
 
@@ -89,7 +92,7 @@ func Handler(c *gin.Context) {
 
 	c.Header("Cache-Control", "no-store")
 
-	if strings.Contains(c.GetHeader("Accept"), "text/pylon") {
+	if middleware.WantsPylonSource(c) {
 		c.Data(http.StatusNotFound, "text/pylon", bannerPylonBody)
 		return
 	}
@@ -99,6 +102,12 @@ func Handler(c *gin.Context) {
 	if mode == render.ModeSVG {
 		// Banner-only — same trade-off as the text/pylon short-circuit.
 		c.Data(http.StatusNotFound, "image/svg+xml", bannerSVGBody)
+		return
+	}
+	if mode == render.ModeHTML {
+		// Banner-only HTML — traceback path stays PNG/ASCII-exclusive
+		// (see package doc).
+		c.Data(http.StatusNotFound, "text/html; charset=utf-8", bannerHTMLBody)
 		return
 	}
 

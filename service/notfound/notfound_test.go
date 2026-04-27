@@ -78,10 +78,39 @@ func TestASCIIBodyContainsBannerAndTraceback(t *testing.T) {
 	}
 }
 
-func TestBrowserGetsPNGWithBannerAndTraceback(t *testing.T) {
+func TestBrowserGetsHTMLBannerOnly(t *testing.T) {
+	// Browser UA default is now HTML — and per the v1 limitation the HTML
+	// body carries banner-only inline SVG, no traceback (the traceback
+	// path stays PNG/ASCII-exclusive because pylon can't parse it).
 	r := newRouter()
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/missing", nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/html; charset=utf-8", got)
+	}
+	body := rec.Body.String()
+	for _, sub := range []string{"<!DOCTYPE html>", "<svg ", "</svg>", "</html>"} {
+		if !strings.Contains(body, sub) {
+			t.Errorf("HTML body missing %q\n--- body ---\n%s", sub, body)
+		}
+	}
+	// Traceback must NOT appear in the HTML path.
+	if strings.Contains(body, "Traceback (most recent call last)") {
+		t.Errorf("HTML path leaked traceback (should be banner-only):\n%s", body)
+	}
+}
+
+func TestFormatPNGGetsBannerAndTraceback(t *testing.T) {
+	r := newRouter()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/missing?format=png", nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 
 	r.ServeHTTP(rec, req)
