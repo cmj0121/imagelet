@@ -90,16 +90,17 @@ const vDivider = "─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ �
 var pylonBracketRe = regexp.MustCompile(`\(([^()]*)\)|\[([^\[\]]*)\]`)
 
 // pylonAmpRefRe matches `&` immediately followed by a Ref-trigger char
-// (`[A-Za-z_]`, exactly pylon's parser.go refRe). When this pattern fires,
-// pylon parses the run as an inline Ref node and force-breaks the row
-// around it -- visible symptom is captions like "S&P 500" fragmenting
-// into 3 stacked rows. We insert literal spaces around the `&` so pylon's
-// regex no longer matches (`& ` no longer matches `&[A-Za-z_]`), the
-// `&` glyph itself remains, and every renderer (terminal + JetBrains
-// Mono PNG) shows it cleanly. ZWNJ / ZWSP / fullwidth `＆` were tried
-// and all failed in JetBrains Mono — invisible-format chars draw as
-// `?` tofu, fullwidth has no glyph. A regular space is the only
-// reliably-rendered separator.
+// (`[A-Za-z_]`, mirroring pylon's parser.go refRe). Without intervention
+// pylon parses `&P` as an inline Ref node and fragments the row -- "S&P
+// 500" renders as 3 stacked rows. The fix is a regex-driven space insert
+// (" & "): pylon's regex stops matching, the `&` glyph itself stays
+// visible, and every render path (terminal + JetBrains Mono PNG +
+// text/pylon source) shows the literal "S & P 500".
+//
+// Invisible substitutes were tried first and rejected: U+FF06 fullwidth
+// `＆` and U+200C ZWNJ are both absent from JetBrains Mono and render as
+// `?` tofu in the PNG path. A regular space is the only universally-
+// rendered separator.
 var pylonAmpRefRe = regexp.MustCompile(`&([A-Za-z_])`)
 
 // indexNameFor returns the human-readable header line for symbol, or
@@ -445,11 +446,11 @@ func formatPrice(v float64) string {
 // parse as a pylon Ref node by spacing the `&` away from the following
 // letter, and collapses the resulting whitespace. The literal `&` glyph
 // survives, so "S&P 500" renders as "S & P 500" — brand-recognizable on
-// every surface (terminal + JetBrains Mono PNG + text/pylon).
+// every surface (terminal + JetBrains Mono PNG + text/pylon source).
 //
-// Standalone `&` (e.g. "A & B") and `&` before non-letters never matched
-// the Ref regex, so they pass through unchanged. strings.Fields below
-// collapses any doubled spaces this produces ("S &P" -> "S  & P" -> "S & P").
+// Standalone `&` ("A & B", "Tom & Jerry") and `&` before non-letters
+// pass through unchanged. strings.Fields collapses any doubled spaces
+// the substitution produces.
 //
 // The `^` in `^GSPC` etc. is pylon-safe and left alone; the `·` prefix
 // separator is also preserved.
