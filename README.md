@@ -144,6 +144,12 @@ that previously embedded imagelet via `<img src="…">` should append
 classifier alone can't distinguish a top-level navigation from an image
 sub-request, and now defaults to HTML for `Mozilla`.
 
+SVG output (and the inline SVG embedded in HTML mode) ships with a GitHub-
+dark palette by default — `#0d1117` background, `#c9d1d9` ink — for a
+tech-leaning rendered surface that reads cleanly on both light and dark
+host pages. PNG and ASCII paths are unaffected; pylon's PNG keeps its own
+theme-locked colors, terminals draw their own background.
+
 Both rendered paths use pylon's native theme — Unicode frame plus ANSI Shadow block
 letters — so the visual is identical across consumers. The subtitle carries the
 date, weekday abbreviation, UTC offset, and a 20-cell `█`/`░` year-progress bar
