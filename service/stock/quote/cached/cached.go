@@ -15,6 +15,12 @@ import (
 )
 
 // Default TTLs. Override at construction for tests.
+//
+// 60s success TTL keeps the displayed price within one minute of Yahoo's
+// own update cadence while throttling our hit rate to ~1/min/symbol — the
+// free chart endpoint is unofficial and rate-limit-prone. 10m failure TTL
+// gives transient outages enough room to recover without re-pummelling
+// upstream and bounds how long a STALE prefix might appear.
 const (
 	DefaultSuccessTTL = 60 * time.Second
 	DefaultFailureTTL = 10 * time.Minute

@@ -5,6 +5,15 @@
 // hazard — past failureTTL since the last good fetch we return a zero
 // Forecast plus the upstream error so the handler can emit 503 instead
 // of perpetually serving misleading STALE data.
+//
+// Constructor naming. Two cache shapes coexist in this codebase: the
+// subpackage form `cached.New(inner)` used here and in /stock/quote/cached,
+// and the inline form `Provider.NewCached(inner)` used in airquality,
+// earthquake, and twse where the cache type lives in the same package as
+// the HTTPProvider. Both styles are intentional — subpackage isolation pays
+// off when the cache logic is large (e.g. the cap-stale-on-failure branch
+// here) and inline placement is simpler when the cache is a thin wrapper.
+// New cache layers should pick the shape that matches their complexity.
 package cached
 
 import (
@@ -20,9 +29,16 @@ import (
 )
 
 // Default TTLs. Override at construction for tests.
+//
+// 10m success TTL aligns with Open-Meteo's hourly model output cadence
+// while keeping the displayed temperature within one model step. 10m
+// failure TTL is intentionally identical and short — past that window we
+// stop serving stale forecasts and let the handler 503 instead, because
+// weather staleness is a correctness hazard (a frozen "sunny" caption
+// during a developing storm is worse than a 503).
 const (
-	DefaultSuccessTTL = 10 * time.Minute // 600s
-	DefaultFailureTTL = 10 * time.Minute // 600s — short, weather staleness is dangerous
+	DefaultSuccessTTL = 10 * time.Minute
+	DefaultFailureTTL = 10 * time.Minute
 )
 
 // cacheKey identifies a forecast cell. Lat/lon are rounded to 1 decimal

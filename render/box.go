@@ -2,8 +2,19 @@
 //
 // imagelet wraps pylon (github.com/cmj0121/pylon/src/go/pkg/pylon) so individual
 // services don't need to know pylon's source-string syntax or theme conventions.
-// All current services share a single primitive: a labeled box around a string.
-// Future renderers (banner, sparkline, ...) belong in this package alongside Box.
+// Today this package exposes:
+//
+//   - Box, Banner, BannerStack, BannerSource — pylon-source primitives shared
+//     by /now, /stock, /weather, /404, and /
+//   - Mode (ASCII / PNG) — wire-format selector resolved from the request UA
+//     by middleware.ClientDetector
+//   - ProgressBar, YearProgress, DayCycle — `█`/`░` text-bar fragments used
+//     in subtitles and caption rows
+//   - StripPylonSyntax, TrimHour — sanitization and small string helpers
+//     services need at the render boundary
+//
+// New renderers (sparkline, gauge, ...) belong in this package alongside the
+// existing primitives.
 package render
 
 import (

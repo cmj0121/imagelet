@@ -1,7 +1,9 @@
 // Package now exposes the /now service: GET /now returns the current time
 // in the caller's resolved timezone (via middleware.TimezoneDetector, with
 // fallback to the server's local zone) as a pylon banner stacked above a
-// date / weekday / zone caption. The wire format is content-negotiated:
+// `YYYY-MM-DD DAY UTC±H · year █░ NN%` caption. The trailing year-progress
+// bar is a 20-cell `█`/`░` meter showing how far through the calendar year
+// the visitor is. The wire format is content-negotiated:
 //
 //   - Accept: text/pylon → raw pylon source (callers render it themselves)
 //   - User-Agent contains Mozilla → image/png
