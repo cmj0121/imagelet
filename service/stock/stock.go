@@ -428,19 +428,23 @@ func formatPrice(v float64) string {
 }
 
 // stripPylonSyntax removes complete `(...)` and `[...]` pairs (and their
-// contents) from s, replaces `&` with the literal word "and", and
-// collapses the resulting whitespace. Defensive sanitization: pylon
-// parses bracket pairs as nested boxes (smuggled markup) and treats
-// `&` as the start of an XML/SVG entity (line-fragments the caption).
+// contents) from s, swaps the half-width `&` for the fullwidth
+// ampersand `＆` (U+FF06), and collapses the resulting whitespace.
+// Defensive sanitization for pylon's parser:
+//
+//   - Bracket pairs are smuggled markup (pylon treats them as nested boxes).
+//   - `&[A-Za-z_]\w*` is parsed as a Ref node (parser.go refRe), which
+//     fragments the caption into separate inline elements and forces row
+//     breaks. Concretely, "S&P 500" becomes a 3-row stack with each
+//     fragment centered. The fullwidth `＆` is plain text to pylon's
+//     parser, preserves the brand reading visually, and is covered by
+//     pylon's own PNG font (Cascadia Code / Iosevka / JetBrains Mono).
+//
 // The `^` in `^GSPC` etc. is pylon-safe and left alone; the `·` prefix
 // separator is also preserved.
-//
-// "S&P 500" therefore renders as "S and P 500" — strings.Fields below
-// collapses the doubled spaces around the inserted "and", so any
-// surrounding whitespace (e.g. "A & B") normalizes to a single space.
 func stripPylonSyntax(s string) string {
 	cleaned := pylonBracketRe.ReplaceAllString(s, "")
-	cleaned = strings.ReplaceAll(cleaned, "&", " and ")
+	cleaned = strings.ReplaceAll(cleaned, "&", "＆")
 	return strings.Join(strings.Fields(cleaned), " ")
 }
 
