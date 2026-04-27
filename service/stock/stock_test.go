@@ -329,3 +329,26 @@ func TestFormatPrice(t *testing.T) {
 		})
 	}
 }
+
+func TestIndexNameFor(t *testing.T) {
+	cases := []struct {
+		symbol string
+		want   string
+	}{
+		{"^TWII", "TAIEX · Taiwan"},
+		{"^GSPC", "S&P 500 · United States"},
+		{"^N225", "Nikkei 225 · Japan"},
+		{"^HSI", "Hang Seng · Hong Kong"},
+		{"^FTSE", "FTSE 100 · United Kingdom"},
+		{"^GDAXI", "DAX · Germany"},
+		{"^UNKNOWN", ""}, // unmapped → empty (caller handles by omitting header)
+		{"", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.symbol, func(t *testing.T) {
+			if got := stock.IndexNameForTest(tc.symbol); got != tc.want {
+				t.Errorf("indexNameFor(%q) = %q, want %q", tc.symbol, got, tc.want)
+			}
+		})
+	}
+}

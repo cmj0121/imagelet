@@ -41,10 +41,31 @@ var symbolByCountry = map[string]string{
 	"DE": "^GDAXI",
 }
 
+// indexNameBySymbol maps a Yahoo symbol to a human-readable
+// `Index Name · Region` header line shown above the data caption in V1
+// layout. Reader who sees `^TWII` in the caption can place it instantly
+// when the header reads `TAIEX · Taiwan`. Empty header for unknown symbols
+// (the bare `^GSPC` etc. in the caption is then the only label).
+var indexNameBySymbol = map[string]string{
+	"^TWII":  "TAIEX · Taiwan",
+	"^GSPC":  "S&P 500 · United States",
+	"^N225":  "Nikkei 225 · Japan",
+	"^HSI":   "Hang Seng · Hong Kong",
+	"^FTSE":  "FTSE 100 · United Kingdom",
+	"^GDAXI": "DAX · Germany",
+}
+
 // defaultSymbol is returned by symbolFor when the country isn't in the
 // map. S&P 500 is the de-facto global benchmark and matches the
 // middleware's "US" default country.
 const defaultSymbol = "^GSPC"
+
+// indexNameFor returns the human-readable header line for symbol, or
+// empty string if symbol isn't in indexNameBySymbol. Callers MUST handle
+// the empty case (omit the header row) so unknown symbols still render.
+func indexNameFor(symbol string) string {
+	return indexNameBySymbol[symbol]
+}
 
 // pylonBracketRe matches a complete pair of round or square brackets and
 // their contents. Pylon parses `(...)` as a borderless box and `[...]` as
