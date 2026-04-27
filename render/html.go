@@ -7,10 +7,10 @@ package render
 // going through a format string.
 //
 // The page style centers the SVG vertically and horizontally with a
-// max-width clamp so the figure stays readable on narrow viewports. Ink
-// matches pylon's default light-mode (#0f1c2d on #fafaf7) — pylon's SVG
-// already paints `fill="#0f1c2d"`, so the body background just needs to
-// give it contrast.
+// max-width clamp so the figure stays readable on narrow viewports. Body
+// background matches the SVG's painted background (SVGBackground) so the
+// inline figure reads as a seamless full-page render rather than a card
+// floating on contrasting paper.
 var (
 	htmlPrefix = []byte(`<!DOCTYPE html>
 <html lang="en">
@@ -18,7 +18,7 @@ var (
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>imagelet</title>
-<style>html,body{margin:0;height:100%}body{display:flex;align-items:center;justify-content:center;background:#fafaf7}svg{max-width:96vw;height:auto}</style>
+<style>html,body{margin:0;height:100%}body{display:flex;align-items:center;justify-content:center;background:` + SVGBackground + `;color:` + SVGForeground + `}svg{max-width:96vw;height:auto}</style>
 </head>
 <body>
 `)

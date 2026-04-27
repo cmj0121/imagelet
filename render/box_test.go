@@ -155,6 +155,9 @@ func TestWrapHTML(t *testing.T) {
 		`<meta name="viewport"`,
 		"<title>imagelet</title>",
 		`id="probe-marker"`,
+		// Body background matches the SVG's painted background so the
+		// inline figure reads seamlessly with the surrounding page.
+		"background:#0d1117",
 		"</body>",
 		"</html>",
 	} {
