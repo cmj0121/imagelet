@@ -74,3 +74,37 @@ func DayCycle(asOf, sunrise, sunset time.Time) string {
 func TrimHour(s string) string {
 	return strings.TrimPrefix(s, "0")
 }
+
+// weekdayLetters is the Sunday-first single-letter labels WeekStrip uses.
+// Sun and Sat both reduce to "S", Tue and Thu both to "T" — the bracket
+// position is the sole disambiguator. Indexed by Go's `time.Weekday()`
+// where Sunday=0.
+var weekdayLetters = [7]string{"S", "M", "T", "W", "T", "F", "S"}
+
+// WeekStrip returns a fragment in the form `S <M> T W T F S` representing
+// the seven days of the week (Sunday-first) with the current day wrapped
+// in angle brackets. Used in /now's metadata stack as a glanceable visual
+// alternative to the textual `MON` / `TUE` / ... weekday name.
+//
+// Letters are joined with single spaces. Two letters appear twice
+// (Sun/Sat as "S", Tue/Thu as "T") — that's intentional, and the bracket
+// position disambiguates them. Output length varies between 13 chars (no
+// brackets, never produced) and 15 chars (one bracketed day, the only
+// case this function emits).
+//
+// Angle brackets are used instead of square brackets because pylon parses
+// literal `[M]` inside a borderless `( ... )` caption box as a nested
+// bracketed-box, shredding the layout. `<M>` survives pylon's parser
+// untouched — verified by the round-trip test in this package.
+func WeekStrip(t time.Time) string {
+	idx := int(t.Weekday())
+	parts := make([]string, 7)
+	for i, letter := range weekdayLetters {
+		if i == idx {
+			parts[i] = "<" + letter + ">"
+		} else {
+			parts[i] = letter
+		}
+	}
+	return strings.Join(parts, " ")
+}
