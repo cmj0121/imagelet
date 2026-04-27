@@ -4,6 +4,8 @@
 // negotiated like /now and /stock:
 //
 //   - Accept: text/pylon → raw banner source
+//   - ?format=svg → image/svg+xml; charset=utf-8
+//   - ?format=png → image/png
 //   - User-Agent contains Mozilla → image/png
 //   - everything else → text/plain; charset=utf-8 (ASCII)
 //
@@ -51,6 +53,7 @@ func Register(r gin.IRouter, version string) {
 		log.Error().Err(err).Msg("pre-render index png")
 		pngBody = nil
 	}
+	svgBody := []byte(pylon.RenderSVG(ast))
 	pylonBody := []byte(src + "\n")
 
 	r.GET("/", func(c *gin.Context) {
@@ -60,8 +63,13 @@ func Register(r gin.IRouter, version string) {
 			c.Data(http.StatusOK, "text/pylon", pylonBody)
 			return
 		}
-		if middleware.GetMode(c) == render.ModePNG && pngBody != nil {
+		mode := middleware.ResolveMode(c)
+		if mode == render.ModePNG && pngBody != nil {
 			c.Data(http.StatusOK, "image/png", pngBody)
+			return
+		}
+		if mode == render.ModeSVG {
+			c.Data(http.StatusOK, "image/svg+xml; charset=utf-8", svgBody)
 			return
 		}
 		c.Data(http.StatusOK, "text/plain; charset=utf-8", asciiBody)

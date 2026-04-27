@@ -108,6 +108,35 @@ func TestRootAcceptPylonReturnsRawSource(t *testing.T) {
 	}
 }
 
+func TestRootFormatSVGOverridesUA(t *testing.T) {
+	// ?format=svg wins over a non-Mozilla UA (would otherwise resolve to ASCII)
+	// and over a Mozilla UA (would otherwise resolve to PNG). Pin both.
+	r := newRouter("v1.2.3")
+
+	for _, ua := range []string{"curl/8.4.0", "Mozilla/5.0"} {
+		t.Run(ua, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/?format=svg", nil)
+			req.Header.Set("User-Agent", ua)
+			r.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			if got := rec.Header().Get("Content-Type"); got != "image/svg+xml; charset=utf-8" {
+				t.Errorf("Content-Type = %q, want image/svg+xml; charset=utf-8", got)
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, `xmlns="http://www.w3.org/2000/svg"`) {
+				t.Errorf("body missing xmlns; got:\n%s", body)
+			}
+			if !strings.Contains(body, "<svg ") || !strings.Contains(body, "</svg>") {
+				t.Errorf("body not bracketed by <svg> tags; got:\n%s", body)
+			}
+		})
+	}
+}
+
 func TestRootDefaultVersionWhenEmpty(t *testing.T) {
 	// Edge case: ldflags injection might fail or be skipped. Empty
 	// version still renders — just shows nothing after the dot

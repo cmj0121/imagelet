@@ -138,6 +138,59 @@ func TestAcceptPylonReturnsBareSource(t *testing.T) {
 	}
 }
 
+func TestNotFoundFormatSVGReturnsBannerOnly(t *testing.T) {
+	r := newRouter()
+
+	for _, ua := range []string{"curl/8.4.0", "Mozilla/5.0"} {
+		t.Run(ua, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/missing/page?format=svg", nil)
+			req.Header.Set("User-Agent", ua)
+			r.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404", rec.Code)
+			}
+			if got := rec.Header().Get("Content-Type"); got != "image/svg+xml; charset=utf-8" {
+				t.Errorf("Content-Type = %q, want image/svg+xml; charset=utf-8", got)
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, `xmlns="http://www.w3.org/2000/svg"`) {
+				t.Errorf("body missing xmlns; got:\n%s", body)
+			}
+			// SVG path is banner-only by design — no traceback prose,
+			// matching the text/pylon short-circuit.
+			if strings.Contains(body, "Traceback") {
+				t.Errorf("SVG body should not contain traceback prose; got:\n%s", body)
+			}
+		})
+	}
+}
+
+// TestNotFoundFormatSVGEscapesPathInjection pins that XML special chars in
+// the requested path do NOT appear unescaped in the SVG body. The /404
+// path is the only user-controlled input that reaches the rendered
+// surface, so this is the primary stored-XSS surface for direct-navigation
+// SVG viewers (sandboxed in <img>, but not in iframes or top-level loads).
+// Belt-and-suspenders — pylon's emitSVGRow already escapeXML's text
+// content. Banner glyphs render only printable ASCII / digits, but a
+// future banner-font expansion shouldn't sneak in an escape regression.
+func TestNotFoundFormatSVGEscapesPathInjection(t *testing.T) {
+	r := newRouter()
+	rec := httptest.NewRecorder()
+	// Path with XML special chars — gin decodes %-escapes back to runes
+	// before URL.Path is read. The traceback isn't in the SVG body, but
+	// nothing about the SVG should ever emit the literal characters either.
+	req := httptest.NewRequest(http.MethodGet, "/%3Cscript%3E?format=svg", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	r.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "<script>") {
+		t.Errorf("SVG body contains literal <script>; got:\n%s", body)
+	}
+}
+
 func TestRootPathFallback(t *testing.T) {
 	// Edge: empty / root-ish paths — gin always passes "/" or longer for
 	// HTTP requests, but the sanitizer also handles a literally empty

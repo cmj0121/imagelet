@@ -4,6 +4,8 @@
 // format mirrors /now -- content-negotiated:
 //
 //   - Accept: text/pylon → raw pylon source (callers render it themselves)
+//   - ?format=svg → image/svg+xml; charset=utf-8
+//   - ?format=png → image/png
 //   - User-Agent contains Mozilla → image/png
 //   - everything else → text/plain; charset=utf-8 (ASCII)
 //
@@ -139,13 +141,16 @@ func (h *handler) serve(c *gin.Context) {
 
 	headline := strconv.FormatFloat(q.Last, 'f', 2, 64)
 
-	mode := middleware.GetMode(c)
+	mode := middleware.ResolveMode(c)
 
 	// Build the bare pylon source first; it's identical for the
 	// text/pylon short-circuit and serves as input to BannerStack for
 	// the rendered surfaces. Path 1 region-conditional formatting picks
 	// CN labels for ASCII / EN for PNG (and text/pylon mirrors ASCII --
-	// terminal-shaped clients get CJK).
+	// terminal-shaped clients get CJK). SVG sits with ASCII: pylon
+	// emits text via the browser font stack, which falls back to a
+	// system CJK font (PingFang on iOS, Noto on Android) when the
+	// monospace stack lacks coverage, so CN labels render fine.
 	useEnglish := mode == render.ModePNG
 	lines := buildLines(symbol, q, tw, stale, useEnglish)
 
@@ -170,6 +175,10 @@ func (h *handler) serve(c *gin.Context) {
 	}
 	if mode == render.ModePNG {
 		c.Data(http.StatusOK, "image/png", body)
+		return
+	}
+	if mode == render.ModeSVG {
+		c.Data(http.StatusOK, "image/svg+xml; charset=utf-8", body)
 		return
 	}
 	c.Data(http.StatusOK, "text/plain; charset=utf-8", body)

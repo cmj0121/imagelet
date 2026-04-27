@@ -263,6 +263,37 @@ func TestServeAcceptPylonReturnsRawSource(t *testing.T) {
 	}
 }
 
+func TestServeFormatSVGOverridesUA(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := newRouter(fakeProvider{q: freshQuote()})
+
+	for _, ua := range []string{"curl/8.4.0", "Mozilla/5.0"} {
+		t.Run(ua, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/stock?format=svg", nil)
+			req.Header.Set("User-Agent", ua)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			if got := rec.Header().Get("Content-Type"); got != "image/svg+xml; charset=utf-8" {
+				t.Errorf("Content-Type = %q, want image/svg+xml; charset=utf-8", got)
+			}
+			if got := rec.Header().Get("Cache-Control"); got != "public, max-age=60" {
+				t.Errorf("Cache-Control = %q, want public, max-age=60", got)
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, `xmlns="http://www.w3.org/2000/svg"`) {
+				t.Errorf("body missing xmlns; got:\n%s", body)
+			}
+			if !strings.Contains(body, "<svg ") || !strings.Contains(body, "</svg>") {
+				t.Errorf("body not bracketed by <svg> tags; got:\n%s", body)
+			}
+		})
+	}
+}
+
 func TestRegionQueryOverridesCFCountry(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	spy := &spyProvider{q: freshQuote()}

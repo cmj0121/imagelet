@@ -1,9 +1,12 @@
 // Package notfound exposes the 404 fallback for unmatched routes via
 // gin's r.NoRoute. Same content negotiation as /now and /stock:
-// Accept: text/pylon → bare banner source; Mozilla UA → image/png;
-// otherwise → text/plain. Both rendered paths show the same
-// banner+traceback content; the PNG is composed locally because
-// pylon's parser would shred the trace's parens and brackets.
+// Accept: text/pylon → bare banner source; ?format=svg → bare banner
+// SVG; ?format=png or Mozilla UA → composed image/png; otherwise →
+// text/plain. The PNG and ASCII paths show the same banner+traceback
+// content; PNG composes locally because pylon's parser would shred the
+// trace's parens and brackets. The SVG path emits the banner only:
+// the traceback can't be pylon-parsed, and a basicfont SVG compositor
+// isn't built yet (v1 limitation tracked in PLAN.md).
 package notfound
 
 import (
@@ -53,6 +56,7 @@ var (
 var (
 	bannerASCIIBody = []byte(pylon.RenderASCII(pylon.Parse(bannerSource)) + "\n")
 	bannerPylonBody = []byte(bannerSource + "\n")
+	bannerSVGBody   = []byte(pylon.RenderSVG(pylon.Parse(bannerSource)))
 	bannerImg       image.Image
 )
 
@@ -90,9 +94,17 @@ func Handler(c *gin.Context) {
 		return
 	}
 
+	mode := middleware.ResolveMode(c)
+
+	if mode == render.ModeSVG {
+		// Banner-only — same trade-off as the text/pylon short-circuit.
+		c.Data(http.StatusNotFound, "image/svg+xml; charset=utf-8", bannerSVGBody)
+		return
+	}
+
 	traceback := pythonTraceback(path, method)
 
-	if middleware.GetMode(c) == render.ModePNG && bannerImg != nil {
+	if mode == render.ModePNG && bannerImg != nil {
 		body, err := composePNG(traceback)
 		if err == nil {
 			c.Data(http.StatusNotFound, "image/png", body)
