@@ -9,8 +9,8 @@
 //   - Mode (ASCII / PNG / SVG) — wire-format selector resolved from the request
 //     UA by middleware.ClientDetector, optionally overridden by ?format= via
 //     middleware.ResolveMode
-//   - ProgressBar, YearProgress, WeekStrip — `█`/`░` text-bar and weekday-strip
-//     fragments used in subtitles and caption rows
+//   - ProgressBar, SignedBar, YearProgress, WeekStrip — `█`/`░` bar and
+//     weekday-strip fragments used in subtitles and caption rows
 //   - StripPylonSyntax — sanitization helper services need at the render
 //     boundary
 //

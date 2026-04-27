@@ -488,12 +488,13 @@ func TestServeTWPathPNGUsesEnglishLabels(t *testing.T) {
 	}
 }
 
-// TestServeTWPathSVGUsesEnglishLabels pins the consistency rule: SVG
-// joins PNG on the visual / banner-and-font surface, so its TW block
-// uses EN labels (not CN). Plain text — ASCII and text/pylon — keeps
-// CN. Asserting on the body is direct: SVG <text> elements carry the
-// label runs verbatim.
-func TestServeTWPathSVGUsesEnglishLabels(t *testing.T) {
+// TestServeTWPathSVGUsesChineseLabels pins the locale-consistency rule:
+// SVG carries CN labels for TW visitors, matching the ASCII and
+// text/pylon surfaces. Browsers supply CJK glyphs via font fallback,
+// so SVG renders 三大法人 / 外資 / 投信 / 自營 / 合計 / 融資餘額
+// without tofu. PNG is the lone EN holdout (basicfont.Face7x13 has zero
+// CJK coverage); see TestServeTWPathPNGUsesEnglishLabels.
+func TestServeTWPathSVGUsesChineseLabels(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	q := freshQuote()
 	q.Symbol = "^TWII"
@@ -513,15 +514,17 @@ func TestServeTWPathSVGUsesEnglishLabels(t *testing.T) {
 		t.Errorf("Content-Type = %q, want image/svg+xml", got)
 	}
 	body := rec.Body.String()
-	for _, cn := range []string{"三大法人", "外資", "投信", "自營", "融資餘額", "融券餘額"} {
-		if strings.Contains(body, cn) {
-			t.Errorf("SVG body contains CN label %q (should be EN)\n--- body ---\n%s", cn, body)
+	for _, cn := range []string{"三大法人", "外資", "投信", "自營", "合計", "融資餘額", "融券餘額"} {
+		if !strings.Contains(body, cn) {
+			t.Errorf("SVG body missing CN label %q\n--- body ---\n%s", cn, body)
 		}
 	}
-	// At least one EN TW-enrichment label must be present so the test
-	// fails loudly if the TW block disappears altogether.
-	if !strings.Contains(body, "foreign") && !strings.Contains(body, "margin") {
-		t.Errorf("SVG body missing EN TW-enrichment labels (foreign/margin)\n--- body ---\n%s", body)
+	// EN labels MUST NOT leak into the SVG path now that locale drives
+	// the label set instead of mode.
+	for _, en := range []string{"institutional", "foreign", "dealer", "trust"} {
+		if strings.Contains(body, en) {
+			t.Errorf("SVG body contains EN label %q (should be CN)\n--- body ---\n%s", en, body)
+		}
 	}
 }
 

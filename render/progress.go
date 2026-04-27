@@ -30,6 +30,44 @@ func ProgressBar(pct float64, width int) string {
 	return strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
 }
 
+// SignedBar returns a center-split `█`-and-`░` bar with negative values
+// growing leftward from the center and positive values growing rightward.
+// The center marker is U+2502 (BOX DRAWINGS LIGHT VERTICAL) — a separate
+// glyph from pylon's ASCII pipe `|`, so the marker survives pylon parsing
+// inside borderless captions. halfWidth is the cell count per side; the
+// returned string is `2*halfWidth + 1` chars wide. max sets the magnitude
+// that fills one whole side; values whose absolute value exceeds max
+// clamp to a fully-filled side.
+//
+// Empty/zero halfWidth returns just the separator. max <= 0 returns an
+// empty bar (no fill on either side) so callers can pass a precomputed
+// max without guarding against the all-zero edge case.
+func SignedBar(value, max float64, halfWidth int) string {
+	if halfWidth <= 0 {
+		return "│"
+	}
+	left := strings.Repeat("░", halfWidth)
+	right := strings.Repeat("░", halfWidth)
+	if max > 0 {
+		mag := value / max
+		if mag > 1 {
+			mag = 1
+		} else if mag < -1 {
+			mag = -1
+		}
+		filled := int(math.Round(math.Abs(mag) * float64(halfWidth)))
+		if filled > halfWidth {
+			filled = halfWidth
+		}
+		if value < 0 {
+			left = strings.Repeat("░", halfWidth-filled) + strings.Repeat("█", filled)
+		} else if value > 0 {
+			right = strings.Repeat("█", filled) + strings.Repeat("░", halfWidth-filled)
+		}
+	}
+	return left + "│" + right
+}
+
 // YearProgress returns a fragment in the form `year ██████░░░░░░░░░░░░░░ 32%`
 // representing how far through the calendar year `t` is. Width is fixed at
 // 20 cells. Day-of-year is taken in `t`'s location so a visitor whose
