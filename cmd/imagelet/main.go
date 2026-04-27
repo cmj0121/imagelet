@@ -30,6 +30,7 @@ import (
 	"github.com/cmj0121/imagelet/service/stock/quote/yahoo"
 	"github.com/cmj0121/imagelet/service/stock/twse"
 	"github.com/cmj0121/imagelet/service/weather"
+	"github.com/cmj0121/imagelet/service/weather/airquality"
 	weathercache "github.com/cmj0121/imagelet/service/weather/forecast/cached"
 	"github.com/cmj0121/imagelet/service/weather/forecast/openmeteo"
 )
@@ -92,7 +93,11 @@ func main() {
 	// across /weather requests, and the cap-stale-on-fail behavior makes
 	// this provider stricter than its /stock counterpart.
 	forecastProvider := weathercache.New(openmeteo.New())
-	weather.Register(r, forecastProvider)
+	// AQI is best-effort enrichment from Open-Meteo's air-quality API.
+	// 30m success / 5m failure TTL via airquality.NewCached. Failures
+	// drop the AQI row but never 5xx the page.
+	aqiProvider := airquality.NewCached(airquality.New())
+	weather.Register(r, forecastProvider, aqiProvider)
 
 	// NoRoute fallback — must be installed last so every other route had
 	// a chance to claim its path first.

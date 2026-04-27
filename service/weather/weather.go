@@ -38,6 +38,7 @@ import (
 
 	"github.com/cmj0121/imagelet/middleware"
 	"github.com/cmj0121/imagelet/render"
+	"github.com/cmj0121/imagelet/service/weather/airquality"
 	"github.com/cmj0121/imagelet/service/weather/forecast"
 )
 
@@ -85,16 +86,20 @@ var (
 	composeInk = color.RGBA{R: 0x0f, G: 0x1c, B: 0x2d, A: 0xff}
 )
 
-// Register mounts GET /weather. p is the forecast.Provider — typically
-// cached(openmeteo) in production, a fake in tests.
-func Register(r gin.IRouter, p forecast.Provider) {
-	h := &handler{provider: p}
+// Register mounts GET /weather. fp is the forecast.Provider — typically
+// cached(openmeteo) in production. aq is the airquality.Provider; pass
+// airquality.NoopProvider() to disable AQI enrichment (tests, dev).
+// AQI failures are best-effort: they drop the AQI caption row but never
+// 5xx the base render.
+func Register(r gin.IRouter, fp forecast.Provider, aq airquality.Provider) {
+	h := &handler{forecast: fp, airquality: aq}
 	r.GET("/weather", h.serve)
 }
 
 // handler holds the dependencies for /weather.
 type handler struct {
-	provider forecast.Provider
+	forecast   forecast.Provider
+	airquality airquality.Provider
 }
 
 // serve resolves location + unit, fetches a forecast, and renders the
@@ -103,7 +108,7 @@ func (h *handler) serve(c *gin.Context) {
 	lat, lon, location := h.resolveLocation(c)
 	unit := resolveUnit(c)
 
-	f, err := h.provider.Get(c.Request.Context(), lat, lon, unit)
+	f, err := h.forecast.Get(c.Request.Context(), lat, lon, unit)
 
 	// cached.Provider returns (cachedForecast, err) on stale-serve and
 	// (zero Forecast, err) past failureTTL. TempUnit is the "have data"
@@ -127,7 +132,17 @@ func (h *handler) serve(c *gin.Context) {
 
 	bucket := BucketOf(f.WeatherCode, f.IsDay)
 	word := Word(f.WeatherCode)
-	captions := buildCaptions(f, word, location, stale)
+
+	// AQI is best-effort enrichment. Errors silently drop the caption row;
+	// they never 5xx the base render. Logging is debug-level since transient
+	// upstream blips are common (free tier, no SLA).
+	aqi, aqErr := h.airquality.Get(c.Request.Context(), lat, lon)
+	if aqErr != nil {
+		log.Debug().Err(aqErr).Float64("lat", lat).Float64("lon", lon).
+			Msg("airquality upstream failed; omitting AQI row")
+		aqi = airquality.Reading{}
+	}
+	captions := buildCaptions(f, word, location, stale, aqi)
 
 	c.Header("Cache-Control", "public, max-age=600")
 
@@ -238,8 +253,9 @@ func resolveUnit(c *gin.Context) forecast.Unit {
 // Numeric formatting rounds to int for legibility; the banner carries the
 // precise temperature. The humidity/UV/precip line is omitted entirely
 // when the upstream provided none of the three (Open-Meteo can serve a
-// minimal forecast that skips daily extras).
-func buildCaptions(f forecast.Forecast, word, location string, stale bool) []string {
+// minimal forecast that skips daily extras). AQI row is omitted when the
+// airquality upstream failed (zero Category sentinel).
+func buildCaptions(f forecast.Forecast, word, location string, stale bool, aqi airquality.Reading) []string {
 	prefix := ""
 	if stale {
 		prefix = "STALE · "
@@ -259,6 +275,12 @@ func buildCaptions(f forecast.Forecast, word, location string, stale bool) []str
 	}
 	if extras := buildExtrasLine(f); extras != "" {
 		out = append(out, extras)
+	}
+	// AQI row sits between extras and the day-cycle bar so the cycle
+	// stays as the visual close of the block. Zero Category means the
+	// AQI provider errored or returned no data — drop the row.
+	if aqi.Category != "" {
+		out = append(out, fmt.Sprintf("AQI %d (%s)", aqi.USAQI, aqi.Category))
 	}
 	// Day-cycle bar replaces the standalone "sunrise X  sunset Y" row —
 	// the bar's HH:MM endpoints carry the same data with a glanceable

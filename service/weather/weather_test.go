@@ -16,6 +16,7 @@ import (
 
 	"github.com/cmj0121/imagelet/middleware"
 	"github.com/cmj0121/imagelet/service/weather"
+	"github.com/cmj0121/imagelet/service/weather/airquality"
 	"github.com/cmj0121/imagelet/service/weather/forecast"
 )
 
@@ -89,12 +90,35 @@ func freshForecast() forecast.Forecast {
 	}
 }
 
+// fakeAQI is a deterministic airquality.Provider for tests.
+type fakeAQI struct {
+	r   airquality.Reading
+	err error
+}
+
+func (a fakeAQI) Get(_ context.Context, _, _ float64) (airquality.Reading, error) {
+	return a.r, a.err
+}
+
+// freshAQI returns the stock AQI sample (74 / Moderate) the tests assert against.
+func freshAQI() airquality.Reading {
+	return airquality.Reading{USAQI: 74, Category: "Moderate"}
+}
+
 // newRouter wires the same middlewares production will, scoped to /weather.
+// AQI defaults to a fresh sample so most tests see the AQI row; specific
+// tests override via newRouterAQ when they need to exercise the no-AQI path.
 func newRouter(p forecast.Provider) *gin.Engine {
+	return newRouterAQ(p, fakeAQI{r: freshAQI()})
+}
+
+// newRouterAQ is newRouter with an explicit airquality.Provider for tests
+// that need to pin the AQI behavior (success / failure / noop).
+func newRouterAQ(p forecast.Provider, aq airquality.Provider) *gin.Engine {
 	r := gin.New()
 	r.Use(middleware.RegionDetector())
 	r.Use(middleware.ClientDetector())
-	weather.Register(r, p)
+	weather.Register(r, p, aq)
 	return r
 }
 
@@ -120,6 +144,7 @@ func TestServeASCII(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{"Taipei", "feels", "wind", "high", "low", "°C",
 		"humidity 47%", "UV 9", "rain 20%",
+		"AQI 74 (Moderate)",
 		"day ", "5:42-18:24"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q\n--- body ---\n%s", want, body)
@@ -373,6 +398,33 @@ func TestSTALEWinsOverNothing(t *testing.T) {
 	}
 	if strings.Contains(body, "STALE") {
 		t.Errorf("STALE leaked into pylon source\n--- body ---\n%s", body)
+	}
+}
+
+// TestAQIFailureOmitsRow confirms an airquality upstream error drops the
+// AQI caption row but never 5xx-es the base render — AQI is enrichment,
+// not a hard dependency.
+func TestAQIFailureOmitsRow(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := newRouterAQ(fakeProvider{f: freshForecast()},
+		fakeAQI{err: airquality.ErrUnavailable})
+
+	req := httptest.NewRequest(http.MethodGet, "/weather", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (AQI failure must not 5xx)", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "AQI") {
+		t.Errorf("AQI row leaked despite upstream error\n--- body ---\n%s", body)
+	}
+	// Sanity: forecast captions still render.
+	if !strings.Contains(body, "feels") || !strings.Contains(body, "day ") {
+		t.Errorf("base captions missing — AQI failure should not have dropped them\n--- body ---\n%s", body)
 	}
 }
 
