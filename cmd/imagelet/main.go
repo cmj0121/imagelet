@@ -29,11 +29,6 @@ import (
 	"github.com/cmj0121/imagelet/service/stock/quote/cached"
 	"github.com/cmj0121/imagelet/service/stock/quote/yahoo"
 	"github.com/cmj0121/imagelet/service/stock/twse"
-	"github.com/cmj0121/imagelet/service/weather"
-	"github.com/cmj0121/imagelet/service/weather/airquality"
-	"github.com/cmj0121/imagelet/service/weather/earthquake"
-	weathercache "github.com/cmj0121/imagelet/service/weather/forecast/cached"
-	"github.com/cmj0121/imagelet/service/weather/forecast/openmeteo"
 )
 
 // version is stamped at link time via -ldflags="-X main.version=…".
@@ -89,20 +84,6 @@ func main() {
 	// TWSE publishes daily (~16:00 Asia/Taipei).
 	twseProvider := twse.NewCached(twse.New())
 	stock.Register(r, quoteProvider, twseProvider)
-
-	// Same one-shot construction for the weather provider — shared cache
-	// across /weather requests, and the cap-stale-on-fail behavior makes
-	// this provider stricter than its /stock counterpart.
-	forecastProvider := weathercache.New(openmeteo.New())
-	// AQI is best-effort enrichment from Open-Meteo's air-quality API.
-	// 30m success / 5m failure TTL via airquality.NewCached. Failures
-	// drop the AQI row but never 5xx the page.
-	aqiProvider := airquality.NewCached(airquality.New())
-	// Earthquake enrichment hits USGS's fdsnws geojson endpoint for
-	// any qualifying event within 300km of the visitor. 15m success /
-	// 5m failure TTL — events propagate within minutes upstream.
-	quakeProvider := earthquake.NewCached(earthquake.New())
-	weather.Register(r, forecastProvider, aqiProvider, quakeProvider)
 
 	// NoRoute fallback — must be installed last so every other route had
 	// a chance to claim its path first.

@@ -93,7 +93,6 @@ to work — this is a one-time per-package action, not workflow-controllable.
 | `GET`  | `/healthz` | Returns `200 No Content`. Liveness probe — never renders, never allocates. |
 | `GET`  | `/now`     | Banner-rendered current time with date / weekday / zone caption.           |
 | `GET`  | `/stock`   | Banner-rendered regional stock-index quote.                                |
-| `GET`  | `/weather` | Today's weather: ASCII condition icon + temperature banner + captions.     |
 | `*`    | _other_    | `404` banner above a fake Python traceback with the requested path inside. |
 
 `/` is the landing page. The version segment is stamped at link time via
@@ -247,85 +246,6 @@ TWSE publishes daily aggregates ~16:00 Asia/Taipei, so its cache uses a 4 h
 success TTL with 30 m back-off on transient errors. The cache absorbs short
 outages — see the failure modes above.
 
-`/weather` follows the `/now` and `/stock` shape with a slight twist: an ASCII
-condition icon is composed to the LEFT of the temperature banner (rendered with
-pylon's compact `banner:mini` font for icon-balance), with up to seven caption
-lines below carrying the supporting numbers:
-
-1. Condition + location (with `STALE ·` prefix on cache-fallback responses).
-2. Feels-like temperature + wind speed.
-3. Today's high / low.
-4. Humidity + UV index + rain probability (segments dropped when the upstream
-   skipped the field; the whole row collapses if all three are absent).
-5. AQI + EPA category — sourced from Open-Meteo's free `/v1/air-quality`
-   endpoint. Failures silently drop the row.
-6. Recent significant earthquake within 300 km — `M4.1 quake 9 km ENE of
-Yilan, Taiwan (3h ago)` from USGS's `fdsnws/event/1/query`. Failures or
-   no qualifying event silently drop the row.
-7. Day-cycle progress bar — `day ████░░░░ 5:42-18:24` — shows where the
-   current time falls in the daylight window (`render.DayCycle`).
-
-The PNG path composes the layout locally with `basicfont` for the icon
-and pylon's PNG for the banner — same trick `/404` uses, axis flipped.
-The SVG path uses an analogous compositor: an outer `<svg>` lays the
-icon as `<text>` rows on the left, embeds pylon's banner SVG via a
-translate-group right of the icon, and stacks caption rows below. HTML
-inlines that same SVG inside a self-contained page. CN/EN labels split
-by surface (same rule as `/stock`): plain text gets Chinese (體感, 風速,
-高/低, 濕度, 紫外線, 降雨, 空污, 地震, 日); banner-and-font surfaces
-(HTML, SVG, PNG) stay English so the visual output is consistent across
-devices.
-
-`/weather` honors the full format set: `?format=html|svg|png|ascii|pylon`
-plus the UA-derived default (HTML for browsers, ASCII otherwise).
-
-Location resolution priority (first non-empty wins):
-
-1. `?lat=<f>&lon=<f>` query — explicit coords. Validated for finiteness and
-   range; bad values silently fall through (never `4xx`).
-2. Cloudflare's `CF-IPLatitude` / `CF-IPLongitude` headers (separate Managed
-   Transform from `CF-IPCountry` and `CF-Timezone` — operators must enable
-   "Add visitor location headers" to surface lat/lon).
-3. Country → capital fallback keyed by `CF-IPCountry`:
-
-| Country           | Capital   | Lat / Lon          |
-| ----------------- | --------- | ------------------ |
-| TW                | Taipei    | 25.04, 121.56      |
-| US                | New York  | 40.71, -74.01      |
-| JP                | Tokyo     | 35.68, 139.69      |
-| HK                | Hong Kong | 22.32, 114.17      |
-| GB                | London    | 51.51, -0.13       |
-| DE                | Berlin    | 52.52, 13.40       |
-| _other / missing_ | New York  | (default fallback) |
-
-Units default by country — `US`, `LR`, `MM` (the three imperial holdouts) get
-Fahrenheit + mph; everywhere else gets Celsius + km/h. `?unit=c` or
-`?unit=f` overrides.
-
-Cache: 10-minute success + 10-minute failure TTL. Past 10 minutes of upstream
-failure the handler emits `503 Service Unavailable` with `Retry-After: 60`
-instead of continuing to serve stale data — weather staleness is a correctness
-hazard, unlike stock quotes after market close. Within the failure window, the
-cached forecast is served with a `STALE ·` prefix on the condition caption.
-Cache key rounds lat/lon to one decimal (~10 km grid) so visitors in the same
-neighborhood share a cell.
-
-```bash
-curl http://localhost:8080/weather                                              # ASCII, country fallback
-curl 'http://localhost:8080/weather?lat=25.04&lon=121.56'                       # ASCII, Taipei
-curl 'http://localhost:8080/weather?lat=51.51&lon=-0.13&unit=c'                 # ASCII, London, °C override
-curl -A 'Mozilla/5.0' http://localhost:8080/weather                             # HTML (inline SVG)
-curl -o weather.png 'http://localhost:8080/weather?format=png'                  # PNG
-```
-
-Forecasts are sourced from Open-Meteo's free public API (no key, no SLA).
-Behind `forecast.Provider` so swapping to MET Norway or another free upstream
-is a single file. AQI is from Open-Meteo's separate `/v1/air-quality`
-endpoint (key-less, global, CAMS+Geos5-derived); earthquakes from USGS's
-fdsnws geojson endpoint (key-less, the de-facto canonical seismic catalog).
-All three providers cache + singleflight-coalesce per their own TTL —
-30 m / 15 m / 10 m for AQI / quake / weather.
-
 Unmatched paths fall through to a `404` page: pylon-rendered `404` banner stacked
 above a fake Python traceback with the requested path injected into the panic
 message and the trailing field. ASCII and PNG paths show the full content —
@@ -383,15 +303,12 @@ Top-level packages are importable; `internal/` is not used.
 cmd/imagelet/                    # binary entry point
 server/                          # core router — middleware chain + GET /healthz
 middleware/                      # reusable gin middlewares (ClientDetector + GetMode, RegionDetector + GetCountry)
-render/                          # pylon-backed renderers — Box, Banner*, Mode, ProgressBar/YearProgress/DayCycle, sanitizers
+render/                          # pylon-backed renderers — Box, Banner*, Mode, ProgressBar/YearProgress/WeekStrip, sanitizers
 logger/                          # zerolog setup with TTY-aware console / JSON switching
 service/index/                   # the GET / landing page (banner + tagline + repo · version)
 service/now/                     # the /now plugin (Register + Handler)
 service/stock/                   # the /stock plugin — regional index quote (Yahoo Finance + cache)
 service/stock/twse/              # TW-only enrichment — 三大法人 + margin from TWSE legacy openapi
-service/weather/                 # the /weather plugin — today's forecast + enrichment
-service/weather/airquality/      # AQI provider (Open-Meteo air-quality) + cached wrapper
-service/weather/earthquake/      # earthquake provider (USGS fdsnws) + cached wrapper
 service/notfound/                # the 404 fallback — banner + fake Python traceback
 ```
 
@@ -409,11 +326,6 @@ import (
     "github.com/cmj0121/imagelet/service/stock/quote/cached"
     "github.com/cmj0121/imagelet/service/stock/quote/yahoo"
     "github.com/cmj0121/imagelet/service/stock/twse"
-    weathersvc "github.com/cmj0121/imagelet/service/weather"
-    "github.com/cmj0121/imagelet/service/weather/airquality"
-    "github.com/cmj0121/imagelet/service/weather/earthquake"
-    weathercache "github.com/cmj0121/imagelet/service/weather/forecast/cached"
-    "github.com/cmj0121/imagelet/service/weather/forecast/openmeteo"
 )
 
 func main() {
@@ -421,11 +333,6 @@ func main() {
     indexsvc.Register(r, "v0.2.0")                                                    // GET / (pass your binary's version)
     nowsvc.Register(r)                                                                // GET /now
     stocksvc.Register(r, cached.New(yahoo.New()), twse.NewCached(twse.New()))         // GET /stock + TW enrichment
-    weathersvc.Register(r,                                                            // GET /weather + AQI + quake
-        weathercache.New(openmeteo.New()),
-        airquality.NewCached(airquality.New()),
-        earthquake.NewCached(earthquake.New()),
-    )
     notfoundsvc.Register(r)                                                           // 404 fallback — install last
     http.ListenAndServe(":8080", r)
 }

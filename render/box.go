@@ -5,14 +5,14 @@
 // Today this package exposes:
 //
 //   - Box, Banner, BannerMulti, BannerSource, BannerSourceMulti — pylon-source
-//     primitives shared by /now, /stock, /weather, /404, and /
+//     primitives shared by /now, /stock, /404, and /
 //   - Mode (ASCII / PNG / SVG) — wire-format selector resolved from the request
 //     UA by middleware.ClientDetector, optionally overridden by ?format= via
 //     middleware.ResolveMode
-//   - ProgressBar, YearProgress, DayCycle — `█`/`░` text-bar fragments used
-//     in subtitles and caption rows
-//   - StripPylonSyntax, TrimHour — sanitization and small string helpers
-//     services need at the render boundary
+//   - ProgressBar, YearProgress, WeekStrip — `█`/`░` text-bar and weekday-strip
+//     fragments used in subtitles and caption rows
+//   - StripPylonSyntax — sanitization helper services need at the render
+//     boundary
 //
 // New renderers (sparkline, gauge, ...) belong in this package alongside the
 // existing primitives.

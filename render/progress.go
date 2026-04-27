@@ -13,8 +13,7 @@ import (
 // EAW-ambiguous so a CJK terminal renders them at uniform 2-cell width and
 // the bar visually stays uniform.
 //
-// Used by `/now` for year-progress and `/weather` for the day-cycle bar —
-// same visual language across services.
+// Used by `/now` for year-progress — same visual language across services.
 func ProgressBar(pct float64, width int) string {
 	if width <= 0 {
 		return ""
@@ -43,36 +42,6 @@ func YearProgress(t time.Time) string {
 	daysInYear := time.Date(t.Year(), 12, 31, 0, 0, 0, 0, t.Location()).YearDay()
 	pct := float64(t.YearDay()) / float64(daysInYear)
 	return fmt.Sprintf("year %s %d%%", ProgressBar(pct, width), int(math.Round(pct*100)))
-}
-
-// DayCycle returns a fragment in the form `day ████████░░░░░░░░░░░░ 5:42-18:24`
-// representing how far through the daylight window (sunrise → sunset) `asOf`
-// has advanced. Width is fixed at 20 cells. Before sunrise the bar shows 0%
-// (label still pinned); after sunset it shows 100% — both correct readings
-// at night. Empty/inverted windows (sunset <= sunrise, e.g., polar night)
-// return "" so the caller can drop the row entirely.
-//
-// The HH:MM endpoints are rendered with a single leading-zero strip (so 05:42
-// reads as 5:42) — matching the sunrise/sunset caption format /weather already
-// uses, so the two rows align visually.
-func DayCycle(asOf, sunrise, sunset time.Time) string {
-	const width = 20
-	span := sunset.Sub(sunrise).Seconds()
-	if span <= 0 {
-		return ""
-	}
-	elapsed := asOf.Sub(sunrise).Seconds()
-	pct := elapsed / span
-	return fmt.Sprintf("day %s %s-%s",
-		ProgressBar(pct, width),
-		TrimHour(sunrise.Format("15:04")),
-		TrimHour(sunset.Format("15:04")))
-}
-
-// TrimHour strips a single leading zero from "HH:MM" so 05:42 reads 5:42.
-// Times >= 10:00 pass through unchanged.
-func TrimHour(s string) string {
-	return strings.TrimPrefix(s, "0")
 }
 
 // weekdayLetters is the Sunday-first single-letter labels WeekStrip uses.
