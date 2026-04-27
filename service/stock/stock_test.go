@@ -334,6 +334,9 @@ func TestStripPylonSyntax(t *testing.T) {
 		{"caret_safe", "^GSPC", "^GSPC"},
 		{"thousands_safe", "21,834.50", "21,834.50"},
 		{"middle_dot_safe", "STALE · ^GSPC", "STALE · ^GSPC"},
+		{"ampersand_inline", "S&P 500 · United States", "S and P 500 · United States"},
+		{"ampersand_spaced", "Tom & Jerry", "Tom and Jerry"},
+		{"ampersand_collapses_extra_ws", "A &  B", "A and B"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

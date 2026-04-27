@@ -200,7 +200,7 @@ func buildLines(symbol string, q quote.Quote, tw twse.MarketData, stale, useEngl
 	lines := make([]string, 0, 10)
 
 	if name := indexNameFor(symbol); name != "" {
-		lines = append(lines, name)
+		lines = append(lines, stripPylonSyntax(name))
 	}
 
 	prefix := ""
@@ -428,13 +428,19 @@ func formatPrice(v float64) string {
 }
 
 // stripPylonSyntax removes complete `(...)` and `[...]` pairs (and their
-// contents) from s and collapses the resulting whitespace. Defensive
-// sanitization: pylon parses both bracket pairs as nested boxes, so a
-// stray pair in the caption breaks the rendered output. The `^` in
-// `^GSPC` etc. is pylon-safe and left alone; the `·` prefix separator
-// is also preserved.
+// contents) from s, replaces `&` with the literal word "and", and
+// collapses the resulting whitespace. Defensive sanitization: pylon
+// parses bracket pairs as nested boxes (smuggled markup) and treats
+// `&` as the start of an XML/SVG entity (line-fragments the caption).
+// The `^` in `^GSPC` etc. is pylon-safe and left alone; the `·` prefix
+// separator is also preserved.
+//
+// "S&P 500" therefore renders as "S and P 500" — strings.Fields below
+// collapses the doubled spaces around the inserted "and", so any
+// surrounding whitespace (e.g. "A & B") normalizes to a single space.
 func stripPylonSyntax(s string) string {
 	cleaned := pylonBracketRe.ReplaceAllString(s, "")
+	cleaned = strings.ReplaceAll(cleaned, "&", " and ")
 	return strings.Join(strings.Fields(cleaned), " ")
 }
 
