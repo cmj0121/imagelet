@@ -4,8 +4,8 @@
 
 ## Quickstart
 
-A minimal Go web service that frames small bits of data as ASCII or PNG, picked per request
-based on the caller's `User-Agent`.
+A minimal Go web service that frames small bits of data as HTML / SVG / PNG / ASCII,
+picked per request from the caller's `User-Agent` and an optional `?format=` override.
 
 ```bash
 make build   # compile binary to bin/imagelet
@@ -121,20 +121,28 @@ curl http://localhost:8080/
 
 `/now` content-negotiates per request. Precedence (highest first):
 
-- `Accept: text/pylon` — raw pylon source, so callers can render it themselves.
+- `Accept: text/pylon` OR `?format=pylon` — raw pylon source, so callers can
+  render it themselves. Both spellings exist for header / query parity.
+- `?format=html` — `text/html; charset=utf-8`. A self-contained HTML5 page
+  with the SVG inlined in the body and a viewport meta so a top-level
+  navigation reads cleanly on mobile.
 - `?format=svg` — `image/svg+xml`. RFC 7303 doesn't define a `charset`
   parameter for this media type, and iOS Safari downloads the response
   instead of rendering it when the parameter is present. The SVG body
   carries its own encoding via the XML stream, so the parameter is also
   redundant.
 - `?format=png` — `image/png`.
-- `User-Agent` contains `Mozilla` — `image/png`.
+- `?format=ascii` — `text/plain; charset=utf-8`.
+- `User-Agent` contains `Mozilla` — `text/html; charset=utf-8` (HTML
+  wrapping inline SVG, same body as `?format=html`).
 - Anything else — `text/plain; charset=utf-8`.
 
 `?format=` overrides the User-Agent default; bad or unrecognized values fall
-through silently to UA-based negotiation (never `4xx`). `?format=ascii` is
-not supported in v1 — the UA fallback already serves plain text to non-browser
-clients.
+through silently to UA-based negotiation (never `4xx`). Third-party sites
+that previously embedded imagelet via `<img src="…">` should append
+`?format=png` (or `?format=svg`) to keep the raw-image contract — the UA
+classifier alone can't distinguish a top-level navigation from an image
+sub-request, and now defaults to HTML for `Mozilla`.
 
 Both rendered paths use pylon's native theme — Unicode frame plus ANSI Shadow block
 letters — so the visual is identical across consumers. The subtitle carries the
@@ -155,16 +163,19 @@ $ curl http://localhost:8080/now
        2026-04-27 MON UTC+8 · year ██████░░░░░░░░░░░░░░ 32%
 ```
 
-Browsers receive the same banner as a PNG (pylon rasterizes pylon glyphs to a self-contained
-`image/png` payload).
+Browsers receive the same banner as an HTML page that inlines the SVG — a
+single self-contained response, viewport-clean on mobile. Append
+`?format=png` for raw `image/png` (pylon rasterizes pylon glyphs to a
+self-contained payload) or `?format=svg` for a bare SVG document.
 
 When the request carries Cloudflare's `CF-Timezone` header (e.g. `Asia/Taipei`),
 `/now` renders in the caller's local zone — the subtitle's `UTC±H` offset shifts
 accordingly. Missing or unparseable values fall back to the server's local zone.
 
-`/stock` follows the same negotiation matrix as `/now` (raw `text/pylon`,
-`?format=svg|png`, PNG for `Mozilla` user-agents, ASCII otherwise) but renders
-the caller's regional stock index instead of the wall clock. The country comes from Cloudflare's `CF-IPCountry`
+`/stock` follows the same negotiation matrix as `/now` (raw pylon via
+`Accept: text/pylon` or `?format=pylon`, `?format=html|svg|png|ascii`, HTML
+for `Mozilla` user-agents, ASCII otherwise) but renders the caller's
+regional stock index instead of the wall clock. The country comes from Cloudflare's `CF-IPCountry`
 header and falls back to `US` when the header is missing or unrecognized; the
 `?region=XX` query parameter overrides the header (handy for local dev and CI).
 Region codes are two-letter ISO 3166-1 alpha-2, case-insensitive.
@@ -194,11 +205,11 @@ inside the price banner's outer frame:
   flow (外資 / 投信 / 自營 / 合計) and 融資/融券 margin balance rows
   sourced from TWSE's legacy openapi. Region-conditional CN/EN labels split
   by surface: plain text (ASCII + `text/pylon`, both terminal-shaped) gets
-  Chinese; banner-and-font surfaces (PNG and SVG) get English so the visual
-  output is consistent. PNG can't help it (`basicfont.Face7x13` has zero CJK
-  coverage and would render tofu); SVG joins PNG by choice. The TW block
-  is best-effort enrichment — TWSE upstream errors silently omit it
-  without affecting the base render.
+  Chinese; banner-and-font surfaces (HTML, SVG, PNG) get English so the
+  visual output is consistent. PNG can't help it (`basicfont.Face7x13` has
+  zero CJK coverage and would render tofu); SVG and HTML join PNG by
+  choice. The TW block is best-effort enrichment — TWSE upstream errors
+  silently omit it without affecting the base render.
 
 Every rendered response sets `Cache-Control: public, max-age=60`, so a CDN can
 absorb traffic spikes (contrast with `/now`'s `no-store`). Content-Type
@@ -247,18 +258,19 @@ Yilan, Taiwan (3h ago)` from USGS's `fdsnws/event/1/query`. Failures or
 7. Day-cycle progress bar — `day ████░░░░ 5:42-18:24` — shows where the
    current time falls in the daylight window (`render.DayCycle`).
 
-The PNG path composes the same layout locally with `basicfont` for the icon
-and pylon's PNG for the banner — same trick `/404` uses, axis flipped. CN/EN
-labels split by surface (same rule as `/stock`): plain text gets Chinese
-(體感, 風速, 高/低, 濕度, 紫外線, 降雨, 空污, 地震, 日); banner-and-font
-surfaces (PNG, and SVG-coerced-to-PNG) stay English so the visual output
-is consistent across devices.
+The PNG path composes the layout locally with `basicfont` for the icon
+and pylon's PNG for the banner — same trick `/404` uses, axis flipped.
+The SVG path uses an analogous compositor: an outer `<svg>` lays the
+icon as `<text>` rows on the left, embeds pylon's banner SVG via a
+translate-group right of the icon, and stacks caption rows below. HTML
+inlines that same SVG inside a self-contained page. CN/EN labels split
+by surface (same rule as `/stock`): plain text gets Chinese (體感, 風速,
+高/低, 濕度, 紫外線, 降雨, 空污, 地震, 日); banner-and-font surfaces
+(HTML, SVG, PNG) stay English so the visual output is consistent across
+devices.
 
-`/weather` honors `?format=png` like the other routes but coerces
-`?format=svg` to PNG in v1 — the icon-left composition uses a `basicfont`
-compositor that the pylon SVG renderer can't reproduce, and a vertical-stack
-fallback would visibly regress on the iPhone surface. Revisit when an SVG
-icon-compositor exists.
+`/weather` honors the full format set: `?format=html|svg|png|ascii|pylon`
+plus the UA-derived default (HTML for browsers, ASCII otherwise).
 
 Location resolution priority (first non-empty wins):
 
@@ -292,10 +304,11 @@ Cache key rounds lat/lon to one decimal (~10 km grid) so visitors in the same
 neighborhood share a cell.
 
 ```bash
-curl http://localhost:8080/weather                                 # ASCII, country fallback
-curl 'http://localhost:8080/weather?lat=25.04&lon=121.56'          # ASCII, Taipei
-curl 'http://localhost:8080/weather?lat=51.51&lon=-0.13&unit=c'    # ASCII, London, °C override
-curl -A 'Mozilla/5.0' -o weather.png http://localhost:8080/weather # PNG
+curl http://localhost:8080/weather                                              # ASCII, country fallback
+curl 'http://localhost:8080/weather?lat=25.04&lon=121.56'                       # ASCII, Taipei
+curl 'http://localhost:8080/weather?lat=51.51&lon=-0.13&unit=c'                 # ASCII, London, °C override
+curl -A 'Mozilla/5.0' http://localhost:8080/weather                             # HTML (inline SVG)
+curl -o weather.png 'http://localhost:8080/weather?format=png'                  # PNG
 ```
 
 Forecasts are sourced from Open-Meteo's free public API (no key, no SLA).
@@ -308,13 +321,14 @@ All three providers cache + singleflight-coalesce per their own TTL —
 
 Unmatched paths fall through to a `404` page: pylon-rendered `404` banner stacked
 above a fake Python traceback with the requested path injected into the panic
-message and the trailing field. Both ASCII and PNG paths show the same content —
+message and the trailing field. ASCII and PNG paths show the full content —
 the PNG is composed locally (pylon banner above, traceback drawn with
 `basicfont` below) because pylon's parser would shred the trace's parens and
-brackets. `Accept: text/pylon` returns the bare banner source (the traceback
-isn't pylon syntax). `?format=svg` returns the same banner-only SVG — no
-traceback prose, since the trace can't be pylon-parsed and an SVG-side
-basicfont compositor isn't built yet (v1 limitation).
+brackets. `Accept: text/pylon` (or `?format=pylon`) returns the bare banner
+source. `?format=svg` and `?format=html` return the banner-only SVG / HTML
+respectively — no traceback prose, since the trace can't be pylon-parsed and
+an SVG-side basicfont compositor isn't built (v1 limitation, lower priority
+than per-route format support).
 
 ```bash
 curl -s http://localhost:8080/no-such-route
@@ -412,12 +426,12 @@ func main() {
 
 ## Built with
 
-| Library                                    | Role                        |
-| ------------------------------------------ | --------------------------- |
-| [gin](https://github.com/gin-gonic/gin)    | HTTP router                 |
-| [kong](https://github.com/alecthomas/kong) | CLI flag parsing            |
-| [zerolog](https://github.com/rs/zerolog)   | Structured logging          |
-| [pylon](https://github.com/cmj0121/pylon)  | ASCII / PNG / SVG rendering |
+| Library                                    | Role                                                    |
+| ------------------------------------------ | ------------------------------------------------------- |
+| [gin](https://github.com/gin-gonic/gin)    | HTTP router                                             |
+| [kong](https://github.com/alecthomas/kong) | CLI flag parsing                                        |
+| [zerolog](https://github.com/rs/zerolog)   | Structured logging                                      |
+| [pylon](https://github.com/cmj0121/pylon)  | ASCII / PNG / SVG rendering (HTML wraps the SVG output) |
 
 Pylon is pinned via a Go pseudo-version of the `v0.5.0` tag's commit `93b11e6bbcff`;
 the module path `github.com/cmj0121/pylon/src/go` is a nested go.mod, so `@latest`
