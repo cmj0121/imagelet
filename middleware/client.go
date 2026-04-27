@@ -2,8 +2,9 @@
 //
 // Middlewares here are intended to be installed on any imagelet gin.Engine
 // (production or downstream consumer) without coupling to specific routes.
-// Currently exposes ClientDetector for ASCII/PNG content negotiation; future
-// middlewares (auth, request id, etc.) belong alongside it.
+// Currently exposes ClientDetector for ASCII/PNG content negotiation and
+// ResolveMode for ?format= query overrides; future middlewares (auth,
+// request id, etc.) belong alongside them.
 package middleware
 
 import (
@@ -69,6 +70,31 @@ func GetMode(c *gin.Context) render.Mode {
 		return render.ModeASCII
 	}
 	return mode
+}
+
+// ResolveMode returns the render.Mode for the request, honoring an explicit
+// ?format= query parameter when present and falling back to the UA-derived
+// GetMode otherwise. Precedence (highest first):
+//
+//  1. ?format=svg → render.ModeSVG
+//  2. ?format=png → render.ModePNG
+//  3. UA classification (GetMode)
+//
+// Bad or missing values silently fall through to GetMode — never 4xx.
+// ?format=ascii is intentionally not supported (no surfaced use case for
+// browsers requesting ASCII; the UA fallback already serves plain text to
+// non-browser clients). The handler-level Accept: text/pylon short-circuit
+// runs before ResolveMode and stays unchanged.
+func ResolveMode(c *gin.Context) render.Mode {
+	if q := strings.ToLower(strings.TrimSpace(c.Query("format"))); q != "" {
+		switch q {
+		case "svg":
+			return render.ModeSVG
+		case "png":
+			return render.ModePNG
+		}
+	}
+	return GetMode(c)
 }
 
 // classify implements the User-Agent decision rule. Pulled out so tests can

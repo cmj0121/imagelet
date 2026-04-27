@@ -63,3 +63,88 @@ func TestGetModeWithoutMiddleware(t *testing.T) {
 		t.Errorf("GetMode without middleware = %v, want ModeASCII (safe default)", got)
 	}
 }
+
+func TestResolveMode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name  string
+		ua    string
+		query string
+		want  render.Mode
+	}{
+		// Query overrides UA.
+		{"format_svg_with_browser_ua", "Mozilla/5.0", "format=svg", render.ModeSVG},
+		{"format_png_with_curl_ua", "curl/8.4.0", "format=png", render.ModePNG},
+		{"format_svg_with_curl_ua", "curl/8.4.0", "format=svg", render.ModeSVG},
+
+		// Case- and whitespace-insensitive.
+		{"format_uppercase", "curl/8.4.0", "format=SVG", render.ModeSVG},
+		{"format_padded", "curl/8.4.0", "format=%20png%20", render.ModePNG},
+
+		// Bad / unsupported values silently fall through to UA classification.
+		{"format_ascii_falls_through_browser", "Mozilla/5.0", "format=ascii", render.ModePNG},
+		{"format_ascii_falls_through_curl", "curl/8.4.0", "format=ascii", render.ModeASCII},
+		{"format_garbage_falls_through", "Mozilla/5.0", "format=jpeg", render.ModePNG},
+		{"format_empty_falls_through", "Mozilla/5.0", "format=", render.ModePNG},
+		{"no_query_falls_through", "Mozilla/5.0", "", render.ModePNG},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := gin.New()
+			r.Use(middleware.ClientDetector())
+			r.GET("/probe", func(c *gin.Context) {
+				c.String(http.StatusOK, middleware.ResolveMode(c).String())
+			})
+
+			path := "/probe"
+			if tc.query != "" {
+				path += "?" + tc.query
+			}
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			if tc.ua != "" {
+				req.Header.Set("User-Agent", tc.ua)
+			}
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			if got, want := rec.Body.String(), tc.want.String(); got != want {
+				t.Errorf("ua=%q query=%q: mode = %q, want %q", tc.ua, tc.query, got, want)
+			}
+		})
+	}
+}
+
+// TestResolveModeWithoutClientDetector pins that ?format= still wins even
+// when ClientDetector wasn't installed — the query path is independent of
+// the UA-classification middleware.
+func TestResolveModeWithoutClientDetector(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	r := gin.New()
+	r.GET("/probe", func(c *gin.Context) {
+		c.String(http.StatusOK, middleware.ResolveMode(c).String())
+	})
+
+	t.Run("format_svg_no_detector", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/probe?format=svg", nil)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if got := rec.Body.String(); got != "svg" {
+			t.Errorf("ResolveMode without ClientDetector: mode = %q, want %q", got, "svg")
+		}
+	})
+
+	t.Run("no_format_no_detector_defaults_ascii", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/probe", nil)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if got := rec.Body.String(); got != "ascii" {
+			t.Errorf("ResolveMode without ClientDetector + no query: mode = %q, want %q", got, "ascii")
+		}
+	})
+}
