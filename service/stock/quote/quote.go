@@ -16,13 +16,66 @@ import (
 // Quote captures the fields the /stock handler renders. Decimal-light:
 // we hold floats verbatim; the renderer formats with thousands separator
 // and 2dp.
+//
+// DayHigh/DayLow and Week52High/Week52Low are 0 when the upstream did not
+// supply them (typically thinly-traded symbols). The renderer treats
+// HasDayRange() / Has52WeekRange() as the signal to omit the corresponding
+// progress-bar row gracefully — no error, just no bar.
 type Quote struct {
-	Symbol    string    // canonical symbol, e.g. "^GSPC"
-	Last      float64   // last trade / current price
-	PrevClose float64   // previous trading day's close (for change %)
-	Currency  string    // ISO 4217 like "USD", "TWD"
-	AsOf      time.Time // server-side time of the quote (regularMarketTime)
-	IsClosed  bool      // market is currently closed
+	Symbol      string    // canonical symbol, e.g. "^GSPC"
+	Last        float64   // last trade / current price
+	PrevClose   float64   // previous trading day's close (for change %)
+	Currency    string    // ISO 4217 like "USD", "TWD"
+	AsOf        time.Time // server-side time of the quote (regularMarketTime)
+	IsClosed    bool      // market is currently closed
+	DayHigh     float64   // intraday session high; 0 when missing
+	DayLow      float64   // intraday session low; 0 when missing
+	Week52High  float64   // trailing 52-week high; 0 when missing
+	Week52Low   float64   // trailing 52-week low; 0 when missing
+}
+
+// HasDayRange reports whether DayHigh and DayLow are both populated and
+// form a meaningful range (Low < High). The renderer uses this to decide
+// whether to draw the day-range progress bar.
+func (q Quote) HasDayRange() bool {
+	return q.DayHigh > 0 && q.DayLow > 0 && q.DayLow < q.DayHigh
+}
+
+// Has52WeekRange reports whether Week52High and Week52Low are both
+// populated and form a meaningful range. The renderer uses this to decide
+// whether to draw the 52-week-range progress bar.
+func (q Quote) Has52WeekRange() bool {
+	return q.Week52High > 0 && q.Week52Low > 0 && q.Week52Low < q.Week52High
+}
+
+// DayPosition returns the current price's position within the intraday
+// range as a [0,1] fraction. 0 = at day low, 1 = at day high. Caller
+// MUST gate on HasDayRange() — this returns 0 when the range is empty
+// to avoid divide-by-zero.
+func (q Quote) DayPosition() float64 {
+	if !q.HasDayRange() {
+		return 0
+	}
+	return clamp01((q.Last - q.DayLow) / (q.DayHigh - q.DayLow))
+}
+
+// Week52Position returns the current price's position within the
+// 52-week range as a [0,1] fraction. Same semantics as DayPosition.
+func (q Quote) Week52Position() float64 {
+	if !q.Has52WeekRange() {
+		return 0
+	}
+	return clamp01((q.Last - q.Week52Low) / (q.Week52High - q.Week52Low))
+}
+
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
 }
 
 // ChangePercent computes (Last - PrevClose) / PrevClose * 100 with a

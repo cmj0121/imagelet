@@ -79,12 +79,16 @@ func (p *Provider) Get(ctx context.Context, symbol string) (quote.Quote, error) 
 	}
 
 	return quote.Quote{
-		Symbol:    m.Symbol,
-		Last:      m.RegularMarketPrice,
-		PrevClose: m.ChartPreviousClose,
-		Currency:  m.Currency,
-		AsOf:      time.Unix(m.RegularMarketTime, 0),
-		IsClosed:  marketClosed(m, time.Now().Unix()),
+		Symbol:     m.Symbol,
+		Last:       m.RegularMarketPrice,
+		PrevClose:  m.ChartPreviousClose,
+		Currency:   m.Currency,
+		AsOf:       time.Unix(m.RegularMarketTime, 0),
+		IsClosed:   marketClosed(m, time.Now().Unix()),
+		DayHigh:    m.RegularMarketDayHigh,
+		DayLow:     m.RegularMarketDayLow,
+		Week52High: m.FiftyTwoWeekHigh,
+		Week52Low:  m.FiftyTwoWeekLow,
 	}, nil
 }
 
@@ -118,6 +122,10 @@ type chartMeta struct {
 	RegularMarketPrice   float64 `json:"regularMarketPrice"`
 	ChartPreviousClose   float64 `json:"chartPreviousClose"`
 	RegularMarketTime    int64   `json:"regularMarketTime"`
+	RegularMarketDayHigh float64 `json:"regularMarketDayHigh"`
+	RegularMarketDayLow  float64 `json:"regularMarketDayLow"`
+	FiftyTwoWeekHigh     float64 `json:"fiftyTwoWeekHigh"`
+	FiftyTwoWeekLow      float64 `json:"fiftyTwoWeekLow"`
 	CurrentTradingPeriod struct {
 		Regular struct {
 			Start int64 `json:"start"`
