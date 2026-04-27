@@ -5,11 +5,16 @@
 // AQI, recent significant earthquake within 300 km, day-cycle progress
 // bar). Rows backed by missing or failed enrichment silently drop.
 //
-// Wire format mirrors /now and /stock:
+// Wire format mirrors /now and /stock with one v1 carve-out for SVG:
 //
 //   - Accept: text/pylon → bare temperature-banner pylon source (no captions)
-//   - User-Agent contains Mozilla → image/png (icon + banner composed locally;
-//     captions drawn with basicfont, axis-flipped from /404's composition)
+//   - ?format=svg → coerced to PNG. The icon-left composition uses a basicfont
+//     compositor (axis-flipped from /404); an SVG equivalent isn't built yet,
+//     and a vertical-stack fallback would visibly regress on the iPhone-shaped
+//     surface this feature was built for. Tracked as a v1 limitation in
+//     PLAN.md; revisit once an SVG icon-compositor exists.
+//   - ?format=png or User-Agent contains Mozilla → image/png (icon + banner
+//     composed locally; captions drawn with basicfont)
 //   - everything else → text/plain; charset=utf-8 (icon rows prepended to
 //     pylon banner ASCII rows, captions appended below)
 //
@@ -188,7 +193,15 @@ func (h *handler) serve(c *gin.Context) {
 		return
 	}
 
-	mode := middleware.GetMode(c)
+	mode := middleware.ResolveMode(c)
+	if mode == render.ModeSVG {
+		// v1 carve-out: see package doc and PLAN.md. /weather's PNG path
+		// composes ASCII icon LEFT of the banner with basicfont, which
+		// the pylon SVG renderer can't reproduce. Coerce SVG → PNG so
+		// the iPhone caller still gets the well-laid-out hero image
+		// rather than a vertical-stack regression.
+		mode = render.ModePNG
+	}
 	// Path 1 region-conditional CN/EN: TW visitors on the ASCII surface
 	// get Chinese labels (terminal CJK fonts cover them); PNG path stays
 	// English because basicfont.Face7x13 has zero CJK coverage and would

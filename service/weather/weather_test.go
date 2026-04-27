@@ -286,6 +286,41 @@ func TestServeBrowserGetsPNG(t *testing.T) {
 	}
 }
 
+// TestServeFormatSVGCoercesToPNG pins the v1 carve-out documented in the
+// package doc and PLAN.md: ?format=svg on /weather coerces to PNG rather
+// than emitting SVG, because the icon-left composition uses basicfont
+// which the pylon SVG renderer can't reproduce. A vertical-stack SVG
+// fallback would visibly regress on the iPhone surface this feature
+// targets, so we serve the well-laid-out PNG instead.
+func TestServeFormatSVGCoercesToPNG(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := newRouter(fakeProvider{f: freshForecast()})
+
+	for _, ua := range []string{"curl/8.4.0", "Mozilla/5.0"} {
+		t.Run(ua, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/weather?format=svg", nil)
+			req.Header.Set("User-Agent", ua)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			if got := rec.Header().Get("Content-Type"); got != "image/png" {
+				t.Errorf("Content-Type = %q, want image/png (SVG coerced to PNG)", got)
+			}
+			body := rec.Body.Bytes()
+			if !bytes.HasPrefix(body, pngMagic) {
+				head := body
+				if len(head) > 8 {
+					head = head[:8]
+				}
+				t.Errorf("body missing PNG magic bytes; first 8 = %x", head)
+			}
+		})
+	}
+}
+
 func TestServeAcceptPylonReturnsBareBannerSource(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := newRouter(fakeProvider{f: freshForecast()})
