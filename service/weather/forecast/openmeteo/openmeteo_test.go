@@ -173,8 +173,8 @@ func TestGetSendsRightParams(t *testing.T) {
 	want := map[string]string{
 		"latitude":         "25.0400",
 		"longitude":        "121.5600",
-		"current":          "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,is_day",
-		"daily":            "temperature_2m_max,temperature_2m_min,sunrise,sunset",
+		"current":          "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,is_day",
+		"daily":            "temperature_2m_max,temperature_2m_min,sunrise,sunset,uv_index_max,precipitation_probability_max",
 		"temperature_unit": "celsius",
 		"wind_speed_unit":  "kmh",
 		"timezone":         "auto",

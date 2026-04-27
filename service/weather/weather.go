@@ -1,7 +1,8 @@
 // Package weather mounts GET /weather: today's weather rendered as a hero
 // image — ASCII condition icon to the left of a pylon-rendered temperature
-// banner, with four caption lines below (condition + location, feels-like +
-// wind, today's high/low, sunrise/sunset).
+// banner, with up to five caption lines below (condition + location,
+// feels-like + wind, today's high/low, optional humidity/UV/precip extras,
+// sunrise/sunset).
 //
 // Wire format mirrors /now and /stock:
 //
@@ -27,6 +28,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/cmj0121/pylon/src/go/pkg/pylon"
 	"github.com/gin-gonic/gin"
@@ -37,6 +39,8 @@ import (
 
 	"github.com/cmj0121/imagelet/middleware"
 	"github.com/cmj0121/imagelet/render"
+	"github.com/cmj0121/imagelet/service/weather/airquality"
+	"github.com/cmj0121/imagelet/service/weather/earthquake"
 	"github.com/cmj0121/imagelet/service/weather/forecast"
 )
 
@@ -84,16 +88,22 @@ var (
 	composeInk = color.RGBA{R: 0x0f, G: 0x1c, B: 0x2d, A: 0xff}
 )
 
-// Register mounts GET /weather. p is the forecast.Provider — typically
-// cached(openmeteo) in production, a fake in tests.
-func Register(r gin.IRouter, p forecast.Provider) {
-	h := &handler{provider: p}
+// Register mounts GET /weather. fp is the forecast.Provider — typically
+// cached(openmeteo) in production. aq is the airquality.Provider; eq is
+// the earthquake.Provider. Pass airquality.NoopProvider() / earthquake.
+// NoopProvider() to disable enrichment surfaces (tests, dev). All
+// enrichment failures are best-effort: they drop their respective
+// caption row but never 5xx the base render.
+func Register(r gin.IRouter, fp forecast.Provider, aq airquality.Provider, eq earthquake.Provider) {
+	h := &handler{forecast: fp, airquality: aq, earthquake: eq}
 	r.GET("/weather", h.serve)
 }
 
 // handler holds the dependencies for /weather.
 type handler struct {
-	provider forecast.Provider
+	forecast   forecast.Provider
+	airquality airquality.Provider
+	earthquake earthquake.Provider
 }
 
 // serve resolves location + unit, fetches a forecast, and renders the
@@ -102,7 +112,7 @@ func (h *handler) serve(c *gin.Context) {
 	lat, lon, location := h.resolveLocation(c)
 	unit := resolveUnit(c)
 
-	f, err := h.provider.Get(c.Request.Context(), lat, lon, unit)
+	f, err := h.forecast.Get(c.Request.Context(), lat, lon, unit)
 
 	// cached.Provider returns (cachedForecast, err) on stale-serve and
 	// (zero Forecast, err) past failureTTL. TempUnit is the "have data"
@@ -126,7 +136,23 @@ func (h *handler) serve(c *gin.Context) {
 
 	bucket := BucketOf(f.WeatherCode, f.IsDay)
 	word := Word(f.WeatherCode)
-	captions := buildCaptions(f, word, location, stale)
+
+	// AQI + earthquake are best-effort enrichment. Errors silently drop the
+	// respective caption row; they never 5xx the base render. Logging is
+	// debug-level since transient upstream blips are common (free tier,
+	// no SLA).
+	aqi, aqErr := h.airquality.Get(c.Request.Context(), lat, lon)
+	if aqErr != nil {
+		log.Debug().Err(aqErr).Float64("lat", lat).Float64("lon", lon).
+			Msg("airquality upstream failed; omitting AQI row")
+		aqi = airquality.Reading{}
+	}
+	quake, qkErr := h.earthquake.Get(c.Request.Context(), lat, lon)
+	if qkErr != nil {
+		log.Debug().Err(qkErr).Float64("lat", lat).Float64("lon", lon).
+			Msg("earthquake upstream failed; omitting quake row")
+		quake = earthquake.Event{}
+	}
 
 	c.Header("Cache-Control", "public, max-age=600")
 
@@ -140,6 +166,13 @@ func (h *handler) serve(c *gin.Context) {
 	}
 
 	mode := middleware.GetMode(c)
+	// Path 1 region-conditional CN/EN: TW visitors on the ASCII surface
+	// get Chinese labels (terminal CJK fonts cover them); PNG path stays
+	// English because basicfont.Face7x13 has zero CJK coverage and would
+	// emit U+FFFD tofu. Same predicate /stock uses, kept local since it
+	// composes mode + region in a service-specific way.
+	lang := resolveCaptionLang(mode, middleware.GetCountry(c))
+	captions := buildCaptions(f, word, location, stale, aqi, quake, lang)
 	if mode == render.ModePNG {
 		body, perr := composePNG(headline, Icon(bucket), captions)
 		if perr == nil {
@@ -155,9 +188,12 @@ func (h *handler) serve(c *gin.Context) {
 
 // headlineSource is the pylon source rendered as the temperature banner.
 // Single-line on purpose — captions are rendered separately so pylon's
-// box stacking doesn't get confused by the longer caption rows.
+// box stacking doesn't get confused by the longer caption rows. Uses
+// pylon's `banner:mini` variant — the 3-row mini font balances better
+// against the 5-row ASCII condition icon than the 6-row default ANSI
+// shadow font.
 func headlineSource(headline string) string {
-	return fmt.Sprintf("[ %s | banner ]", headline)
+	return fmt.Sprintf("[ %s | banner:mini ]", headline)
 }
 
 // resolveLocation returns the (lat, lon, locationLabel) the handler renders
@@ -229,11 +265,38 @@ func resolveUnit(c *gin.Context) forecast.Unit {
 	return forecast.UnitMetric
 }
 
-// buildCaptions assembles the four caption lines. STALE prefix lives only
-// on the first line so the visual loudness sits next to the condition name.
+// captionLang switches the caption label set: English (PNG-safe ASCII)
+// vs Chinese (TW-visitor ASCII surface only). Picked once per request
+// from `resolveCaptionLang`.
+type captionLang int
+
+const (
+	langEN captionLang = iota
+	langCN
+)
+
+// resolveCaptionLang picks CN labels only when the visitor is on the
+// ASCII surface from a TW region — PNG always stays English because
+// basicfont.Face7x13 has zero CJK coverage. Pylon-source (Accept
+// header) is handled before captions are built, so it isn't on this
+// path.
+func resolveCaptionLang(mode render.Mode, country string) captionLang {
+	if mode != render.ModePNG && country == "TW" {
+		return langCN
+	}
+	return langEN
+}
+
+// buildCaptions assembles the caption lines. STALE prefix lives only on
+// the first line so the visual loudness sits next to the condition name.
 // Numeric formatting rounds to int for legibility; the banner carries the
-// precise temperature.
-func buildCaptions(f forecast.Forecast, word, location string, stale bool) []string {
+// precise temperature. The humidity/UV/precip line is omitted entirely
+// when the upstream provided none of the three. AQI and quake rows are
+// omitted when their respective upstreams failed. lang switches between
+// English and TW Chinese label sets — see resolveCaptionLang.
+func buildCaptions(f forecast.Forecast, word, location string, stale bool,
+	aqi airquality.Reading, quake earthquake.Event, lang captionLang,
+) []string {
 	prefix := ""
 	if stale {
 		prefix = "STALE · "
@@ -246,12 +309,156 @@ func buildCaptions(f forecast.Forecast, word, location string, stale bool) []str
 	wind := strconv.FormatFloat(math.Round(f.WindSpeed), 'f', 0, 64)
 	high := strconv.FormatFloat(math.Round(f.HighToday), 'f', 0, 64)
 	low := strconv.FormatFloat(math.Round(f.LowToday), 'f', 0, 64)
-	return []string{
+
+	out := []string{
 		fmt.Sprintf("%s%s in %s", prefix, titledWord, location),
-		fmt.Sprintf("feels %s%s  wind %s %s", feels, f.TempUnit, wind, f.WindUnit),
-		fmt.Sprintf("high %s%s / low %s%s", high, f.TempUnit, low, f.TempUnit),
-		fmt.Sprintf("sunrise %s  sunset %s", trimHour(f.Sunrise.Format("15:04")), trimHour(f.Sunset.Format("15:04"))),
 	}
+	if lang == langCN {
+		out = append(out,
+			fmt.Sprintf("體感 %s%s  風速 %s %s", feels, f.TempUnit, wind, f.WindUnit),
+			fmt.Sprintf("高 %s%s / 低 %s%s", high, f.TempUnit, low, f.TempUnit),
+		)
+	} else {
+		out = append(out,
+			fmt.Sprintf("feels %s%s  wind %s %s", feels, f.TempUnit, wind, f.WindUnit),
+			fmt.Sprintf("high %s%s / low %s%s", high, f.TempUnit, low, f.TempUnit),
+		)
+	}
+	if extras := buildExtrasLine(f, lang); extras != "" {
+		out = append(out, extras)
+	}
+	// AQI row sits between extras and the day-cycle bar so the cycle
+	// stays as the visual close of the block. Zero Category means the
+	// AQI provider errored or returned no data — drop the row.
+	if aqi.Category != "" {
+		if lang == langCN {
+			out = append(out, fmt.Sprintf("空污 %d (%s)", aqi.USAQI, aqiCategoryCN(aqi.Category)))
+		} else {
+			out = append(out, fmt.Sprintf("AQI %d (%s)", aqi.USAQI, aqi.Category))
+		}
+	}
+	// Quake row sits below AQI — both are best-effort enrichment, so
+	// keep them adjacent to make absence read as "enrichment was
+	// unavailable" rather than "no quake near you specifically." Zero
+	// Place means the upstream errored or had no qualifying event.
+	if quake.Place != "" {
+		out = append(out, formatQuakeRow(quake, lang))
+	}
+	// Day-cycle bar replaces the standalone "sunrise X  sunset Y" row —
+	// the bar's HH:MM endpoints carry the same data with a glanceable
+	// position marker for "where in the day are we right now."
+	if cycle := dayCycleLocalized(f.AsOf, f.Sunrise, f.Sunset, lang); cycle != "" {
+		out = append(out, cycle)
+	} else {
+		// Polar-night / pre-sunrise-data fallback: the bar collapses to ""
+		// when the daylight window is empty/inverted; keep the literal
+		// sunrise+sunset times so the row isn't lost entirely.
+		if lang == langCN {
+			out = append(out, fmt.Sprintf("日出 %s  日落 %s",
+				trimHour(f.Sunrise.Format("15:04")), trimHour(f.Sunset.Format("15:04"))))
+		} else {
+			out = append(out, fmt.Sprintf("sunrise %s  sunset %s",
+				trimHour(f.Sunrise.Format("15:04")), trimHour(f.Sunset.Format("15:04"))))
+		}
+	}
+	return out
+}
+
+// dayCycleLocalized wraps render.DayCycle with the CN label "日" when
+// the visitor's surface is the TW-ASCII Path 1. The bar glyphs and HH:MM
+// endpoints are language-agnostic, so we only swap the leading word.
+func dayCycleLocalized(asOf, sunrise, sunset time.Time, lang captionLang) string {
+	bar := render.DayCycle(asOf, sunrise, sunset)
+	if bar == "" || lang != langCN {
+		return bar
+	}
+	return strings.Replace(bar, "day ", "日 ", 1)
+}
+
+// aqiCategoryCN maps EPA labels onto Taiwan EPA's standard 中文 categories.
+// The CN side intentionally tracks the EN buckets one-to-one — visitors
+// switching surfaces (curl from TW vs PNG via browser) should see the
+// same severity reading.
+func aqiCategoryCN(en string) string {
+	switch en {
+	case "Good":
+		return "良好"
+	case "Moderate":
+		return "中等"
+	case "USG":
+		return "敏感族群"
+	case "Unhealthy":
+		return "不健康"
+	case "Very Unhealthy":
+		return "非常不健康"
+	case "Hazardous":
+		return "危害"
+	default:
+		return en
+	}
+}
+
+// formatQuakeRow renders "M4.1 quake 9km ENE of Yilan (3h ago)" or its CN
+// counterpart "M4.1 地震 ... (3h前)". USGS's place label is kept verbatim
+// in both — re-translating it would lose the directional cue and risk
+// mismatching visitor expectations. Magnitude rounds to 1 decimal; age
+// is computed at format-time so the row stays honest across the cache
+// TTL window without re-fetching.
+func formatQuakeRow(q earthquake.Event, lang captionLang) string {
+	age := humanizeAge(time.Since(q.Time))
+	if lang == langCN {
+		return fmt.Sprintf("M%.1f 地震 %s (%s前)", q.Magnitude, q.Place, age)
+	}
+	return fmt.Sprintf("M%.1f quake %s (%s ago)", q.Magnitude, q.Place, age)
+}
+
+// humanizeAge formats a duration as "5s" / "3m" / "2h" / "4d", picking
+// the largest unit. Sub-second / negative durations collapse to "0s" so
+// the caption never reads as a sentinel value.
+func humanizeAge(d time.Duration) string {
+	if d < time.Second {
+		return "0s"
+	}
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+}
+
+// buildExtrasLine renders "humidity 47%  UV 9  rain 20%" (or CN
+// "濕度 47%  紫外線 9  降雨 20%") — each segment is included only when
+// the upstream supplied the field. Returns "" when none of the three
+// are present so the caller skips the row entirely.
+func buildExtrasLine(f forecast.Forecast, lang captionLang) string {
+	var parts []string
+	if f.Humidity > 0 {
+		if lang == langCN {
+			parts = append(parts, fmt.Sprintf("濕度 %d%%", f.Humidity))
+		} else {
+			parts = append(parts, fmt.Sprintf("humidity %d%%", f.Humidity))
+		}
+	}
+	if f.UVIndexMax > 0 {
+		if lang == langCN {
+			parts = append(parts, fmt.Sprintf("紫外線 %.0f", f.UVIndexMax))
+		} else {
+			parts = append(parts, fmt.Sprintf("UV %.0f", f.UVIndexMax))
+		}
+	}
+	if f.PrecipProbability > 0 {
+		if lang == langCN {
+			parts = append(parts, fmt.Sprintf("降雨 %d%%", f.PrecipProbability))
+		} else {
+			parts = append(parts, fmt.Sprintf("rain %d%%", f.PrecipProbability))
+		}
+	}
+	return strings.Join(parts, "  ")
 }
 
 // trimHour strips a single leading zero from "HH:MM" so 05:42 reads 5:42.

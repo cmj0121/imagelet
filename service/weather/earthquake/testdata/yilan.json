@@ -1,0 +1,28 @@
+{
+  "type": "FeatureCollection",
+  "metadata": {
+    "generated": 1777258045000,
+    "url": "https://earthquake.usgs.gov/fdsnws/event/1/query",
+    "title": "USGS Earthquakes",
+    "status": 200,
+    "api": "2.4.0",
+    "limit": 1,
+    "offset": 1
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "mag": 4.1,
+        "place": "9 km ENE of Yilan, Taiwan",
+        "time": 1777101394020,
+        "title": "M 4.1 - 9 km ENE of Yilan, Taiwan"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [121.8351, 24.7997, 70.245]
+      },
+      "id": "us6000sss5"
+    }
+  ]
+}

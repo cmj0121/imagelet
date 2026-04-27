@@ -59,8 +59,8 @@ func (p *Provider) Get(ctx context.Context, lat, lon float64, unit forecast.Unit
 	q := url.Values{}
 	q.Set("latitude", strconv.FormatFloat(lat, 'f', 4, 64))
 	q.Set("longitude", strconv.FormatFloat(lon, 'f', 4, 64))
-	q.Set("current", "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,is_day")
-	q.Set("daily", "temperature_2m_max,temperature_2m_min,sunrise,sunset")
+	q.Set("current", "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,is_day")
+	q.Set("daily", "temperature_2m_max,temperature_2m_min,sunrise,sunset,uv_index_max,precipitation_probability_max")
 	q.Set("temperature_unit", tempUnit)
 	q.Set("wind_speed_unit", windUnit)
 	q.Set("timezone", "auto")
@@ -120,19 +120,34 @@ func (p *Provider) Get(ctx context.Context, lat, lon float64, unit forecast.Unit
 		return forecast.Forecast{}, forecast.ErrUnavailable
 	}
 
+	// Optional daily extras — empty arrays mean the upstream skipped the
+	// field for this run; surface zero values so the caller can branch on
+	// "0 means absent" via the Has* helpers in render path.
+	uvMax := 0.0
+	if len(raw.Daily.UVIndexMax) > 0 {
+		uvMax = raw.Daily.UVIndexMax[0]
+	}
+	precipProb := 0
+	if len(raw.Daily.PrecipProbabilityMax) > 0 {
+		precipProb = raw.Daily.PrecipProbabilityMax[0]
+	}
+
 	return forecast.Forecast{
-		Temperature: raw.Current.Temperature,
-		FeelsLike:   raw.Current.ApparentTemperature,
-		WeatherCode: raw.Current.WeatherCode,
-		WindSpeed:   raw.Current.WindSpeed,
-		IsDay:       raw.Current.IsDay == 1,
-		HighToday:   raw.Daily.TempMax[0],
-		LowToday:    raw.Daily.TempMin[0],
-		Sunrise:     sunrise,
-		Sunset:      sunset,
-		TempUnit:    raw.CurrentUnits.Temperature,
-		WindUnit:    normalizeWindUnit(raw.CurrentUnits.WindSpeed),
-		AsOf:        asOf,
+		Temperature:       raw.Current.Temperature,
+		FeelsLike:         raw.Current.ApparentTemperature,
+		Humidity:          raw.Current.RelativeHumidity,
+		WeatherCode:       raw.Current.WeatherCode,
+		WindSpeed:         raw.Current.WindSpeed,
+		IsDay:             raw.Current.IsDay == 1,
+		HighToday:         raw.Daily.TempMax[0],
+		LowToday:          raw.Daily.TempMin[0],
+		UVIndexMax:        uvMax,
+		PrecipProbability: precipProb,
+		Sunrise:           sunrise,
+		Sunset:            sunset,
+		TempUnit:          raw.CurrentUnits.Temperature,
+		WindUnit:          normalizeWindUnit(raw.CurrentUnits.WindSpeed),
+		AsOf:              asOf,
 	}, nil
 }
 
@@ -168,16 +183,19 @@ type forecastResponse struct {
 	Current struct {
 		Time                string  `json:"time"`
 		Temperature         float64 `json:"temperature_2m"`
+		RelativeHumidity    int     `json:"relative_humidity_2m"`
 		ApparentTemperature float64 `json:"apparent_temperature"`
 		WeatherCode         int     `json:"weather_code"`
 		WindSpeed           float64 `json:"wind_speed_10m"`
 		IsDay               int     `json:"is_day"`
 	} `json:"current"`
 	Daily struct {
-		Time    []string  `json:"time"`
-		TempMax []float64 `json:"temperature_2m_max"`
-		TempMin []float64 `json:"temperature_2m_min"`
-		Sunrise []string  `json:"sunrise"`
-		Sunset  []string  `json:"sunset"`
+		Time                 []string  `json:"time"`
+		TempMax              []float64 `json:"temperature_2m_max"`
+		TempMin              []float64 `json:"temperature_2m_min"`
+		Sunrise              []string  `json:"sunrise"`
+		Sunset               []string  `json:"sunset"`
+		UVIndexMax           []float64 `json:"uv_index_max"`
+		PrecipProbabilityMax []int     `json:"precipitation_probability_max"`
 	} `json:"daily"`
 }

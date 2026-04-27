@@ -10,6 +10,7 @@
     "time": "iso8601",
     "interval": "seconds",
     "temperature_2m": "°C",
+    "relative_humidity_2m": "%",
     "apparent_temperature": "°C",
     "weather_code": "wmo code",
     "wind_speed_10m": "km/h",
@@ -19,6 +20,7 @@
     "time": "2026-04-26T20:15",
     "interval": 900,
     "temperature_2m": 19.5,
+    "relative_humidity_2m": 78,
     "apparent_temperature": 20.7,
     "weather_code": 0,
     "wind_speed_10m": 9.0,
@@ -29,13 +31,17 @@
     "temperature_2m_max": "°C",
     "temperature_2m_min": "°C",
     "sunrise": "iso8601",
-    "sunset": "iso8601"
+    "sunset": "iso8601",
+    "uv_index_max": "",
+    "precipitation_probability_max": "%"
   },
   "daily": {
     "time": ["2026-04-26", "2026-04-27"],
     "temperature_2m_max": [27.6, 29.9],
     "temperature_2m_min": [17.5, 15.6],
     "sunrise": ["2026-04-26T05:22", "2026-04-27T05:21"],
-    "sunset": ["2026-04-26T18:21", "2026-04-27T18:21"]
+    "sunset": ["2026-04-26T18:21", "2026-04-27T18:21"],
+    "uv_index_max": [8.7, 9.1],
+    "precipitation_probability_max": [10, 20]
   }
 }

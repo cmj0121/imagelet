@@ -16,6 +16,8 @@ import (
 
 	"github.com/cmj0121/imagelet/middleware"
 	"github.com/cmj0121/imagelet/service/weather"
+	"github.com/cmj0121/imagelet/service/weather/airquality"
+	"github.com/cmj0121/imagelet/service/weather/earthquake"
 	"github.com/cmj0121/imagelet/service/weather/forecast"
 )
 
@@ -65,31 +67,81 @@ func (s *spyProvider) last() (spyCall, bool) {
 
 // freshForecast returns a deterministic Forecast in Asia/Taipei. Sample
 // values match PLAN: 24.3C, feels 23.0, code 2 (partly cloudy), wind 12,
-// high 26 / low 19, fixed sunrise/sunset times.
+// high 26 / low 19, fixed sunrise/sunset times. Humidity/UV/precip set
+// so the extras-line is rendered (omitted-when-all-zero is exercised by
+// TestExtrasLineOmittedWhenAbsent).
 func freshForecast() forecast.Forecast {
 	loc, _ := time.LoadLocation("Asia/Taipei")
 	return forecast.Forecast{
-		Temperature: 24.3,
-		FeelsLike:   23.0,
-		WeatherCode: 2,
-		WindSpeed:   12.0,
-		IsDay:       true,
-		HighToday:   26.0,
-		LowToday:    19.0,
-		Sunrise:     time.Date(2026, 4, 26, 5, 42, 0, 0, loc),
-		Sunset:      time.Date(2026, 4, 26, 18, 24, 0, 0, loc),
-		TempUnit:    "°C",
-		WindUnit:    "km/h",
-		AsOf:        time.Date(2026, 4, 26, 12, 0, 0, 0, loc),
+		Temperature:       24.3,
+		FeelsLike:         23.0,
+		Humidity:          47,
+		WeatherCode:       2,
+		WindSpeed:         12.0,
+		IsDay:             true,
+		HighToday:         26.0,
+		LowToday:          19.0,
+		UVIndexMax:        9.0,
+		PrecipProbability: 20,
+		Sunrise:           time.Date(2026, 4, 26, 5, 42, 0, 0, loc),
+		Sunset:            time.Date(2026, 4, 26, 18, 24, 0, 0, loc),
+		TempUnit:          "°C",
+		WindUnit:          "km/h",
+		AsOf:              time.Date(2026, 4, 26, 12, 0, 0, 0, loc),
+	}
+}
+
+// fakeAQI is a deterministic airquality.Provider for tests.
+type fakeAQI struct {
+	r   airquality.Reading
+	err error
+}
+
+func (a fakeAQI) Get(_ context.Context, _, _ float64) (airquality.Reading, error) {
+	return a.r, a.err
+}
+
+// fakeQuake is a deterministic earthquake.Provider for tests.
+type fakeQuake struct {
+	ev  earthquake.Event
+	err error
+}
+
+func (q fakeQuake) Get(_ context.Context, _, _ float64) (earthquake.Event, error) {
+	return q.ev, q.err
+}
+
+// freshAQI returns the stock AQI sample (74 / Moderate) the tests assert against.
+func freshAQI() airquality.Reading {
+	return airquality.Reading{USAQI: 74, Category: "Moderate"}
+}
+
+// freshQuake returns a fixed M4.1 Yilan event 3h before AsOf so the
+// caption row formats deterministically across test runs.
+func freshQuake() earthquake.Event {
+	return earthquake.Event{
+		Magnitude: 4.1,
+		Place:     "9 km ENE of Yilan, Taiwan",
+		Time:      time.Now().Add(-3 * time.Hour),
+		ID:        "us6000sss5",
 	}
 }
 
 // newRouter wires the same middlewares production will, scoped to /weather.
+// Enrichment providers default to fresh samples so happy-path tests see
+// every row; specific tests override via newRouterFull when they need
+// to exercise the failure paths.
 func newRouter(p forecast.Provider) *gin.Engine {
+	return newRouterFull(p, fakeAQI{r: freshAQI()}, fakeQuake{ev: freshQuake()})
+}
+
+// newRouterFull is newRouter with explicit enrichment providers for tests
+// that need to pin specific behavior (success / failure / noop).
+func newRouterFull(p forecast.Provider, aq airquality.Provider, eq earthquake.Provider) *gin.Engine {
 	r := gin.New()
 	r.Use(middleware.RegionDetector())
 	r.Use(middleware.ClientDetector())
-	weather.Register(r, p)
+	weather.Register(r, p, aq, eq)
 	return r
 }
 
@@ -97,9 +149,11 @@ func TestServeASCII(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := newRouter(fakeProvider{f: freshForecast()})
 
+	// Non-TW country exercises the EN label set; TW gets its own test
+	// (TestServeASCIITWPathPath1CN) so each label set has clear pins.
 	req := httptest.NewRequest(http.MethodGet, "/weather", nil)
 	req.Header.Set("User-Agent", "curl/8.4.0")
-	req.Header.Set("CF-IPCountry", "TW")
+	req.Header.Set("CF-IPCountry", "JP")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
@@ -113,7 +167,11 @@ func TestServeASCII(t *testing.T) {
 		t.Errorf("Cache-Control = %q, want %q", got, "public, max-age=600")
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Taipei", "feels", "wind", "high", "low", "sunrise", "sunset", "°C"} {
+	for _, want := range []string{"Tokyo", "feels", "wind", "high", "low", "°C",
+		"humidity 47%", "UV 9", "rain 20%",
+		"AQI 74 (Moderate)",
+		"M4.1 quake 9 km ENE of Yilan, Taiwan",
+		"day ", "5:42-18:24"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q\n--- body ---\n%s", want, body)
 		}
@@ -123,6 +181,68 @@ func TestServeASCII(t *testing.T) {
 	}
 	if !strings.Contains(body, "│") {
 		t.Errorf("body missing pylon banner frame char │\n--- body ---\n%s", body)
+	}
+}
+
+// TestServeASCIITWPathPath1CN pins the Path 1 region-conditional label
+// switch: TW visitors on the ASCII surface get Chinese labels.
+func TestServeASCIITWPathPath1CN(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := newRouter(fakeProvider{f: freshForecast()})
+
+	req := httptest.NewRequest(http.MethodGet, "/weather", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"Taipei",
+		"體感", "風速", "高", "低",
+		"濕度", "紫外線", "降雨",
+		"空污 74 (中等)",
+		"M4.1 地震", "前)",
+		"日 ",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing CN label %q\n--- body ---\n%s", want, body)
+		}
+	}
+	for _, unwanted := range []string{"feels", "humidity", "AQI", "quake"} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("EN label %q leaked into TW ASCII path\n--- body ---\n%s", unwanted, body)
+		}
+	}
+}
+
+// TestServeTWBrowserGetsENLabels confirms the PNG path stays English
+// even for TW visitors — basicfont.Face7x13 has zero CJK coverage so
+// CN labels would render as tofu rectangles.
+func TestServeTWBrowserGetsENLabels(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := newRouter(fakeProvider{f: freshForecast()})
+
+	req := httptest.NewRequest(http.MethodGet, "/weather", nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "image/png" {
+		t.Errorf("Content-Type = %q, want image/png", got)
+	}
+	// Body is binary PNG so we can't grep for labels; the smoke check is
+	// that the PNG is returned (size already validated by TestServeBrowserGetsPNG).
+	// Label EN-ness is enforced structurally by resolveCaptionLang: PNG
+	// path always picks langEN regardless of country.
+	if !bytes.HasPrefix(rec.Body.Bytes(), pngMagic) {
+		t.Errorf("body missing PNG magic — TW PNG path should still render")
 	}
 }
 
@@ -184,7 +304,7 @@ func TestServeAcceptPylonReturnsBareBannerSource(t *testing.T) {
 		t.Errorf("Content-Type = %q, want prefix text/pylon", got)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "[ 24.3 | banner ]") {
+	if !strings.Contains(body, "[ 24.3 | banner:mini ]") {
 		t.Errorf("body missing bare banner source\n--- body ---\n%s", body)
 	}
 	for _, unwanted := range []string{"feels", "wind", "sunrise", "Taipei", "STALE"} {
@@ -361,10 +481,102 @@ func TestSTALEWinsOverNothing(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "[ 24.3 | banner ]") {
+	if !strings.Contains(body, "[ 24.3 | banner:mini ]") {
 		t.Errorf("body missing bare banner source\n--- body ---\n%s", body)
 	}
 	if strings.Contains(body, "STALE") {
 		t.Errorf("STALE leaked into pylon source\n--- body ---\n%s", body)
+	}
+}
+
+// TestAQIFailureOmitsRow confirms an airquality upstream error drops the
+// AQI caption row but never 5xx-es the base render — AQI is enrichment,
+// not a hard dependency.
+func TestAQIFailureOmitsRow(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := newRouterFull(fakeProvider{f: freshForecast()},
+		fakeAQI{err: airquality.ErrUnavailable},
+		fakeQuake{ev: freshQuake()})
+
+	req := httptest.NewRequest(http.MethodGet, "/weather", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "JP") // EN labels keep test pins simple
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (AQI failure must not 5xx)", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "AQI") || strings.Contains(body, "空污") {
+		t.Errorf("AQI row leaked despite upstream error\n--- body ---\n%s", body)
+	}
+	// Sanity: forecast captions still render.
+	if !strings.Contains(body, "feels") || !strings.Contains(body, "day ") {
+		t.Errorf("base captions missing — AQI failure should not have dropped them\n--- body ---\n%s", body)
+	}
+}
+
+// TestQuakeFailureOmitsRow confirms an earthquake upstream error drops
+// the quake caption row but never 5xx-es the base render. Mirrors the
+// AQI-failure contract: enrichment surfaces are best-effort.
+func TestQuakeFailureOmitsRow(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := newRouterFull(fakeProvider{f: freshForecast()},
+		fakeAQI{r: freshAQI()},
+		fakeQuake{err: earthquake.ErrUnavailable})
+
+	req := httptest.NewRequest(http.MethodGet, "/weather", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "JP") // EN labels keep test pins simple
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (quake failure must not 5xx)", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "quake") || strings.Contains(body, "M4.1") || strings.Contains(body, "地震") {
+		t.Errorf("quake row leaked despite upstream error\n--- body ---\n%s", body)
+	}
+	// Sanity: AQI + base captions still render.
+	if !strings.Contains(body, "AQI 74") || !strings.Contains(body, "feels") {
+		t.Errorf("base/AQI captions missing — quake failure should not have dropped them\n--- body ---\n%s", body)
+	}
+}
+
+// TestExtrasLineOmittedWhenAbsent confirms the humidity/UV/precip caption
+// row is dropped entirely when the upstream supplied none of the three —
+// a row of three empty segments would look broken, an absent row reads
+// as "Open-Meteo skipped these today" without leaking the implementation.
+func TestExtrasLineOmittedWhenAbsent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	f := freshForecast()
+	f.Humidity = 0
+	f.UVIndexMax = 0
+	f.PrecipProbability = 0
+	r := newRouter(fakeProvider{f: f})
+
+	req := httptest.NewRequest(http.MethodGet, "/weather", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "JP") // EN labels keep test pins simple
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, unwanted := range []string{"humidity", "UV", "rain", "濕度", "紫外線", "降雨"} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("absent extras row leaked %q\n--- body ---\n%s", unwanted, body)
+		}
+	}
+	// Sanity: the still-required rows are intact (day-cycle replaces the
+	// standalone sunrise/sunset row).
+	for _, want := range []string{"feels", "high", "day "} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q\n--- body ---\n%s", want, body)
+		}
 	}
 }

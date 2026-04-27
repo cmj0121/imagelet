@@ -12,3 +12,7 @@ var StripPylonSyntaxForTest = stripPylonSyntax
 // FormatPriceForTest exposes formatPrice for the external test package.
 // Not part of the public API.
 var FormatPriceForTest = formatPrice
+
+// IndexNameForTest exposes indexNameFor for the external test package.
+// Not part of the public API.
+var IndexNameForTest = indexNameFor

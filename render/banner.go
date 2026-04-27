@@ -13,8 +13,7 @@ import (
 // Both render paths use pylon's native default theme — Unicode box-drawing
 // frame plus ANSI Shadow block-letter banner glyphs — so a UTF-8-capable
 // terminal and a browser see the same visual. ASCII appends a trailing
-// newline; PNG does not. Input normalization (empty fallback, colon
-// substitution) lives in BannerSource.
+// newline; PNG does not. Empty-headline normalization lives in BannerSource.
 //
 // PNG rendering can fail (font init, encode error). Callers should branch
 // on err and fall back to ASCII to keep the response from 5xx-ing on a
@@ -32,18 +31,40 @@ func Banner(headline, subtitle string, mode Mode) ([]byte, error) {
 // render it themselves) can use this directly without going through
 // pylon.Parse / RenderASCII / RenderPNG.
 //
-// Two boundary normalizations apply:
-//
-//   - Empty or whitespace-only headline is replaced with the shared `?`
-//     placeholder; pylon panics on bracketed whitespace-only labels.
-//   - `:` in the headline is substituted with a space; pylon's banner font
-//     has no `:` glyph, so without this the colon would fall back to a `?`
-//     shape between the digit pairs. The eye reads the resulting gap as a
-//     clock separator.
+// Empty or whitespace-only headline is replaced with the shared `?`
+// placeholder; pylon panics on bracketed whitespace-only labels.
 func BannerSource(headline, subtitle string) string {
 	if strings.TrimSpace(headline) == "" {
 		headline = emptyPlaceholder
 	}
-	headline = strings.ReplaceAll(headline, ":", " ")
 	return fmt.Sprintf("[ %s | banner ]\n( %s )", headline, subtitle)
+}
+
+// BannerStack renders BannerStackSource through pylon -- a banner stacked
+// over a multi-line bordered box. Used by /stock and /weather V1 layouts
+// where multiple caption rows (header / data / bars / divider / TW-block)
+// share a single outer box. Empty `lines` falls back to plain Banner with
+// no subtitle (renders cleanly).
+//
+// Trailing newline appended for ASCII; PNG keeps raw bytes. Same error
+// handling as Banner.
+func BannerStack(headline string, lines []string, mode Mode) ([]byte, error) {
+	ast := pylon.Parse(BannerStackSource(headline, lines))
+	if mode == ModePNG {
+		return pylon.RenderPNG(ast)
+	}
+	return []byte(pylon.RenderASCII(ast) + "\n"), nil
+}
+
+// BannerStackSource builds the pylon source `[ headline | banner ]\n[ line1\nline2\n... ]`.
+// Empty `lines` collapses to a banner-only source. Empty headline falls
+// back to the shared `?` placeholder (mirroring BannerSource).
+func BannerStackSource(headline string, lines []string) string {
+	if strings.TrimSpace(headline) == "" {
+		headline = emptyPlaceholder
+	}
+	if len(lines) == 0 {
+		return fmt.Sprintf("[ %s | banner ]", headline)
+	}
+	return fmt.Sprintf("[ %s | banner ]\n[ %s ]", headline, strings.Join(lines, "\n"))
 }

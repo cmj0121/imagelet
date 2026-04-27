@@ -55,6 +55,26 @@ func TestGetOpenMarket(t *testing.T) {
 	if q.AsOf.IsZero() {
 		t.Errorf("AsOf is zero")
 	}
+	// Day-range and 52w-range fields landed in v0.2 -- pin that the parser
+	// reads them from the same fixture and the helper methods agree.
+	if q.DayHigh == 0 || q.DayLow == 0 {
+		t.Errorf("DayHigh / DayLow not parsed: high=%v low=%v", q.DayHigh, q.DayLow)
+	}
+	if q.Week52High == 0 || q.Week52Low == 0 {
+		t.Errorf("Week52High / Week52Low not parsed: high=%v low=%v", q.Week52High, q.Week52Low)
+	}
+	if !q.HasDayRange() {
+		t.Errorf("HasDayRange = false, want true (fixture has positive low<high)")
+	}
+	if !q.Has52WeekRange() {
+		t.Errorf("Has52WeekRange = false, want true")
+	}
+	if p := q.DayPosition(); p < 0 || p > 1 {
+		t.Errorf("DayPosition = %v, want in [0,1]", p)
+	}
+	if p := q.Week52Position(); p < 0 || p > 1 {
+		t.Errorf("Week52Position = %v, want in [0,1]", p)
+	}
 }
 
 func TestGetClosedMarket(t *testing.T) {
