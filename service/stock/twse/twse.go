@@ -111,22 +111,58 @@ func NewWithEndpoints(bfi82u, miMargn string, client *http.Client) *HTTPProvider
 	return &HTTPProvider{bfi82u: bfi82u, miMargn: miMargn, client: client}
 }
 
-// Get fetches both daily aggregates concurrently and merges them. If
-// either upstream returns no data (empty stat / weekend / holiday), the
-// merged result returns ErrUnavailable. Partial successes (one endpoint
-// up, the other down with a transport error) propagate the transport
-// error -- the caller's cache decides whether to serve stale.
+// maxLookbackDays caps the walk-back when probing for the most recent
+// trading day with published data. 7 days covers any weekend plus
+// 1–2 consecutive Taiwanese holidays (the longest in the TWSE
+// calendar — Lunar New Year — runs ~5 days). Past this we surface
+// ErrUnavailable so the cache layer can keep prior data fresh.
+const maxLookbackDays = 7
+
+// Get fetches both daily aggregates for the most recent completed
+// trading day and merges them. TWSE publishes today's data only
+// after market close (~16:00 Asia/Taipei), so a request before
+// that — or on a weekend / holiday — must walk back to the last
+// session that did publish. We probe today first, then yesterday,
+// up to maxLookbackDays back; the first date that produces a
+// non-empty BFI82U or MI_MARGN response wins. Saturdays and
+// Sundays are skipped on the way down since TWSE is always closed.
+//
+// If either endpoint reports a transport error (vs ErrUnavailable
+// no-data), we surface it immediately — that's a "service is sick"
+// signal the cache layer should respect, not a "wrong date"
+// fallback. Partial-day data (BFI present, MARGN missing or vice
+// versa) is returned as-is; the renderer gates on Has* per-row.
 func (p *HTTPProvider) Get(ctx context.Context) (MarketData, error) {
-	// TWSE publishes for the most recent completed trading day. We probe
-	// today's date in Taipei first; if upstream signals no-session
-	// (typical on weekends/holidays), the caller reads `ErrUnavailable`
-	// and the cache layer keeps yesterday's data fresh.
 	tw, err := time.LoadLocation("Asia/Taipei")
 	if err != nil {
 		tw = time.FixedZone("Asia/Taipei", 8*3600)
 	}
-	date := time.Now().In(tw).Format("20060102")
+	now := time.Now().In(tw)
 
+	for daysBack := 0; daysBack < maxLookbackDays; daysBack++ {
+		probe := now.AddDate(0, 0, -daysBack)
+		// TWSE is closed on weekends; skipping shaves up to 2
+		// guaranteed-empty round trips per call.
+		switch probe.Weekday() {
+		case time.Saturday, time.Sunday:
+			continue
+		}
+		merged, err := p.fetchForDate(ctx, probe.Format("20060102"))
+		if err == nil {
+			return merged, nil
+		}
+		if !errors.Is(err, ErrUnavailable) {
+			return MarketData{}, err
+		}
+	}
+	return MarketData{}, ErrUnavailable
+}
+
+// fetchForDate runs the two TWSE endpoints concurrently for a single
+// YYYYMMDD probe. Returns ErrUnavailable when both endpoints respond
+// with their no-data sentinel; otherwise returns the merged data
+// (one endpoint succeeding is enough for the row to render).
+func (p *HTTPProvider) fetchForDate(ctx context.Context, date string) (MarketData, error) {
 	type fetchResult struct {
 		data MarketData
 		err  error
