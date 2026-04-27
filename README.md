@@ -119,11 +119,18 @@ curl http://localhost:8080/
         github.com/cmj0121/imagelet · v0.1.0
 ```
 
-`/now` content-negotiates per request:
+`/now` content-negotiates per request. Precedence (highest first):
 
 - `Accept: text/pylon` — raw pylon source, so callers can render it themselves.
+- `?format=svg` — `image/svg+xml; charset=utf-8`.
+- `?format=png` — `image/png`.
 - `User-Agent` contains `Mozilla` — `image/png`.
 - Anything else — `text/plain; charset=utf-8`.
+
+`?format=` overrides the User-Agent default; bad or unrecognized values fall
+through silently to UA-based negotiation (never `4xx`). `?format=ascii` is
+not supported in v1 — the UA fallback already serves plain text to non-browser
+clients.
 
 Both rendered paths use pylon's native theme — Unicode frame plus ANSI Shadow block
 letters — so the visual is identical across consumers. The subtitle carries the
@@ -151,9 +158,9 @@ When the request carries Cloudflare's `CF-Timezone` header (e.g. `Asia/Taipei`),
 `/now` renders in the caller's local zone — the subtitle's `UTC±H` offset shifts
 accordingly. Missing or unparseable values fall back to the server's local zone.
 
-`/stock` follows the same negotiation matrix as `/now` (raw `text/pylon`, PNG for
-`Mozilla` user-agents, ASCII otherwise) but renders the caller's regional stock
-index instead of the wall clock. The country comes from Cloudflare's `CF-IPCountry`
+`/stock` follows the same negotiation matrix as `/now` (raw `text/pylon`,
+`?format=svg|png`, PNG for `Mozilla` user-agents, ASCII otherwise) but renders
+the caller's regional stock index instead of the wall clock. The country comes from Cloudflare's `CF-IPCountry`
 header and falls back to `US` when the header is missing or unrecognized; the
 `?region=XX` query parameter overrides the header (handy for local dev and CI).
 Region codes are two-letter ISO 3166-1 alpha-2, case-insensitive.
@@ -241,6 +248,12 @@ visitors on the ASCII surface get Chinese labels (Path 1 CN/EN: 體感, 風速,
 高/低, 濕度, 紫外線, 降雨, 空污, 地震, 日); the PNG surface stays English
 because `basicfont.Face7x13` has no CJK glyphs.
 
+`/weather` honors `?format=png` like the other routes but coerces
+`?format=svg` to PNG in v1 — the icon-left composition uses a `basicfont`
+compositor that the pylon SVG renderer can't reproduce, and a vertical-stack
+fallback would visibly regress on the iPhone surface. Revisit when an SVG
+icon-compositor exists.
+
 Location resolution priority (first non-empty wins):
 
 1. `?lat=<f>&lon=<f>` query — explicit coords. Validated for finiteness and
@@ -293,7 +306,9 @@ message and the trailing field. Both ASCII and PNG paths show the same content �
 the PNG is composed locally (pylon banner above, traceback drawn with
 `basicfont` below) because pylon's parser would shred the trace's parens and
 brackets. `Accept: text/pylon` returns the bare banner source (the traceback
-isn't pylon syntax).
+isn't pylon syntax). `?format=svg` returns the same banner-only SVG — no
+traceback prose, since the trace can't be pylon-parsed and an SVG-side
+basicfont compositor isn't built yet (v1 limitation).
 
 ```bash
 curl -s http://localhost:8080/no-such-route
@@ -391,12 +406,12 @@ func main() {
 
 ## Built with
 
-| Library                                    | Role                  |
-| ------------------------------------------ | --------------------- |
-| [gin](https://github.com/gin-gonic/gin)    | HTTP router           |
-| [kong](https://github.com/alecthomas/kong) | CLI flag parsing      |
-| [zerolog](https://github.com/rs/zerolog)   | Structured logging    |
-| [pylon](https://github.com/cmj0121/pylon)  | ASCII / SVG rendering |
+| Library                                    | Role                        |
+| ------------------------------------------ | --------------------------- |
+| [gin](https://github.com/gin-gonic/gin)    | HTTP router                 |
+| [kong](https://github.com/alecthomas/kong) | CLI flag parsing            |
+| [zerolog](https://github.com/rs/zerolog)   | Structured logging          |
+| [pylon](https://github.com/cmj0121/pylon)  | ASCII / PNG / SVG rendering |
 
 Pylon is pinned via a Go pseudo-version of the `v0.5.0` tag's commit `93b11e6bbcff`;
 the module path `github.com/cmj0121/pylon/src/go` is a nested go.mod, so `@latest`
