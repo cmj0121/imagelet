@@ -78,6 +78,11 @@ func TimezoneDetector() gin.HandlerFunc {
 // current request. If TimezoneDetector was not installed or the header was
 // missing / unparseable, GetLocation returns time.Local — handlers can
 // always call time.Now().In(GetLocation(c)) safely without a nil check.
+//
+// Naming note: the sibling getters in this package are GetCountry and
+// GetMode (named after the concept they represent). GetLocation is named
+// after its return type because *time.Location is the value handlers
+// actually want — naming it GetTimezone would imply a string zone name.
 func GetLocation(c *gin.Context) *time.Location {
 	v, ok := c.Get(locationKey)
 	if !ok {
