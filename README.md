@@ -26,8 +26,6 @@ Flags:
   -v, --verbose           Increase log verbosity (-v for debug, -vv for trace).
 ```
 
-Container builds, multi-arch images, and hardened deployment: see [docs/docker.md](docs/docker.md).
-
 ## Routes
 
 | Method | Path       | Description                                                                |
@@ -37,9 +35,6 @@ Container builds, multi-arch images, and hardened deployment: see [docs/docker.m
 | `GET`  | `/now`     | Banner-rendered current time with date / weekday / zone caption.           |
 | `GET`  | `/stock`   | Banner-rendered regional stock-index quote.                                |
 | `*`    | _other_    | `404` banner above a fake Python traceback with the requested path inside. |
-
-Content negotiation, region resolution, cache rules, and failure modes:
-see [docs/routes.md](docs/routes.md).
 
 ### `/`
 
@@ -110,11 +105,6 @@ path:   /no-such-route
 method: GET
 status: 404
 ```
-
-## Embedding
-
-`github.com/cmj0121/imagelet/...` packages can be mounted inside any gin app —
-project layout and a worked example are in [docs/embedding.md](docs/embedding.md).
 
 ## Built with
 
