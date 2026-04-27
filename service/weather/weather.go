@@ -1,8 +1,9 @@
 // Package weather mounts GET /weather: today's weather rendered as a hero
 // image — ASCII condition icon to the left of a pylon-rendered temperature
-// banner, with up to five caption lines below (condition + location,
+// banner, with up to seven caption lines below (condition + location,
 // feels-like + wind, today's high/low, optional humidity/UV/precip extras,
-// sunrise/sunset).
+// AQI, recent significant earthquake within 300 km, day-cycle progress
+// bar). Rows backed by missing or failed enrichment silently drop.
 //
 // Wire format mirrors /now and /stock:
 //
