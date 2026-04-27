@@ -31,6 +31,7 @@ import (
 	"github.com/cmj0121/imagelet/service/stock/twse"
 	"github.com/cmj0121/imagelet/service/weather"
 	"github.com/cmj0121/imagelet/service/weather/airquality"
+	"github.com/cmj0121/imagelet/service/weather/earthquake"
 	weathercache "github.com/cmj0121/imagelet/service/weather/forecast/cached"
 	"github.com/cmj0121/imagelet/service/weather/forecast/openmeteo"
 )
@@ -97,7 +98,11 @@ func main() {
 	// 30m success / 5m failure TTL via airquality.NewCached. Failures
 	// drop the AQI row but never 5xx the page.
 	aqiProvider := airquality.NewCached(airquality.New())
-	weather.Register(r, forecastProvider, aqiProvider)
+	// Earthquake enrichment hits USGS's fdsnws geojson endpoint for
+	// any qualifying event within 300km of the visitor. 15m success /
+	// 5m failure TTL — events propagate within minutes upstream.
+	quakeProvider := earthquake.NewCached(earthquake.New())
+	weather.Register(r, forecastProvider, aqiProvider, quakeProvider)
 
 	// NoRoute fallback — must be installed last so every other route had
 	// a chance to claim its path first.

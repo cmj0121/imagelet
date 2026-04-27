@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/cmj0121/pylon/src/go/pkg/pylon"
 	"github.com/gin-gonic/gin"
@@ -39,6 +40,7 @@ import (
 	"github.com/cmj0121/imagelet/middleware"
 	"github.com/cmj0121/imagelet/render"
 	"github.com/cmj0121/imagelet/service/weather/airquality"
+	"github.com/cmj0121/imagelet/service/weather/earthquake"
 	"github.com/cmj0121/imagelet/service/weather/forecast"
 )
 
@@ -87,12 +89,13 @@ var (
 )
 
 // Register mounts GET /weather. fp is the forecast.Provider — typically
-// cached(openmeteo) in production. aq is the airquality.Provider; pass
-// airquality.NoopProvider() to disable AQI enrichment (tests, dev).
-// AQI failures are best-effort: they drop the AQI caption row but never
-// 5xx the base render.
-func Register(r gin.IRouter, fp forecast.Provider, aq airquality.Provider) {
-	h := &handler{forecast: fp, airquality: aq}
+// cached(openmeteo) in production. aq is the airquality.Provider; eq is
+// the earthquake.Provider. Pass airquality.NoopProvider() / earthquake.
+// NoopProvider() to disable enrichment surfaces (tests, dev). All
+// enrichment failures are best-effort: they drop their respective
+// caption row but never 5xx the base render.
+func Register(r gin.IRouter, fp forecast.Provider, aq airquality.Provider, eq earthquake.Provider) {
+	h := &handler{forecast: fp, airquality: aq, earthquake: eq}
 	r.GET("/weather", h.serve)
 }
 
@@ -100,6 +103,7 @@ func Register(r gin.IRouter, fp forecast.Provider, aq airquality.Provider) {
 type handler struct {
 	forecast   forecast.Provider
 	airquality airquality.Provider
+	earthquake earthquake.Provider
 }
 
 // serve resolves location + unit, fetches a forecast, and renders the
@@ -133,16 +137,23 @@ func (h *handler) serve(c *gin.Context) {
 	bucket := BucketOf(f.WeatherCode, f.IsDay)
 	word := Word(f.WeatherCode)
 
-	// AQI is best-effort enrichment. Errors silently drop the caption row;
-	// they never 5xx the base render. Logging is debug-level since transient
-	// upstream blips are common (free tier, no SLA).
+	// AQI + earthquake are best-effort enrichment. Errors silently drop the
+	// respective caption row; they never 5xx the base render. Logging is
+	// debug-level since transient upstream blips are common (free tier,
+	// no SLA).
 	aqi, aqErr := h.airquality.Get(c.Request.Context(), lat, lon)
 	if aqErr != nil {
 		log.Debug().Err(aqErr).Float64("lat", lat).Float64("lon", lon).
 			Msg("airquality upstream failed; omitting AQI row")
 		aqi = airquality.Reading{}
 	}
-	captions := buildCaptions(f, word, location, stale, aqi)
+	quake, qkErr := h.earthquake.Get(c.Request.Context(), lat, lon)
+	if qkErr != nil {
+		log.Debug().Err(qkErr).Float64("lat", lat).Float64("lon", lon).
+			Msg("earthquake upstream failed; omitting quake row")
+		quake = earthquake.Event{}
+	}
+	captions := buildCaptions(f, word, location, stale, aqi, quake)
 
 	c.Header("Cache-Control", "public, max-age=600")
 
@@ -253,9 +264,11 @@ func resolveUnit(c *gin.Context) forecast.Unit {
 // Numeric formatting rounds to int for legibility; the banner carries the
 // precise temperature. The humidity/UV/precip line is omitted entirely
 // when the upstream provided none of the three (Open-Meteo can serve a
-// minimal forecast that skips daily extras). AQI row is omitted when the
-// airquality upstream failed (zero Category sentinel).
-func buildCaptions(f forecast.Forecast, word, location string, stale bool, aqi airquality.Reading) []string {
+// minimal forecast that skips daily extras). AQI and quake rows are
+// omitted when their respective upstreams failed (zero-value sentinels).
+func buildCaptions(f forecast.Forecast, word, location string, stale bool,
+	aqi airquality.Reading, quake earthquake.Event,
+) []string {
 	prefix := ""
 	if stale {
 		prefix = "STALE · "
@@ -282,6 +295,13 @@ func buildCaptions(f forecast.Forecast, word, location string, stale bool, aqi a
 	if aqi.Category != "" {
 		out = append(out, fmt.Sprintf("AQI %d (%s)", aqi.USAQI, aqi.Category))
 	}
+	// Quake row sits below AQI — both are best-effort enrichment, so
+	// keep them adjacent to make absence read as "enrichment was
+	// unavailable" rather than "no quake near you specifically." Zero
+	// Place means the upstream errored or had no qualifying event.
+	if quake.Place != "" {
+		out = append(out, formatQuakeRow(quake))
+	}
 	// Day-cycle bar replaces the standalone "sunrise X  sunset Y" row —
 	// the bar's HH:MM endpoints carry the same data with a glanceable
 	// position marker for "where in the day are we right now."
@@ -295,6 +315,35 @@ func buildCaptions(f forecast.Forecast, word, location string, stale bool, aqi a
 			trimHour(f.Sunrise.Format("15:04")), trimHour(f.Sunset.Format("15:04"))))
 	}
 	return out
+}
+
+// formatQuakeRow renders "M4.1 quake 9km ENE of Yilan (3h ago)" — magnitude
+// to 1 decimal, USGS's place label verbatim, and a coarse age relative to
+// now (s/m/h/d). Age is computed at format-time so the row stays current
+// across the cache TTL window without re-fetching. UTC math is fine since
+// we only need a rough magnitude difference.
+func formatQuakeRow(q earthquake.Event) string {
+	return fmt.Sprintf("M%.1f quake %s (%s ago)",
+		q.Magnitude, q.Place, humanizeAge(time.Since(q.Time)))
+}
+
+// humanizeAge formats a duration as "5s" / "3m" / "2h" / "4d", picking
+// the largest unit. Sub-second / negative durations collapse to "0s" so
+// the caption never reads as a sentinel value.
+func humanizeAge(d time.Duration) string {
+	if d < time.Second {
+		return "0s"
+	}
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
 
 // buildExtrasLine renders "humidity 47%  UV 9  rain 20%" — each segment is

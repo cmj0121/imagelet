@@ -17,6 +17,7 @@ import (
 	"github.com/cmj0121/imagelet/middleware"
 	"github.com/cmj0121/imagelet/service/weather"
 	"github.com/cmj0121/imagelet/service/weather/airquality"
+	"github.com/cmj0121/imagelet/service/weather/earthquake"
 	"github.com/cmj0121/imagelet/service/weather/forecast"
 )
 
@@ -100,25 +101,47 @@ func (a fakeAQI) Get(_ context.Context, _, _ float64) (airquality.Reading, error
 	return a.r, a.err
 }
 
+// fakeQuake is a deterministic earthquake.Provider for tests.
+type fakeQuake struct {
+	ev  earthquake.Event
+	err error
+}
+
+func (q fakeQuake) Get(_ context.Context, _, _ float64) (earthquake.Event, error) {
+	return q.ev, q.err
+}
+
 // freshAQI returns the stock AQI sample (74 / Moderate) the tests assert against.
 func freshAQI() airquality.Reading {
 	return airquality.Reading{USAQI: 74, Category: "Moderate"}
 }
 
-// newRouter wires the same middlewares production will, scoped to /weather.
-// AQI defaults to a fresh sample so most tests see the AQI row; specific
-// tests override via newRouterAQ when they need to exercise the no-AQI path.
-func newRouter(p forecast.Provider) *gin.Engine {
-	return newRouterAQ(p, fakeAQI{r: freshAQI()})
+// freshQuake returns a fixed M4.1 Yilan event 3h before AsOf so the
+// caption row formats deterministically across test runs.
+func freshQuake() earthquake.Event {
+	return earthquake.Event{
+		Magnitude: 4.1,
+		Place:     "9 km ENE of Yilan, Taiwan",
+		Time:      time.Now().Add(-3 * time.Hour),
+		ID:        "us6000sss5",
+	}
 }
 
-// newRouterAQ is newRouter with an explicit airquality.Provider for tests
-// that need to pin the AQI behavior (success / failure / noop).
-func newRouterAQ(p forecast.Provider, aq airquality.Provider) *gin.Engine {
+// newRouter wires the same middlewares production will, scoped to /weather.
+// Enrichment providers default to fresh samples so happy-path tests see
+// every row; specific tests override via newRouterFull when they need
+// to exercise the failure paths.
+func newRouter(p forecast.Provider) *gin.Engine {
+	return newRouterFull(p, fakeAQI{r: freshAQI()}, fakeQuake{ev: freshQuake()})
+}
+
+// newRouterFull is newRouter with explicit enrichment providers for tests
+// that need to pin specific behavior (success / failure / noop).
+func newRouterFull(p forecast.Provider, aq airquality.Provider, eq earthquake.Provider) *gin.Engine {
 	r := gin.New()
 	r.Use(middleware.RegionDetector())
 	r.Use(middleware.ClientDetector())
-	weather.Register(r, p, aq)
+	weather.Register(r, p, aq, eq)
 	return r
 }
 
@@ -145,6 +168,7 @@ func TestServeASCII(t *testing.T) {
 	for _, want := range []string{"Taipei", "feels", "wind", "high", "low", "°C",
 		"humidity 47%", "UV 9", "rain 20%",
 		"AQI 74 (Moderate)",
+		"M4.1 quake 9 km ENE of Yilan, Taiwan",
 		"day ", "5:42-18:24"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q\n--- body ---\n%s", want, body)
@@ -406,8 +430,9 @@ func TestSTALEWinsOverNothing(t *testing.T) {
 // not a hard dependency.
 func TestAQIFailureOmitsRow(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	r := newRouterAQ(fakeProvider{f: freshForecast()},
-		fakeAQI{err: airquality.ErrUnavailable})
+	r := newRouterFull(fakeProvider{f: freshForecast()},
+		fakeAQI{err: airquality.ErrUnavailable},
+		fakeQuake{ev: freshQuake()})
 
 	req := httptest.NewRequest(http.MethodGet, "/weather", nil)
 	req.Header.Set("User-Agent", "curl/8.4.0")
@@ -425,6 +450,34 @@ func TestAQIFailureOmitsRow(t *testing.T) {
 	// Sanity: forecast captions still render.
 	if !strings.Contains(body, "feels") || !strings.Contains(body, "day ") {
 		t.Errorf("base captions missing — AQI failure should not have dropped them\n--- body ---\n%s", body)
+	}
+}
+
+// TestQuakeFailureOmitsRow confirms an earthquake upstream error drops
+// the quake caption row but never 5xx-es the base render. Mirrors the
+// AQI-failure contract: enrichment surfaces are best-effort.
+func TestQuakeFailureOmitsRow(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := newRouterFull(fakeProvider{f: freshForecast()},
+		fakeAQI{r: freshAQI()},
+		fakeQuake{err: earthquake.ErrUnavailable})
+
+	req := httptest.NewRequest(http.MethodGet, "/weather", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (quake failure must not 5xx)", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "quake") || strings.Contains(body, "M4.1") {
+		t.Errorf("quake row leaked despite upstream error\n--- body ---\n%s", body)
+	}
+	// Sanity: AQI + base captions still render.
+	if !strings.Contains(body, "AQI 74") || !strings.Contains(body, "feels") {
+		t.Errorf("base/AQI captions missing — quake failure should not have dropped them\n--- body ---\n%s", body)
 	}
 }
 
