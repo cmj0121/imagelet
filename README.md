@@ -93,6 +93,7 @@ to work — this is a one-time per-package action, not workflow-controllable.
 | `GET`  | `/healthz` | Returns `200 No Content`. Liveness probe — never renders, never allocates. |
 | `GET`  | `/now`     | Banner-rendered current time with date / weekday / zone caption.           |
 | `GET`  | `/stock`   | Banner-rendered regional stock-index quote.                                |
+| `GET`  | `/weather` | Today's weather: ASCII condition icon + temperature banner + captions.     |
 | `*`    | _other_    | `404` banner above a fake Python traceback with the requested path inside. |
 
 `/` is the landing page. The version segment is stamped at link time via
@@ -196,6 +197,55 @@ Quotes are sourced from Yahoo Finance's unofficial v8 chart API. The provider is
 hidden behind `quote.Provider`, so swapping in a different upstream is one file.
 The cache absorbs short outages — see the failure modes above.
 
+`/weather` follows the `/now` and `/stock` shape with a slight twist: an ASCII
+condition icon is composed to the LEFT of the temperature banner, four caption
+lines below carry the supporting numbers (condition + location, feels-like +
+wind, today's high/low, sunrise/sunset). The PNG path composes the same layout
+locally with `basicfont` for the icon and pylon's PNG for the banner — same
+trick `/404` uses, axis flipped.
+
+Location resolution priority (first non-empty wins):
+
+1. `?lat=<f>&lon=<f>` query — explicit coords. Validated for finiteness and
+   range; bad values silently fall through (never `4xx`).
+2. Cloudflare's `CF-IPLatitude` / `CF-IPLongitude` headers (separate Managed
+   Transform from `CF-IPCountry` and `CF-Timezone` — operators must enable
+   "Add visitor location headers" to surface lat/lon).
+3. Country → capital fallback keyed by `CF-IPCountry`:
+
+| Country           | Capital   | Lat / Lon          |
+| ----------------- | --------- | ------------------ |
+| TW                | Taipei    | 25.04, 121.56      |
+| US                | New York  | 40.71, -74.01      |
+| JP                | Tokyo     | 35.68, 139.69      |
+| HK                | Hong Kong | 22.32, 114.17      |
+| GB                | London    | 51.51, -0.13       |
+| DE                | Berlin    | 52.52, 13.40       |
+| _other / missing_ | New York  | (default fallback) |
+
+Units default by country — `US`, `LR`, `MM` (the three imperial holdouts) get
+Fahrenheit + mph; everywhere else gets Celsius + km/h. `?unit=c` or
+`?unit=f` overrides.
+
+Cache: 10-minute success + 10-minute failure TTL. Past 10 minutes of upstream
+failure the handler emits `503 Service Unavailable` with `Retry-After: 60`
+instead of continuing to serve stale data — weather staleness is a correctness
+hazard, unlike stock quotes after market close. Within the failure window, the
+cached forecast is served with a `STALE ·` prefix on the condition caption.
+Cache key rounds lat/lon to one decimal (~10 km grid) so visitors in the same
+neighborhood share a cell.
+
+```bash
+curl http://localhost:8080/weather                                 # ASCII, country fallback
+curl 'http://localhost:8080/weather?lat=25.04&lon=121.56'          # ASCII, Taipei
+curl 'http://localhost:8080/weather?lat=51.51&lon=-0.13&unit=c'    # ASCII, London, °C override
+curl -A 'Mozilla/5.0' -o weather.png http://localhost:8080/weather # PNG
+```
+
+Forecasts are sourced from Open-Meteo's free public API (no key, no SLA).
+Behind `forecast.Provider` so swapping to MET Norway or another free upstream
+is a single file.
+
 Unmatched paths fall through to a `404` page: pylon-rendered `404` banner stacked
 above a fake Python traceback with the requested path injected into the panic
 message and the trailing field. Both ASCII and PNG paths show the same content —
@@ -255,6 +305,7 @@ logger/            # zerolog setup with TTY-aware console / JSON switching
 service/index/     # the GET / landing page (banner + tagline + repo · version)
 service/now/       # the /now plugin (Register + Handler)
 service/stock/     # the /stock plugin — regional index quote (Yahoo Finance + cache)
+service/weather/   # the /weather plugin — today's forecast (Open-Meteo + cache)
 service/notfound/  # the 404 fallback — banner + fake Python traceback
 ```
 
@@ -271,14 +322,18 @@ import (
     stocksvc "github.com/cmj0121/imagelet/service/stock"
     "github.com/cmj0121/imagelet/service/stock/quote/cached"
     "github.com/cmj0121/imagelet/service/stock/quote/yahoo"
+    weathersvc "github.com/cmj0121/imagelet/service/weather"
+    weathercache "github.com/cmj0121/imagelet/service/weather/forecast/cached"
+    "github.com/cmj0121/imagelet/service/weather/forecast/openmeteo"
 )
 
 func main() {
-    r := server.New()                              // engine with all middleware + GET /healthz
-    indexsvc.Register(r, "v0.2.0")                 // mounts GET / (pass your binary's version)
-    nowsvc.Register(r)                             // mounts GET /now
-    stocksvc.Register(r, cached.New(yahoo.New())) // mounts GET /stock with cache
-    notfoundsvc.Register(r)                        // 404 fallback — install last
+    r := server.New()                                                    // middleware + GET /healthz
+    indexsvc.Register(r, "v0.2.0")                                       // GET / (pass your binary's version)
+    nowsvc.Register(r)                                                   // GET /now
+    stocksvc.Register(r, cached.New(yahoo.New()))                        // GET /stock with cache
+    weathersvc.Register(r, weathercache.New(openmeteo.New()))            // GET /weather with cache
+    notfoundsvc.Register(r)                                              // 404 fallback — install last
     http.ListenAndServe(":8080", r)
 }
 ```

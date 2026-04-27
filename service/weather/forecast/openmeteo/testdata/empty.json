@@ -1,0 +1,36 @@
+{
+  "latitude": 0.0,
+  "longitude": 0.0,
+  "timezone": "GMT",
+  "utc_offset_seconds": 0,
+  "current_units": {
+    "time": "iso8601",
+    "temperature_2m": "°C",
+    "apparent_temperature": "°C",
+    "weather_code": "wmo code",
+    "wind_speed_10m": "km/h",
+    "is_day": ""
+  },
+  "current": {
+    "time": "2026-04-26T00:00",
+    "temperature_2m": 0.0,
+    "apparent_temperature": 0.0,
+    "weather_code": 0,
+    "wind_speed_10m": 0.0,
+    "is_day": 0
+  },
+  "daily_units": {
+    "time": "iso8601",
+    "temperature_2m_max": "°C",
+    "temperature_2m_min": "°C",
+    "sunrise": "iso8601",
+    "sunset": "iso8601"
+  },
+  "daily": {
+    "time": [],
+    "temperature_2m_max": [],
+    "temperature_2m_min": [],
+    "sunrise": [],
+    "sunset": []
+  }
+}

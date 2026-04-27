@@ -4,7 +4,7 @@ go 1.25.1
 
 require (
 	github.com/alecthomas/kong v1.15.0
-	github.com/cmj0121/pylon/src/go v0.0.0-20260424071938-93b11e6bbcff
+	github.com/cmj0121/pylon/src/go v0.0.0-20260426235559-80dfedab74c6
 	github.com/gin-gonic/gin v1.10.1
 	github.com/mattn/go-isatty v0.0.21
 	github.com/rs/zerolog v1.35.1
