@@ -149,9 +149,11 @@ func TestServeASCII(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := newRouter(fakeProvider{f: freshForecast()})
 
+	// Non-TW country exercises the EN label set; TW gets its own test
+	// (TestServeASCIITWPathPath1CN) so each label set has clear pins.
 	req := httptest.NewRequest(http.MethodGet, "/weather", nil)
 	req.Header.Set("User-Agent", "curl/8.4.0")
-	req.Header.Set("CF-IPCountry", "TW")
+	req.Header.Set("CF-IPCountry", "JP")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
@@ -165,7 +167,7 @@ func TestServeASCII(t *testing.T) {
 		t.Errorf("Cache-Control = %q, want %q", got, "public, max-age=600")
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Taipei", "feels", "wind", "high", "low", "°C",
+	for _, want := range []string{"Tokyo", "feels", "wind", "high", "low", "°C",
 		"humidity 47%", "UV 9", "rain 20%",
 		"AQI 74 (Moderate)",
 		"M4.1 quake 9 km ENE of Yilan, Taiwan",
@@ -179,6 +181,68 @@ func TestServeASCII(t *testing.T) {
 	}
 	if !strings.Contains(body, "│") {
 		t.Errorf("body missing pylon banner frame char │\n--- body ---\n%s", body)
+	}
+}
+
+// TestServeASCIITWPathPath1CN pins the Path 1 region-conditional label
+// switch: TW visitors on the ASCII surface get Chinese labels.
+func TestServeASCIITWPathPath1CN(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := newRouter(fakeProvider{f: freshForecast()})
+
+	req := httptest.NewRequest(http.MethodGet, "/weather", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"Taipei",
+		"體感", "風速", "高", "低",
+		"濕度", "紫外線", "降雨",
+		"空污 74 (中等)",
+		"M4.1 地震", "前)",
+		"日 ",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing CN label %q\n--- body ---\n%s", want, body)
+		}
+	}
+	for _, unwanted := range []string{"feels", "humidity", "AQI", "quake"} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("EN label %q leaked into TW ASCII path\n--- body ---\n%s", unwanted, body)
+		}
+	}
+}
+
+// TestServeTWBrowserGetsENLabels confirms the PNG path stays English
+// even for TW visitors — basicfont.Face7x13 has zero CJK coverage so
+// CN labels would render as tofu rectangles.
+func TestServeTWBrowserGetsENLabels(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := newRouter(fakeProvider{f: freshForecast()})
+
+	req := httptest.NewRequest(http.MethodGet, "/weather", nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "image/png" {
+		t.Errorf("Content-Type = %q, want image/png", got)
+	}
+	// Body is binary PNG so we can't grep for labels; the smoke check is
+	// that the PNG is returned (size already validated by TestServeBrowserGetsPNG).
+	// Label EN-ness is enforced structurally by resolveCaptionLang: PNG
+	// path always picks langEN regardless of country.
+	if !bytes.HasPrefix(rec.Body.Bytes(), pngMagic) {
+		t.Errorf("body missing PNG magic — TW PNG path should still render")
 	}
 }
 
@@ -436,7 +500,7 @@ func TestAQIFailureOmitsRow(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/weather", nil)
 	req.Header.Set("User-Agent", "curl/8.4.0")
-	req.Header.Set("CF-IPCountry", "TW")
+	req.Header.Set("CF-IPCountry", "JP") // EN labels keep test pins simple
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
@@ -444,7 +508,7 @@ func TestAQIFailureOmitsRow(t *testing.T) {
 		t.Fatalf("status = %d, want 200 (AQI failure must not 5xx)", rec.Code)
 	}
 	body := rec.Body.String()
-	if strings.Contains(body, "AQI") {
+	if strings.Contains(body, "AQI") || strings.Contains(body, "空污") {
 		t.Errorf("AQI row leaked despite upstream error\n--- body ---\n%s", body)
 	}
 	// Sanity: forecast captions still render.
@@ -464,7 +528,7 @@ func TestQuakeFailureOmitsRow(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/weather", nil)
 	req.Header.Set("User-Agent", "curl/8.4.0")
-	req.Header.Set("CF-IPCountry", "TW")
+	req.Header.Set("CF-IPCountry", "JP") // EN labels keep test pins simple
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
@@ -472,7 +536,7 @@ func TestQuakeFailureOmitsRow(t *testing.T) {
 		t.Fatalf("status = %d, want 200 (quake failure must not 5xx)", rec.Code)
 	}
 	body := rec.Body.String()
-	if strings.Contains(body, "quake") || strings.Contains(body, "M4.1") {
+	if strings.Contains(body, "quake") || strings.Contains(body, "M4.1") || strings.Contains(body, "地震") {
 		t.Errorf("quake row leaked despite upstream error\n--- body ---\n%s", body)
 	}
 	// Sanity: AQI + base captions still render.
@@ -495,7 +559,7 @@ func TestExtrasLineOmittedWhenAbsent(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/weather", nil)
 	req.Header.Set("User-Agent", "curl/8.4.0")
-	req.Header.Set("CF-IPCountry", "TW")
+	req.Header.Set("CF-IPCountry", "JP") // EN labels keep test pins simple
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
@@ -503,7 +567,7 @@ func TestExtrasLineOmittedWhenAbsent(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, unwanted := range []string{"humidity", "UV", "rain"} {
+	for _, unwanted := range []string{"humidity", "UV", "rain", "濕度", "紫外線", "降雨"} {
 		if strings.Contains(body, unwanted) {
 			t.Errorf("absent extras row leaked %q\n--- body ---\n%s", unwanted, body)
 		}
