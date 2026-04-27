@@ -46,6 +46,55 @@ func TestProgressBarZeroWidth(t *testing.T) {
 	}
 }
 
+// TestSignedBar pins the center-split layout: negatives grow leftward
+// from the center, positives grow rightward, the center is U+2502, and
+// the total width is exactly 2*halfWidth + 1 cells.
+func TestSignedBar(t *testing.T) {
+	cases := []struct {
+		name      string
+		value     float64
+		max       float64
+		halfWidth int
+		want      string
+	}{
+		{"zero_value", 0, 100, 5, "░░░░░│░░░░░"},
+		{"max_negative", -100, 100, 5, "█████│░░░░░"},
+		{"max_positive", 100, 100, 5, "░░░░░│█████"},
+		{"half_negative", -50, 100, 10, "░░░░░█████│░░░░░░░░░░"},
+		{"half_positive", 50, 100, 10, "░░░░░░░░░░│█████░░░░░"},
+		{"clamp_over", 200, 100, 4, "░░░░│████"},
+		{"clamp_under", -200, 100, 4, "████│░░░░"},
+		{"max_zero_returns_empty", 50, 0, 3, "░░░│░░░"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := render.SignedBar(tc.value, tc.max, tc.halfWidth)
+			if got != tc.want {
+				t.Errorf("SignedBar(%v, %v, %d) = %q, want %q",
+					tc.value, tc.max, tc.halfWidth, got, tc.want)
+			}
+			wantWidth := 2*tc.halfWidth + 1
+			gotWidth := strings.Count(got, "█") + strings.Count(got, "░") + 1
+			if gotWidth != wantWidth {
+				t.Errorf("SignedBar width = %d cells, want %d", gotWidth, wantWidth)
+			}
+		})
+	}
+}
+
+// TestSignedBarSeparator pins that the separator is U+2502 (a distinct
+// glyph from pylon's ASCII pipe `|`), so the bar survives pylon parsing
+// inside borderless captions where `|` would be syntactically loaded.
+func TestSignedBarSeparator(t *testing.T) {
+	got := render.SignedBar(0, 100, 5)
+	if !strings.Contains(got, "│") {
+		t.Errorf("SignedBar must contain U+2502 separator; got %q", got)
+	}
+	if strings.Contains(got, "|") {
+		t.Errorf("SignedBar must NOT contain ASCII pipe; got %q", got)
+	}
+}
+
 // TestWeekStripAllWeekdays pins the exact output for each weekday. The
 // duplicate-letter cases (Sun=S vs Sat=S, Tue=T vs Thu=T) are listed
 // explicitly so the bracket-position-as-disambiguator behavior is
