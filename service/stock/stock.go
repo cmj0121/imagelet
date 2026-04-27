@@ -89,6 +89,17 @@ const vDivider = "─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ �
 // only strip *complete* pairs).
 var pylonBracketRe = regexp.MustCompile(`\(([^()]*)\)|\[([^\[\]]*)\]`)
 
+// pylonAmpRefRe matches `&` immediately followed by a Ref-trigger char
+// (`[A-Za-z_]`, exactly pylon's parser.go refRe). When this pattern fires,
+// pylon parses the run as an inline Ref node and force-breaks the row
+// around it -- visible symptom is captions like "S&P 500" fragmenting
+// into 3 stacked rows. We insert U+200C ZERO WIDTH NON-JOINER between
+// the `&` and the letter so pylon's regex no longer matches; the ZWNJ
+// is invisible in both terminal renderers and JetBrains Mono (pylon's
+// embedded PNG font), so the literal "S&P" reading is preserved on
+// every surface.
+var pylonAmpRefRe = regexp.MustCompile(`&([A-Za-z_])`)
+
 // indexNameFor returns the human-readable header line for symbol, or
 // empty string if symbol isn't in indexNameBySymbol. Callers MUST handle
 // the empty case (omit the header row) so unknown symbols still render.
@@ -428,23 +439,20 @@ func formatPrice(v float64) string {
 }
 
 // stripPylonSyntax removes complete `(...)` and `[...]` pairs (and their
-// contents) from s, swaps the half-width `&` for the fullwidth
-// ampersand `＆` (U+FF06), and collapses the resulting whitespace.
-// Defensive sanitization for pylon's parser:
-//
-//   - Bracket pairs are smuggled markup (pylon treats them as nested boxes).
-//   - `&[A-Za-z_]\w*` is parsed as a Ref node (parser.go refRe), which
-//     fragments the caption into separate inline elements and forces row
-//     breaks. Concretely, "S&P 500" becomes a 3-row stack with each
-//     fragment centered. The fullwidth `＆` is plain text to pylon's
-//     parser, preserves the brand reading visually, and is covered by
-//     pylon's own PNG font (Cascadia Code / Iosevka / JetBrains Mono).
+// contents) from s, neutralizes any `&[A-Za-z_]` that would otherwise
+// parse as a pylon Ref node by inserting an invisible U+200C ZWNJ between
+// the `&` and the trailing letter, and collapses the resulting whitespace.
+// The literal `&` glyph survives untouched, so "S&P 500" reads as "S&P 500"
+// on every surface (terminal + JetBrains Mono PNG); only pylon's parser
+// sees the split and treats `&` as plain text instead of a Ref opener.
 //
 // The `^` in `^GSPC` etc. is pylon-safe and left alone; the `·` prefix
-// separator is also preserved.
+// separator is also preserved. Standalone `&` (e.g. "A & B") and `&`
+// before non-letters never matched the Ref regex, so they pass through
+// unchanged.
 func stripPylonSyntax(s string) string {
 	cleaned := pylonBracketRe.ReplaceAllString(s, "")
-	cleaned = strings.ReplaceAll(cleaned, "&", "＆")
+	cleaned = pylonAmpRefRe.ReplaceAllString(cleaned, "&‌$1")
 	return strings.Join(strings.Fields(cleaned), " ")
 }
 
