@@ -208,9 +208,6 @@ The render is a price banner with borderless caption rows stacked underneath
   can appear: `CLOSED ·` outside trading hours, `STALE ·` when the upstream
   fetch failed and the response is being served from cache. `STALE ·` wins
   over `CLOSED ·` — data integrity beats market-state hints.
-- Day-range progress bar showing where the current price falls between the
-  intraday high and low (omitted gracefully if Yahoo skipped the field).
-- 52-week-range progress bar — same shape, year-scale span.
 - For TW visitors: a thin `─ ─ ─ ─` divider, then 三大法人 institutional
   flow (外資 / 投信 / 自營 / 合計) and 融資/融券 margin balance rows
   sourced from TWSE's legacy openapi. Region-conditional CN/EN labels split

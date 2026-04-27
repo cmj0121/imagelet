@@ -16,13 +16,13 @@
 // the S&P 500 (^GSPC). Cache-Control: public, max-age=60 is set on every
 // rendered response so a CDN can absorb traffic spikes.
 //
-// V1 layout (post pylon-v0.2): a single outer box stacks the index-name
-// header, the symbol/percent/price/date caption, the day-range and 52w-
-// range progress bars, and -- only on the TW path -- a `─ ─ ─ ─` divider
-// followed by 三大法人 + 融資/融券 aggregates fetched from TWSE. The TW
-// block uses Chinese labels in the ASCII surface (terminal users have CJK
-// fonts) and English labels in the PNG surface (pylon's PNG font has zero
-// CJK coverage and would emit tofu glyphs).
+// Layout: the price banner sits above borderless caption rows holding the
+// index-name header and the symbol/percent/price/date caption. On the TW
+// path a `─ ─ ─ ─` divider follows, then 三大法人 + 融資/融券 aggregates
+// fetched from TWSE. The TW block uses Chinese labels in the ASCII surface
+// (terminal users have CJK fonts) and English labels in the PNG/SVG/HTML
+// surfaces (pylon's PNG font has zero CJK coverage and would emit tofu
+// glyphs; SVG/HTML join PNG for visual consistency).
 package stock
 
 import (
@@ -69,12 +69,6 @@ var indexNameBySymbol = map[string]string{
 // map. S&P 500 is the de-facto global benchmark and matches the
 // middleware's "US" default country.
 const defaultSymbol = "^GSPC"
-
-// progressBarWidth is the cell count for the day/52w bars in the V1
-// caption block. 20 is wide enough to read fractions but narrow enough
-// to stay under typical terminal widths next to the surrounding
-// caption text.
-const progressBarWidth = 20
 
 // vDivider is the section break between the common data block and the
 // TW-only enrichment block in V1 layout. Alternating `─` + space reads
@@ -185,18 +179,16 @@ func (h *handler) serve(c *gin.Context) {
 	c.Data(http.StatusOK, "text/plain; charset=utf-8", body)
 }
 
-// buildLines assembles the V1 outer-box content lines for the given
-// quote and (optional) TW market data. Line order:
+// buildLines assembles the borderless caption rows shown under the price
+// banner. Line order:
 //
 //  1. Index header (e.g. "TAIEX · Taiwan") -- omitted for unknown symbol
 //  2. Symbol caption: STALE/CLOSED prefix + symbol + arrow + change% + price + currency + date
-//  3. Day-range bar (omitted when DayHigh/DayLow missing)
-//  4. 52-week-range bar (omitted when Week52High/Week52Low missing)
-//  5. Divider + TW enrichment block (omitted unless tw.HasInstitutional() || tw.HasMargin())
+//  3. Divider + TW enrichment block (omitted unless tw.HasInstitutional() || tw.HasMargin())
 //
-// useEnglish=true picks the English labels for the TW block (PNG path
-// since pylon's PNG font has no CJK glyphs); useEnglish=false picks
-// Chinese labels (ASCII path).
+// useEnglish=true picks the English labels for the TW block (PNG/SVG/HTML
+// surfaces since pylon's PNG font has no CJK glyphs); useEnglish=false
+// picks Chinese labels (ASCII path).
 func buildLines(symbol string, q quote.Quote, tw twse.MarketData, stale, useEnglish bool) []string {
 	lines := make([]string, 0, 10)
 
@@ -222,19 +214,6 @@ func buildLines(symbol string, q quote.Quote, tw twse.MarketData, stale, useEngl
 		q.AsOf.Format("2006-01-02"),
 	))
 	lines = append(lines, caption)
-
-	if q.HasDayRange() {
-		lines = append(lines, fmt.Sprintf("day %s %d%%",
-			render.ProgressBar(q.DayPosition(), progressBarWidth),
-			pctOf(q.DayPosition()),
-		))
-	}
-	if q.Has52WeekRange() {
-		lines = append(lines, fmt.Sprintf("52w %s %d%%",
-			render.ProgressBar(q.Week52Position(), progressBarWidth),
-			pctOf(q.Week52Position()),
-		))
-	}
 
 	if tw.HasInstitutional() || tw.HasMargin() {
 		lines = append(lines, vDivider)
@@ -365,18 +344,6 @@ func formatThousands(v int64) string {
 		return "-" + b.String()
 	}
 	return b.String()
-}
-
-// pctOf converts a [0,1] fraction to a 0-100 integer percentage.
-func pctOf(f float64) int {
-	if f <= 0 {
-		return 0
-	}
-	if f >= 1 {
-		return 100
-	}
-	// round-half-to-even via int(f*100 + 0.5) is fine for display.
-	return int(f*100 + 0.5)
 }
 
 // resolveCountry returns the country code the request should be served
