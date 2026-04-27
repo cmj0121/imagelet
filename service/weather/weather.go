@@ -5,17 +5,17 @@
 // AQI, recent significant earthquake within 300 km, day-cycle progress
 // bar). Rows backed by missing or failed enrichment silently drop.
 //
-// Wire format mirrors /now and /stock with one v1 carve-out for SVG:
+// Wire format mirrors /now and /stock — full format-set support:
 //
-//   - Accept: text/pylon → bare temperature-banner pylon source (no captions)
-//   - ?format=svg → coerced to PNG. The icon-left composition uses a basicfont
-//     compositor (axis-flipped from /404); an SVG equivalent isn't built yet,
-//     and a vertical-stack fallback would visibly regress on the iPhone-shaped
-//     surface this feature was built for. Tracked as a v1 limitation in
-//     PLAN.md; revisit once an SVG icon-compositor exists.
-//   - ?format=png or User-Agent contains Mozilla → image/png (icon + banner
-//     composed locally; captions drawn with basicfont)
-//   - everything else → text/plain; charset=utf-8 (icon rows prepended to
+//   - Accept: text/pylon OR ?format=pylon → bare temperature-banner pylon
+//     source (no captions)
+//   - ?format=html or User-Agent contains Mozilla → text/html with the
+//     composed SVG inlined in the page body
+//   - ?format=svg → image/svg+xml (composeSVG: icon + nested pylon banner +
+//     captions, all in one self-contained SVG document)
+//   - ?format=png → image/png (icon + banner composed locally; captions
+//     drawn with basicfont, ° and · sanitized to ASCII)
+//   - ?format=ascii → text/plain; charset=utf-8 (icon rows prepended to
 //     pylon banner ASCII rows, captions appended below)
 //
 // Location resolution priority: validated ?lat=&lon= query → CF-IPLatitude/
@@ -186,27 +186,22 @@ func (h *handler) serve(c *gin.Context) {
 
 	headline := strconv.FormatFloat(f.Temperature, 'f', 1, 64)
 
-	// text/pylon short-circuits to the bare banner source — captions and
-	// STALE prefix are rendered metadata, not part of the parseable source.
-	if strings.Contains(c.GetHeader("Accept"), "text/pylon") {
+	// Pylon-source short-circuit: bare banner source, no captions or
+	// STALE prefix (those are rendered metadata, not parseable source).
+	// Honors both Accept: text/pylon and ?format=pylon.
+	if middleware.WantsPylonSource(c) {
 		c.Data(http.StatusOK, "text/pylon", []byte(headlineSource(headline)+"\n"))
 		return
 	}
 
 	mode := middleware.ResolveMode(c)
-	if mode == render.ModeSVG {
-		// v1 carve-out: see package doc and PLAN.md. /weather's PNG path
-		// composes ASCII icon LEFT of the banner with basicfont, which
-		// the pylon SVG renderer can't reproduce. Coerce SVG → PNG so
-		// the iPhone caller still gets the well-laid-out hero image
-		// rather than a vertical-stack regression.
-		mode = render.ModePNG
-	}
 	// Path 1 region-conditional CN/EN: TW visitors on the ASCII surface
 	// get Chinese labels (terminal CJK fonts cover them); PNG path stays
 	// English because basicfont.Face7x13 has zero CJK coverage and would
-	// emit U+FFFD tofu. Same predicate /stock uses, kept local since it
-	// composes mode + region in a service-specific way.
+	// emit U+FFFD tofu. SVG/HTML paths use Cascadia/Menlo via the
+	// composeSVG <style> block, so they handle CJK fine. Same predicate
+	// /stock uses, kept local since it composes mode + region in a
+	// service-specific way.
 	lang := resolveCaptionLang(mode, middleware.GetCountry(c))
 	captions := buildCaptions(f, word, location, stale, aqi, quake, lang)
 	if mode == render.ModePNG {
@@ -216,6 +211,17 @@ func (h *handler) serve(c *gin.Context) {
 			return
 		}
 		log.Error().Err(perr).Msg("compose weather png")
+	}
+	if mode == render.ModeSVG {
+		c.Data(http.StatusOK, "image/svg+xml",
+			[]byte(composeSVG(headline, Icon(bucket), captions)))
+		return
+	}
+	if mode == render.ModeHTML {
+		svg := composeSVG(headline, Icon(bucket), captions)
+		c.Data(http.StatusOK, "text/html; charset=utf-8",
+			render.WrapHTML([]byte(svg)))
+		return
 	}
 
 	c.Data(http.StatusOK, "text/plain; charset=utf-8",
