@@ -19,10 +19,10 @@
 // Layout: the price banner sits above borderless caption rows holding the
 // index-name header and the symbol/percent/price/date caption. On the TW
 // path a `─ ─ ─ ─` divider follows, then 三大法人 + 融資/融券 aggregates
-// fetched from TWSE. The TW block uses Chinese labels in the ASCII surface
-// (terminal users have CJK fonts) and English labels in the PNG/SVG/HTML
-// surfaces (pylon's PNG font has zero CJK coverage and would emit tofu
-// glyphs; SVG/HTML join PNG for visual consistency).
+// fetched from TWSE. The TW block uses Chinese labels on every surface
+// that can render CJK glyphs (ASCII / text/pylon / SVG / HTML). PNG is
+// the lone English holdout — pylon's PNG uses basicfont.Face7x13 which
+// has zero CJK coverage and would render Chinese as tofu.
 package stock
 
 import (
@@ -150,12 +150,12 @@ func (h *handler) serve(c *gin.Context) {
 
 	mode := middleware.ResolveMode(c)
 
-	// CN labels appear only on the plain-text surface (ASCII, terminal-
-	// shaped). PNG sticks to EN (basicfont.Face7x13 is CJK-blank). SVG
-	// and HTML — both Cascadia/Menlo-driven via pylon's <style> — also
-	// stick to EN so the visual surfaces stay byte-identical at the
-	// label level and CDNs / proxies see one rendered shape.
-	useEnglish := mode == render.ModePNG || mode == render.ModeSVG || mode == render.ModeHTML
+	// CN labels appear on every surface that can render CJK glyphs:
+	// ASCII (terminal-side fonts), text/pylon (consumer-side render),
+	// SVG and HTML (Cascadia/Menlo with browser-provided CJK fallback).
+	// PNG is the only EN holdout — pylon's PNG uses basicfont.Face7x13
+	// which has zero CJK coverage; CN there would render as tofu.
+	useEnglish := mode == render.ModePNG
 	lines := buildLines(symbol, q, tw, stale, useEnglish)
 
 	body, rerr := render.BannerMulti(headline, lines, mode)
@@ -186,9 +186,9 @@ func (h *handler) serve(c *gin.Context) {
 //  2. Symbol caption: STALE/CLOSED prefix + symbol + arrow + change% + price + currency + date
 //  3. Divider + TW enrichment block (omitted unless tw.HasInstitutional() || tw.HasMargin())
 //
-// useEnglish=true picks the English labels for the TW block (PNG/SVG/HTML
-// surfaces since pylon's PNG font has no CJK glyphs); useEnglish=false
-// picks Chinese labels (ASCII path).
+// useEnglish=true picks the English labels for the TW block (PNG only,
+// since pylon's PNG font has no CJK glyphs); useEnglish=false picks
+// Chinese labels for every other surface.
 func buildLines(symbol string, q quote.Quote, tw twse.MarketData, stale, useEnglish bool) []string {
 	lines := make([]string, 0, 10)
 
@@ -218,7 +218,7 @@ func buildLines(symbol string, q quote.Quote, tw twse.MarketData, stale, useEngl
 	if tw.HasInstitutional() || tw.HasMargin() {
 		lines = append(lines, vDivider)
 		if tw.HasInstitutional() {
-			lines = append(lines, formatInstitutional(tw, useEnglish))
+			lines = append(lines, institutionalLines(tw, useEnglish)...)
 		}
 		if tw.HasMargin() {
 			lines = append(lines, formatMargin(tw, useEnglish))
@@ -227,32 +227,77 @@ func buildLines(symbol string, q quote.Quote, tw twse.MarketData, stale, useEngl
 	return lines
 }
 
-// formatInstitutional formats the BFI82U row. CN: `三大法人  外資 +43.9B  投信 +2.2B  自營 +8.9B  合計 ▲ +55.0B`.
-// EN: `institutional  foreign +43.9B  trust +2.2B  dealer +8.9B  net ▲ +55.0B`.
+// institutionalLines formats the BFI82U row as a five-line table: a
+// header followed by foreign / trust / dealer / net rows, each with a
+// center-split magnitude bar (negatives grow leftward from the center,
+// positives grow rightward). The four rows share a common scale set by
+// the largest absolute value across them, so a glance reveals which
+// participant dominated the day. The net row carries a `▲`/`▼` arrow
+// matching its sign.
 //
-// Numbers are NTD billions with one decimal. Net carries an arrow
-// matching its sign for symmetry with the symbol caption above.
-func formatInstitutional(tw twse.MarketData, useEnglish bool) string {
-	arrow := "▲"
-	if tw.Net < 0 {
-		arrow = "▼"
+// CN headers / labels: `三大法人`, `外資`, `投信`, `自營`, `合計`.
+// EN equivalents: `institutional`, `foreign`, `trust`, `dealer`, `net`.
+//
+// Numbers are NTD billions with one decimal (formatNTDBillions).
+func institutionalLines(tw twse.MarketData, useEnglish bool) []string {
+	const halfWidth = 10
+	max := absMaxInt64(tw.ForeignNet, tw.TrustNet, tw.DealerNet, tw.Net)
+	maxF := float64(max)
+
+	type row struct {
+		labelEN string
+		labelCN string
+		value   int64
 	}
+	rows := []row{
+		{"foreign", "外資", tw.ForeignNet},
+		{"trust", "投信", tw.TrustNet},
+		{"dealer", "自營", tw.DealerNet},
+		{"net", "合計", tw.Net},
+	}
+
+	out := make([]string, 0, 5)
 	if useEnglish {
-		return render.StripPylonSyntax(fmt.Sprintf(
-			"institutional  foreign %s  trust %s  dealer %s  net %s %s",
-			formatNTDBillions(tw.ForeignNet),
-			formatNTDBillions(tw.TrustNet),
-			formatNTDBillions(tw.DealerNet),
-			arrow, formatNTDBillions(tw.Net),
-		))
+		out = append(out, "institutional")
+	} else {
+		out = append(out, "三大法人")
 	}
-	return render.StripPylonSyntax(fmt.Sprintf(
-		"三大法人  外資 %s  投信 %s  自營 %s  合計 %s %s",
-		formatNTDBillions(tw.ForeignNet),
-		formatNTDBillions(tw.TrustNet),
-		formatNTDBillions(tw.DealerNet),
-		arrow, formatNTDBillions(tw.Net),
-	))
+	for i, r := range rows {
+		bar := render.SignedBar(float64(r.value), maxF, halfWidth)
+		amount := formatNTDBillions(r.value)
+		var line string
+		if useEnglish {
+			line = fmt.Sprintf("  %-8s %s  %s", r.labelEN, bar, amount)
+		} else {
+			line = fmt.Sprintf("  %s  %s  %s", r.labelCN, bar, amount)
+		}
+		// Net row carries an up/down arrow on the trailing amount.
+		if i == len(rows)-1 {
+			arrow := "▲"
+			if r.value < 0 {
+				arrow = "▼"
+			}
+			line += "  " + arrow
+		}
+		out = append(out, render.StripPylonSyntax(line))
+	}
+	return out
+}
+
+// absMaxInt64 returns the largest absolute value among the inputs.
+// Returns 0 if all inputs are 0 (so callers can divide-guard upstream).
+func absMaxInt64(vs ...int64) int64 {
+	var m int64
+	for _, v := range vs {
+		a := v
+		if a < 0 {
+			a = -a
+		}
+		if a > m {
+			m = a
+		}
+	}
+	return m
 }
 
 // formatMargin formats the MI_MARGN row. CN: `融資餘額 4,409億 TWD  融券餘額 19萬張`.
