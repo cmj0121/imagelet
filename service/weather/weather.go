@@ -296,6 +296,17 @@ func composeASCII(headline string, icon, captions []string) []byte {
 	return []byte(b.String())
 }
 
+// pngCaptionSanitizer rewrites caption text for the PNG path. basicfont.Face7x13
+// only covers ASCII (U+0020..U+007E) plus U+FFFD, so any other rune renders as
+// the replacement glyph. The two non-ASCII chars `buildCaptions` produces are
+// `°` (degree sign in temp units) and `·` (middle dot in the STALE prefix); both
+// are substituted to ASCII-safe equivalents so PNG output stays glyph-clean.
+// ASCII / pylon-source paths are unaffected — they keep the pretty Unicode form.
+var pngCaptionSanitizer = strings.NewReplacer(
+	"°", "",
+	"·", "-",
+)
+
 // composePNG composes a horizontal hero: pylon-rendered banner image right
 // of the basicfont icon, with caption lines drawn below at the banner's
 // left edge. Mirrors notfound.composePNG but axis-flipped — captions sit
@@ -367,7 +378,7 @@ func composePNG(headline string, icon, captions []string) ([]byte, error) {
 			X: fixed.I(captionsX),
 			Y: fixed.I(captionsY + ascent + i*lineH),
 		}
-		drawer.DrawString(cap)
+		drawer.DrawString(pngCaptionSanitizer.Replace(cap))
 	}
 
 	var buf bytes.Buffer
