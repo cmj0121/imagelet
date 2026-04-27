@@ -54,17 +54,13 @@ func BannerSource(headline, subtitle string) string {
 	return fmt.Sprintf("[ %s | banner ]\n( %s )", headline, subtitle)
 }
 
-// BannerStack renders BannerStackSource through pylon -- a banner stacked
-// over a multi-line bordered box. Used by /stock and /weather V1 layouts
-// where multiple caption rows (header / data / bars / divider / TW-block)
-// share a single outer box. Empty `lines` falls back to plain Banner with
-// no subtitle (renders cleanly).
-//
-// Trailing newline appended for ASCII; PNG, SVG, and HTML keep raw bytes.
-// SVG goes through PaintSVG; HTML wraps the painted SVG. Same error
-// handling as Banner.
-func BannerStack(headline string, lines []string, mode Mode) ([]byte, error) {
-	ast := pylon.Parse(BannerStackSource(headline, lines))
+// BannerMulti renders BannerSourceMulti through pylon -- a banner stacked
+// over N borderless caption rows. Used by /now's multi-row metadata
+// layout. ASCII appends a trailing newline; PNG, SVG, and HTML keep raw
+// bytes. SVG goes through PaintSVG; HTML wraps the painted SVG. Same
+// error handling as Banner.
+func BannerMulti(headline string, lines []string, mode Mode) ([]byte, error) {
+	ast := pylon.Parse(BannerSourceMulti(headline, lines))
 	if mode == ModePNG {
 		return pylon.RenderPNG(ast)
 	}
@@ -77,15 +73,31 @@ func BannerStack(headline string, lines []string, mode Mode) ([]byte, error) {
 	return []byte(pylon.RenderASCII(ast) + "\n"), nil
 }
 
-// BannerStackSource builds the pylon source `[ headline | banner ]\n[ line1\nline2\n... ]`.
-// Empty `lines` collapses to a banner-only source. Empty headline falls
-// back to the shared `?` placeholder (mirroring BannerSource).
-func BannerStackSource(headline string, lines []string) string {
+// BannerSourceMulti returns the pylon source for a banner stacked over N
+// borderless caption rows: `[ headline | banner ]\n( line1 )\n( line2 )\n...`.
+// Used by /now's three-row metadata layout where each row is a distinct
+// piece of metadata (date, weekday strip, year-progress).
+//
+// Empty `lines` collapses to banner-only source (`[ headline | banner ]`).
+// Empty headline falls back to the shared `?` placeholder, mirroring
+// BannerSource.
+//
+// Caller is responsible for keeping caption content pylon-safe — literal
+// `[`, `]`, `(`, `)`, and `|` will be parsed as syntax. /now uses angle
+// brackets in WeekStrip for this reason.
+func BannerSourceMulti(headline string, lines []string) string {
 	if strings.TrimSpace(headline) == "" {
 		headline = emptyPlaceholder
 	}
 	if len(lines) == 0 {
 		return fmt.Sprintf("[ %s | banner ]", headline)
 	}
-	return fmt.Sprintf("[ %s | banner ]\n[ %s ]", headline, strings.Join(lines, "\n"))
+	var b strings.Builder
+	fmt.Fprintf(&b, "[ %s | banner ]", headline)
+	for _, line := range lines {
+		b.WriteString("\n( ")
+		b.WriteString(line)
+		b.WriteString(" )")
+	}
+	return b.String()
 }

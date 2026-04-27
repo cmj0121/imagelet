@@ -114,24 +114,6 @@ func TestBannerHTML(t *testing.T) {
 	}
 }
 
-func TestBannerStackHTML(t *testing.T) {
-	body, err := render.BannerStack("S&P 500", []string{"row one", "row two"}, render.ModeHTML)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	got := string(body)
-	if !strings.Contains(got, "<!DOCTYPE html>") {
-		t.Errorf("BannerStack HTML missing doctype\n--- output ---\n%s", got)
-	}
-	if !strings.Contains(got, "<svg ") {
-		t.Errorf("BannerStack HTML missing inline <svg\n--- output ---\n%s", got)
-	}
-	// Caption rows must reach the inline SVG as <text> elements.
-	if n := strings.Count(got, "<text "); n < 2 {
-		t.Errorf("BannerStack HTML has %d <text> elements, want >= 2\n--- output ---\n%s", n, got)
-	}
-}
-
 func TestBannerSVG(t *testing.T) {
 	body, err := render.Banner("13:45", "2026-04-25 SAT UTC+8", render.ModeSVG)
 	if err != nil {
@@ -161,19 +143,159 @@ func TestBannerSVG(t *testing.T) {
 	}
 }
 
-func TestBannerStackSVG(t *testing.T) {
-	body, err := render.BannerStack("S&P 500", []string{"row one", "row two"}, render.ModeSVG)
+func TestBannerSourceMulti(t *testing.T) {
+	cases := []struct {
+		name     string
+		headline string
+		lines    []string
+		want     string
+	}{
+		{
+			name:     "no_lines_nil",
+			headline: "hi",
+			lines:    nil,
+			want:     "[ hi | banner ]",
+		},
+		{
+			name:     "no_lines_empty_slice",
+			headline: "hi",
+			lines:    []string{},
+			want:     "[ hi | banner ]",
+		},
+		{
+			name:     "one_line",
+			headline: "hi",
+			lines:    []string{"a"},
+			want:     "[ hi | banner ]\n( a )",
+		},
+		{
+			name:     "three_lines",
+			headline: "13:45",
+			lines:    []string{"a", "b", "c"},
+			want:     "[ 13:45 | banner ]\n( a )\n( b )\n( c )",
+		},
+		{
+			name:     "empty_headline_substitutes_placeholder",
+			headline: "",
+			lines:    []string{"x"},
+			want:     "[ ? | banner ]\n( x )",
+		},
+		{
+			name:     "whitespace_headline_substitutes_placeholder",
+			headline: "   ",
+			lines:    []string{"x"},
+			want:     "[ ? | banner ]\n( x )",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := render.BannerSourceMulti(tc.headline, tc.lines); got != tc.want {
+				t.Errorf("BannerSourceMulti = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBannerMultiASCII(t *testing.T) {
+	body, err := render.BannerMulti("13:45",
+		[]string{"2026-04-27 UTC+8", "S <M> T W T F S", "year ██░░ 32%"},
+		render.ModeASCII)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
 	got := string(body)
-	if !strings.Contains(got, "<svg ") {
-		t.Errorf("BannerStack SVG missing <svg root\n--- output ---\n%s", got)
+	// Pylon native theme frame chars must appear.
+	for _, sub := range []string{"┌", "─", "│", "└"} {
+		if !strings.Contains(got, sub) {
+			t.Errorf("ASCII output missing frame char %q\n--- output ---\n%s", sub, got)
+		}
 	}
-	// Multi-row stack must produce more than one <text> element so callers
-	// know caption rows actually rendered.
-	if n := strings.Count(got, "<text "); n < 2 {
-		t.Errorf("BannerStack SVG has %d <text> elements, want >= 2\n--- output ---\n%s", n, got)
+	// Each caption row must reach the rendered output verbatim.
+	for _, line := range []string{"2026-04-27 UTC+8", "S <M> T W T F S", "year ██░░ 32%"} {
+		if !strings.Contains(got, line) {
+			t.Errorf("ASCII output missing caption line %q\n--- output ---\n%s", line, got)
+		}
+	}
+	if !strings.HasSuffix(got, "\n") {
+		t.Errorf("ASCII output must end with \\n")
+	}
+}
+
+func TestBannerMultiSVG(t *testing.T) {
+	body, err := render.BannerMulti("13:45",
+		[]string{"row1", "row2", "row3"}, render.ModeSVG)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	got := string(body)
+	// PaintSVG markers prove the dark-theme post-processor is in the path.
+	for _, sub := range []string{
+		"<svg ",
+		`fill="#0d1117"`,
+		"#c9d1d9",
+		"</svg>",
+	} {
+		if !strings.Contains(got, sub) {
+			t.Errorf("SVG output missing %q\n--- output ---\n%s", sub, got)
+		}
+	}
+	if strings.Contains(got, "#0f1c2d") {
+		t.Errorf("SVG output still contains pylon default ink (PaintSVG miss)\n--- output ---\n%s", got)
+	}
+}
+
+func TestBannerMultiHTML(t *testing.T) {
+	body, err := render.BannerMulti("13:45",
+		[]string{"row1", "row2", "row3"}, render.ModeHTML)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	got := string(body)
+	for _, sub := range []string{"<!DOCTYPE html>", "<svg ", "</svg>", "</html>"} {
+		if !strings.Contains(got, sub) {
+			t.Errorf("HTML output missing %q\n--- output ---\n%s", sub, got)
+		}
+	}
+}
+
+func TestBannerMultiPNG(t *testing.T) {
+	body, err := render.BannerMulti("13:45",
+		[]string{"row1", "row2"}, render.ModePNG)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !bytes.HasPrefix(body, pngMagic) {
+		t.Errorf("PNG output missing magic bytes; first 8 = %x", body[:min(8, len(body))])
+	}
+	if len(body) == 0 {
+		t.Errorf("PNG output empty")
+	}
+}
+
+func TestBannerMultiEmptyLines(t *testing.T) {
+	// Zero captions must render cleanly in every mode (banner-only doc).
+	for _, mode := range []render.Mode{render.ModeASCII, render.ModePNG, render.ModeSVG, render.ModeHTML} {
+		body, err := render.BannerMulti("hi", nil, mode)
+		if err != nil {
+			t.Errorf("BannerMulti(_, nil, %v) err: %v", mode, err)
+		}
+		if len(body) == 0 {
+			t.Errorf("BannerMulti(_, nil, %v) empty body", mode)
+		}
+	}
+}
+
+func TestBannerMultiEmptyHeadline(t *testing.T) {
+	// Empty/whitespace headline must not panic; placeholder substitution
+	// kicks in via BannerSourceMulti, mirroring Banner's contract.
+	for _, mode := range []render.Mode{render.ModeASCII, render.ModePNG, render.ModeSVG, render.ModeHTML} {
+		body, err := render.BannerMulti("", []string{"x"}, mode)
+		if err != nil {
+			t.Errorf("BannerMulti(\"\", _, %v) err: %v", mode, err)
+		}
+		if len(body) == 0 {
+			t.Errorf("BannerMulti(\"\", _, %v) empty body", mode)
+		}
 	}
 }
 

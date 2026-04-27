@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cmj0121/pylon/src/go/pkg/pylon"
+
 	"github.com/cmj0121/imagelet/render"
 )
 
@@ -84,6 +86,65 @@ func TestDayCycleBoundaries(t *testing.T) {
 
 	if got := render.DayCycle(sunrise, sunset, sunrise); got != "" {
 		t.Errorf("DayCycle inverted-window = %q, want empty", got)
+	}
+}
+
+// TestWeekStripAllWeekdays pins the exact output for each weekday. The
+// duplicate-letter cases (Sun=S vs Sat=S, Tue=T vs Thu=T) are listed
+// explicitly so the bracket-position-as-disambiguator behavior is
+// captured by the test, not just by reading.
+func TestWeekStripAllWeekdays(t *testing.T) {
+	// Anchor on a known-Sunday date in 2026: 2026-01-04 is a Sunday.
+	loc := time.UTC
+	sunday := time.Date(2026, 1, 4, 12, 0, 0, 0, loc)
+
+	cases := []struct {
+		name string
+		t    time.Time
+		want string
+	}{
+		{"sunday", sunday, "<S> M T W T F S"},
+		{"monday", sunday.AddDate(0, 0, 1), "S <M> T W T F S"},
+		{"tuesday", sunday.AddDate(0, 0, 2), "S M <T> W T F S"},
+		{"wednesday", sunday.AddDate(0, 0, 3), "S M T <W> T F S"},
+		{"thursday", sunday.AddDate(0, 0, 4), "S M T W <T> F S"},
+		{"friday", sunday.AddDate(0, 0, 5), "S M T W T <F> S"},
+		{"saturday", sunday.AddDate(0, 0, 6), "S M T W T F <S>"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := render.WeekStrip(tc.t); got != tc.want {
+				t.Errorf("WeekStrip(%s) = %q, want %q", tc.t.Weekday(), got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWeekStripPylonRoundTrip is the tripwire for pylon's parser semantics.
+// WeekStrip uses angle brackets specifically because square brackets are
+// pylon's bracketed-box syntax — `[M]` inside a `( ... )` borderless
+// caption gets parsed as a nested bordered box, shredding the layout. If
+// pylon ever changes how it handles angle brackets in caption text, this
+// test fails LOUDLY before the broken layout reaches production /now
+// renders.
+func TestWeekStripPylonRoundTrip(t *testing.T) {
+	monday := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC) // a Monday
+	strip := render.WeekStrip(monday)
+	if !strings.Contains(strip, "<M>") {
+		t.Fatalf("precondition: expected WeekStrip(monday) to contain <M>, got %q", strip)
+	}
+
+	src := fmt.Sprintf("[ probe | banner ]\n( %s )", strip)
+	rendered := pylon.RenderASCII(pylon.Parse(src))
+
+	if !strings.Contains(rendered, "<M>") {
+		t.Errorf("pylon shredded <M> from caption — angle brackets no longer survive the parser. Update WeekStrip's bracket choice or the helper's docstring. Rendered output:\n%s", rendered)
+	}
+	// Pylon must NOT have introduced a nested bordered-box around the
+	// bracketed letter (which is what literal [M] would trigger).
+	// A nested box would emit a fresh ┌─┐ / └─┘ pair around the letter.
+	if strings.Contains(rendered, "┌─") && strings.Count(rendered, "┌─") > 1 {
+		t.Errorf("pylon may have nested-boxed <M> — multiple ┌─ pairs in output. Rendered:\n%s", rendered)
 	}
 }
 

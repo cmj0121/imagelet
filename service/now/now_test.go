@@ -24,22 +24,27 @@ func newRouter() *gin.Engine {
 
 // asciiShapeRe matches the banner-stack output rendered with pylon's native
 // theme: top frame uses Unicode box-drawing (┌─┐), >= 6 banner content rows
-// in │...│, bottom frame └─┘, then a borderless caption line, trailing
-// newline. Anchored so any extra trailing bytes would fail.
-var asciiShapeRe = regexp.MustCompile(`(?s)\A\s*┌[─]+┐\s*\n(?:\s*│[^\n]*│\s*\n){6,}\s*└[─]+┘\s*\n[^\n]*\n\z`)
+// in │...│, bottom frame └─┘, then TWO borderless caption lines, trailing
+// newline. The {2} anchor pins the metadata stack: row 1 = date+UTC ·
+// weekday strip; row 2 = year-progress. Extra/missing rows fail.
+var asciiShapeRe = regexp.MustCompile(`(?s)\A\s*┌[─]+┐\s*\n(?:\s*│[^\n]*│\s*\n){6,}\s*└[─]+┘\s*\n(?:[^\n]*\n){2}\z`)
 
-// asciiSubtitleRe pins the caption format: ISO date, uppercase 3-letter
-// weekday, signed integer-hour UTC offset, then a `·` separator and a
-// year-progress fragment (`year` + 20-cell `█`/`░` bar + percent).
-// Survives DST because the offset is read at request time.
-var asciiSubtitleRe = regexp.MustCompile(`\d{4}-\d{2}-\d{2} [A-Z]{3} UTC[+-]\d+ · year [█░]{20} \d{1,3}%`)
+// asciiCombinedRowRe pins row 1: ISO date + signed integer-hour UTC offset
+// on the left, then a `·` middle-dot separator, then the 7-letter
+// Sunday-first weekday strip with exactly one day wrapped in angle
+// brackets. The textual weekday name (`MON`) is intentionally absent —
+// the WeekStrip in this same row is the visual replacement.
+var asciiCombinedRowRe = regexp.MustCompile(`\d{4}-\d{2}-\d{2} UTC[+-]\d+ · (?:<[SMTWFS]> [SMTWFS](?: [SMTWFS]){5}|[SMTWFS] (?:[SMTWFS] ){0,5}<[SMTWFS]>(?: [SMTWFS])*)`)
 
-// pylonSourceRe matches the exact two-element pylon source render.BannerSource
-// emits: `[ HH:MM | banner ]\n( YYYY-MM-DD DAY UTC±H · year █░ NN% )`.
+// asciiYearProgressRe pins row 2: `year` + 20-cell `█`/`░` bar + percent.
+var asciiYearProgressRe = regexp.MustCompile(`year [█░]{20} \d{1,3}%`)
+
+// pylonSourceRe matches the three-element pylon source render.BannerSourceMulti
+// emits: `[ HH:MM | banner ]\n( YYYY-MM-DD UTC±H · S <X> T W T F S )\n( year █░ NN% )`.
 // Anchored. Pylon v0.2's default banner font has a `:` glyph, so the
-// headline reaches pylon untouched. The year-progress bar is appended to
-// the subtitle (option C from the design session).
-var pylonSourceRe = regexp.MustCompile(`\A\[ \d{2}:\d{2} \| banner \]\n\( \d{4}-\d{2}-\d{2} [A-Z]{3} UTC[+-]\d+ · year [█░]{20} \d{1,3}% \)\z`)
+// headline reaches pylon untouched. The weekday strip uses angle brackets
+// because pylon's parser would treat literal `[X]` as a nested bordered-box.
+var pylonSourceRe = regexp.MustCompile(`\A\[ \d{2}:\d{2} \| banner \]\n\( \d{4}-\d{2}-\d{2} UTC[+-]\d+ · (?:<[SMTWFS]> [SMTWFS](?: [SMTWFS]){5}|[SMTWFS] (?:[SMTWFS] ){0,5}<[SMTWFS]>(?: [SMTWFS])*) \)\n\( year [█░]{20} \d{1,3}% \)\z`)
 
 // pngMagic is the 8-byte PNG file signature.
 var pngMagic = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
@@ -90,14 +95,14 @@ func TestNow(t *testing.T) {
 		bodyPattern   *regexp.Regexp
 		bodyIsPNG     bool
 		bodyIsHTML    bool
-		asciiSubtitle bool
+		asciiRows     bool
 	}{
 		{
-			name:          "cli_returns_ascii_banner",
-			ua:            "curl/8.4.0",
-			ctTypePfx:     "text/plain",
-			bodyPattern:   asciiShapeRe,
-			asciiSubtitle: true,
+			name:        "cli_returns_ascii_banner",
+			ua:          "curl/8.4.0",
+			ctTypePfx:   "text/plain",
+			bodyPattern: asciiShapeRe,
+			asciiRows:   true,
 		},
 		{
 			name:       "browser_returns_html",
@@ -176,8 +181,12 @@ func TestNow(t *testing.T) {
 			if tc.bodyPattern != nil && !tc.bodyPattern.Match(body) {
 				t.Errorf("body does not match %s\n--- body ---\n%s", tc.bodyPattern, body)
 			}
-			if tc.asciiSubtitle && !asciiSubtitleRe.Match(body) {
-				t.Errorf("body missing subtitle pattern %s\n--- body ---\n%s", asciiSubtitleRe, body)
+			if tc.asciiRows {
+				for _, re := range []*regexp.Regexp{asciiCombinedRowRe, asciiYearProgressRe} {
+					if !re.Match(body) {
+						t.Errorf("body missing metadata row pattern %s\n--- body ---\n%s", re, body)
+					}
+				}
 			}
 		})
 	}
