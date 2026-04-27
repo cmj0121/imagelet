@@ -2,9 +2,10 @@
 //
 // Middlewares here are intended to be installed on any imagelet gin.Engine
 // (production or downstream consumer) without coupling to specific routes.
-// Currently exposes ClientDetector for ASCII/PNG content negotiation and
-// ResolveMode for ?format= query overrides; future middlewares (auth,
-// request id, etc.) belong alongside them.
+// Currently exposes ClientDetector for UA-based ASCII/HTML content
+// negotiation, ResolveMode for ?format= query overrides, and
+// WantsPylonSource for the raw-source pass-through; future middlewares
+// (auth, request id, etc.) belong alongside them.
 package middleware
 
 import (
@@ -32,8 +33,15 @@ const uaLogLimit = 120
 //
 // Classification rule:
 //   - empty UA                              -> render.ModeASCII (safe default)
-//   - UA contains "Mozilla" (case-insens.)  -> render.ModePNG (browsers)
+//   - UA contains "Mozilla" (case-insens.)  -> render.ModeHTML (browsers)
 //   - everything else                       -> render.ModeASCII (CLI tools)
+//
+// Browsers default to HTML so a top-level navigation to / or /now reads
+// like a page (title, viewport, centered SVG) rather than a raw image.
+// Third-party sites embedding imagelet via `<img src="…">` should append
+// `?format=png` (or `?format=svg`) to keep the raw-image contract — the
+// UA classifier alone can't distinguish a top-level navigation from an
+// image sub-request.
 //
 // The decision is logged at debug level so operators can confirm the rule
 // fires correctly during dev. The middleware is stateless and safe to install
@@ -76,32 +84,55 @@ func GetMode(c *gin.Context) render.Mode {
 // ?format= query parameter when present and falling back to the UA-derived
 // GetMode otherwise. Precedence (highest first):
 //
-//  1. ?format=svg → render.ModeSVG
-//  2. ?format=png → render.ModePNG
-//  3. UA classification (GetMode)
+//  1. ?format=html  → render.ModeHTML
+//  2. ?format=svg   → render.ModeSVG
+//  3. ?format=png   → render.ModePNG
+//  4. ?format=ascii → render.ModeASCII
+//  5. UA classification (GetMode)
 //
 // Bad or missing values silently fall through to GetMode — never 4xx.
-// ?format=ascii is intentionally not supported (no surfaced use case for
-// browsers requesting ASCII; the UA fallback already serves plain text to
-// non-browser clients). The handler-level Accept: text/pylon short-circuit
-// runs before ResolveMode and stays unchanged.
+// ?format=pylon is NOT a render.Mode — pylon source bypasses the renderer
+// and is negotiated by WantsPylonSource, which handlers must check before
+// ResolveMode. The header-based Accept: text/pylon path runs through the
+// same WantsPylonSource helper.
 func ResolveMode(c *gin.Context) render.Mode {
 	if q := strings.ToLower(strings.TrimSpace(c.Query("format"))); q != "" {
 		switch q {
+		case "html":
+			return render.ModeHTML
 		case "svg":
 			return render.ModeSVG
 		case "png":
 			return render.ModePNG
+		case "ascii":
+			return render.ModeASCII
 		}
 	}
 	return GetMode(c)
+}
+
+// WantsPylonSource reports whether the request is asking for raw pylon
+// source — either via Accept: text/pylon (legacy header path) or via
+// ?format=pylon (query-param parity). Handlers should call this BEFORE
+// ResolveMode and short-circuit with `c.Data(200, "text/pylon", source)`
+// when it returns true. Both spellings are accepted so curl callers using
+// `-H "Accept: text/pylon"` and browser-bookmark callers using
+// `?format=pylon` get the same answer.
+func WantsPylonSource(c *gin.Context) bool {
+	if strings.Contains(c.GetHeader("Accept"), "text/pylon") {
+		return true
+	}
+	if q := strings.ToLower(strings.TrimSpace(c.Query("format"))); q == "pylon" {
+		return true
+	}
+	return false
 }
 
 // classify implements the User-Agent decision rule. Pulled out so tests can
 // exercise it directly without spinning up a gin engine.
 func classify(ua string) render.Mode {
 	if strings.Contains(strings.ToLower(ua), "mozilla") {
-		return render.ModePNG
+		return render.ModeHTML
 	}
 	return render.ModeASCII
 }
