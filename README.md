@@ -152,22 +152,26 @@ and ASCII paths are unaffected; pylon's PNG keeps its own theme-locked
 colors, terminals draw their own background.
 
 Both rendered paths use pylon's native theme — Unicode frame plus ANSI Shadow block
-letters — so the visual is identical across consumers. The subtitle carries the
-date, weekday abbreviation, UTC offset, and a 20-cell `█`/`░` year-progress bar
-so a glance tells you how far through the year `now` is. Every response sets
-`Cache-Control: no-store`.
+letters — so the visual is identical across consumers. Three borderless caption
+rows sit under the banner: the ISO date with the UTC offset, a Sunday-first
+weekday strip with the current day in angle brackets, and a 20-cell `█`/`░`
+year-progress bar. The strip uses angle brackets instead of square brackets
+because pylon's parser would treat literal `[M]` as a nested bordered-box and
+shred the layout. Every response sets `Cache-Control: no-store`.
 
 ```text
 $ curl http://localhost:8080/now
-   ┌─────────────────────────────────────────────┐
-   │    ██╗  ██╗  ██╗  ██╗  █████╗  ██████╗      │
-   │   ███║ ███║  ██║  ██║ ██╔══██╗ ██╔════╝     │
-   │   ╚██║ ╚██║  ███████║ ███████║ ███████╗     │
-   │    ██║  ██║  ╚════██║ ██╔══██║ ██╔═══██╗    │
-   │    ██║  ██║       ██║ ██║  ██║ ╚██████╔╝    │
-   │    ╚═╝  ╚═╝       ╚═╝ ╚═╝  ╚═╝  ╚═════╝     │
-   └─────────────────────────────────────────────┘
-       2026-04-27 MON UTC+8 · year ██████░░░░░░░░░░░░░░ 32%
+   ┌───────────────────────────────────────────┐
+   │    ██╗ █████╗          ██████╗ ██████╗    │
+   │   ███║██╔══██╗   ██   ██╔═████╗╚════██╗   │
+   │   ╚██║╚██████║   ██   ██║██╔██║ █████╔╝   │
+   │    ██║ ╚═══██║        ████╔╝██║ ╚═══██╗   │
+   │    ██║ █████╔╝   ██   ╚██████╔╝██████╔╝   │
+   │    ╚═╝ ╚════╝    ██    ╚═════╝ ╚═════╝    │
+   └───────────────────────────────────────────┘
+                 2026-04-27 UTC+8
+                  S <M> T W T F S
+           year ██████░░░░░░░░░░░░░░ 32%
 ```
 
 Browsers receive the same banner as an HTML page that inlines the SVG — a
