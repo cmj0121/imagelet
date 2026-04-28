@@ -20,6 +20,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
 
+	"github.com/cmj0121/imagelet/internal/htmlcache"
 	"github.com/cmj0121/imagelet/logger"
 	"github.com/cmj0121/imagelet/server"
 	"github.com/cmj0121/imagelet/service/index"
@@ -72,6 +73,12 @@ func main() {
 	gin.DefaultErrorWriter = log.Logger
 
 	r := server.New()
+	// In-process HTML response cache: a middleware that respects the
+	// handlers' own Cache-Control: max-age headers. Routes that emit
+	// no-store (/now, /404) opt out automatically; / and /stock
+	// participate via their existing Cache-Control values. Mounted
+	// before the route handlers so it sees every request.
+	r.Use(htmlcache.New().Middleware())
 	index.Register(r, version)
 	now.Register(r)
 
