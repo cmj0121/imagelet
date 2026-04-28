@@ -11,7 +11,8 @@ func TestInjectOGMetaInsertsBeforeHeadClose(t *testing.T) {
 	og := OGMeta{
 		Title:       "imagelet",
 		Description: "show you should know",
-		ImageURL:    "https://example.com/now?format=svg",
+		ImageURL:    "https://example.com/now?format=png",
+		ImageType:   "image/png",
 		PageURL:     "https://example.com/now",
 	}
 
@@ -26,12 +27,13 @@ func TestInjectOGMetaInsertsBeforeHeadClose(t *testing.T) {
 		`<meta property="og:site_name" content="imagelet">`,
 		`<meta property="og:title" content="imagelet">`,
 		`<meta property="og:description" content="show you should know">`,
-		`<meta property="og:image" content="https://example.com/now?format=svg">`,
+		`<meta property="og:image" content="https://example.com/now?format=png">`,
+		`<meta property="og:image:type" content="image/png">`,
 		`<meta property="og:url" content="https://example.com/now">`,
 		`<meta name="twitter:card" content="summary_large_image">`,
 		`<meta name="twitter:title" content="imagelet">`,
 		`<meta name="twitter:description" content="show you should know">`,
-		`<meta name="twitter:image" content="https://example.com/now?format=svg">`,
+		`<meta name="twitter:image" content="https://example.com/now?format=png">`,
 	} {
 		if !strings.Contains(prefix, want) {
 			t.Errorf("missing tag %q\nprefix: %s", want, prefix)
@@ -102,6 +104,7 @@ func TestInjectOGMetaOmitsEmptyFields(t *testing.T) {
 	for _, banned := range []string{
 		`property="og:description"`,
 		`property="og:image"`,
+		`property="og:image:type"`,
 		`property="og:url"`,
 		`name="twitter:description"`,
 		`name="twitter:image"`,

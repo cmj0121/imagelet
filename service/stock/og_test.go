@@ -28,7 +28,8 @@ func TestStockHTMLIncludesOGTags(t *testing.T) {
 		`<meta property="og:type" content="website">`,
 		`<meta property="og:site_name" content="imagelet">`,
 		`<meta name="twitter:card" content="summary_large_image">`,
-		`<meta property="og:image" content="http://imagelet.example.com/stock?format=svg">`,
+		`<meta property="og:image" content="http://imagelet.example.com/stock?format=png">`,
+		`<meta property="og:image:type" content="image/png">`,
 		`<meta property="og:url" content="http://imagelet.example.com/stock">`,
 	} {
 		if !strings.Contains(body, want) {
@@ -64,7 +65,7 @@ func TestStockSymbolRouteOGTagsCarrySymbol(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `content="http://imagelet.example.com/stock/2330.TW?format=svg"`) {
+	if !strings.Contains(body, `content="http://imagelet.example.com/stock/2330.TW?format=png"`) {
 		t.Errorf("og:image should target the per-symbol path; body:\n%s", body)
 	}
 	if !strings.Contains(body, `content="http://imagelet.example.com/stock/2330.TW"`) {

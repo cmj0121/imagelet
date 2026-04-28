@@ -89,7 +89,8 @@ func Handler(c *gin.Context) {
 		og := render.OGMeta{
 			Title:       "imagelet · " + head,
 			Description: ogDescription(t),
-			ImageURL:    middleware.AbsoluteURL(c, "format=svg"),
+			ImageURL:    middleware.AbsoluteURL(c, "format=png"),
+			ImageType:   "image/png",
 			PageURL:     middleware.AbsoluteURL(c, ""),
 		}
 		c.Data(http.StatusOK, "text/html; charset=utf-8", render.InjectOGMeta(body, og))

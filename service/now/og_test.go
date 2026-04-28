@@ -27,7 +27,8 @@ func TestNowHTMLIncludesOGTags(t *testing.T) {
 	for _, want := range []string{
 		`<meta property="og:type" content="website">`,
 		`<meta name="twitter:card" content="summary_large_image">`,
-		`<meta property="og:image" content="http://imagelet.example.com/now?format=svg">`,
+		`<meta property="og:image" content="http://imagelet.example.com/now?format=png">`,
+		`<meta property="og:image:type" content="image/png">`,
 		`<meta property="og:url" content="http://imagelet.example.com/now">`,
 	} {
 		if !strings.Contains(body, want) {
@@ -51,7 +52,7 @@ func TestNowHTMLIncludesOGTags(t *testing.T) {
 func TestNowHTMLOGHonorsDateOverride(t *testing.T) {
 	// /now?date=2012-02-02 should produce og:url that preserves the
 	// query (since that's what makes the URL canonical), and og:image
-	// must replace it with format=svg only.
+	// must merge it with format=png so social cards render the raster.
 	gin.SetMode(gin.TestMode)
 	r := newRouter()
 
@@ -65,8 +66,8 @@ func TestNowHTMLOGHonorsDateOverride(t *testing.T) {
 	if !strings.Contains(body, `content="http://example.com/now?date=2012-02-02"`) {
 		t.Errorf("og:url should preserve the date= query; body:\n%s", body)
 	}
-	if !strings.Contains(body, `content="http://example.com/now?date=2012-02-02&amp;format=svg"`) {
-		t.Errorf("og:image should merge date= with format=svg; body:\n%s", body)
+	if !strings.Contains(body, `content="http://example.com/now?date=2012-02-02&amp;format=png"`) {
+		t.Errorf("og:image should merge date= with format=png; body:\n%s", body)
 	}
 	if !strings.Contains(body, `2012-02-02`) {
 		t.Errorf("description should reflect overridden date; body:\n%s", body)

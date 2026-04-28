@@ -18,6 +18,7 @@ type OGMeta struct {
 	Title       string // og:title + twitter:title
 	Description string // og:description + twitter:description
 	ImageURL    string // og:image + twitter:image (absolute URL)
+	ImageType   string // og:image:type (MIME, e.g. image/png) — emitted only when set
 	PageURL     string // og:url (absolute URL, canonical)
 }
 
@@ -87,6 +88,9 @@ func buildOGBlock(og OGMeta) []byte {
 	}
 	if og.ImageURL != "" {
 		writeMetaProperty(&b, "og:image", og.ImageURL)
+	}
+	if og.ImageType != "" {
+		writeMetaProperty(&b, "og:image:type", og.ImageType)
 	}
 	if og.PageURL != "" {
 		writeMetaProperty(&b, "og:url", og.PageURL)

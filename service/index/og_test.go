@@ -24,7 +24,8 @@ func TestRootHTMLIncludesOGTags(t *testing.T) {
 		`<meta property="og:type" content="website">`,
 		`<meta property="og:site_name" content="imagelet">`,
 		`<meta property="og:title" content="imagelet">`,
-		`<meta property="og:image" content="http://imagelet.example.com/?format=svg">`,
+		`<meta property="og:image" content="http://imagelet.example.com/?format=png">`,
+		`<meta property="og:image:type" content="image/png">`,
 		`<meta property="og:url" content="http://imagelet.example.com/">`,
 		`<meta name="twitter:card" content="summary_large_image">`,
 	}
@@ -51,7 +52,7 @@ func TestRootHTMLOGRespectsForwardedProto(t *testing.T) {
 	r.ServeHTTP(rec, req)
 
 	body := rec.Body.String()
-	if !strings.Contains(body, `content="https://imagelet.example.com/?format=svg"`) {
+	if !strings.Contains(body, `content="https://imagelet.example.com/?format=png"`) {
 		t.Errorf("expected https og:image; body:\n%s", body)
 	}
 	if !strings.Contains(body, `content="https://imagelet.example.com/"`) {
