@@ -113,6 +113,17 @@ func TestInjectDateNav_AddsScriptAndStyle(t *testing.T) {
 	}
 }
 
+// TestInjectDateNav_HasMobileMediaQuery is a cheap regression guard: the
+// responsive block that bottom-anchors and shrinks the chevrons on phones
+// must survive any future "minify the CSS" pass. We pin only the literal
+// breakpoint string — the exact rules can evolve without breaking the test.
+func TestInjectDateNav_HasMobileMediaQuery(t *testing.T) {
+	out := InjectDateNav(WrapHTML([]byte("<svg/>")))
+	if !strings.Contains(string(out), "@media (max-width: 480px)") {
+		t.Errorf("InjectDateNav output missing mobile @media block:\n%s", out)
+	}
+}
+
 // TestInjectDateNav_NoOpWithoutTags asserts the defensive fallback: when
 // neither </head> nor </body> is present the input is returned byte-for-
 // byte unchanged so callers can splice blindly without an HTML check.
