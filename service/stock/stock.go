@@ -529,6 +529,9 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 	// 漲跌家數 row; when open, live carries per-exchange counts (上市 +
 	// 上櫃) computed by polling MIS across both universes, and we render
 	// one row per exchange.
+	// 漲跌家數 is a market-wide count; hide it on per-stock views so
+	// the panel only carries rows about the queried ticker.
+	isPerStock := twStockID(symbol) != ""
 	var groups [][]string
 	switch {
 	case q.IsClosed && perStock.HasFlow():
@@ -536,8 +539,10 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 	case q.IsClosed && tw.HasInstitutional():
 		groups = append(groups, positioningRows(tw, useEnglish))
 	}
-	if rows := breadthRows(tw, live, q.IsClosed, useEnglish); len(rows) > 0 {
-		groups = append(groups, rows)
+	if !isPerStock {
+		if rows := breadthRows(tw, live, q.IsClosed, useEnglish); len(rows) > 0 {
+			groups = append(groups, rows)
+		}
 	}
 	if q.IsClosed && tw.HasMargin() {
 		groups = append(groups, creditRows(tw, useEnglish))
