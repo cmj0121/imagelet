@@ -453,12 +453,53 @@ func parseMISTime(d, t string) time.Time {
 	return out
 }
 
+// LookupName returns the Chinese short name of a TW listing — Yahoo's
+// chart endpoint serves Latin names for `<id>.TW` symbols, so we use
+// MIS getStockInfo's `n` field as the localized override. isOTC
+// selects the MIS ex_ch prefix (`otc_` for 上櫃, `tse_` for 上市).
+//
+// Successful lookups are memoized in p.nameCache forever — names are
+// stable enough that a process-lifetime cache is appropriate, with
+// process restart absorbing any rare TWSE renames. Empty `n` (MIS
+// returned a row but without a name field) and missing rows both
+// surface as ErrUnavailable so callers fall back to the upstream Latin
+// name. The MIS endpoint must be configured (default in New(), opt-in
+// via SetLiveBreadthEndpoints in fixture tests); otherwise returns
+// ErrUnavailable.
+func (p *HTTPProvider) LookupName(ctx context.Context, stockID string, isOTC bool) (string, error) {
+	if p.misInfoEndpoint == "" {
+		return "", ErrUnavailable
+	}
+	if v, ok := p.nameCache.Load(stockID); ok {
+		return v.(string), nil
+	}
+	ex := exchangeTSE
+	if isOTC {
+		ex = exchangeOTC
+	}
+	quotes, err := p.fetchMISBatch(ctx, ex, []string{stockID})
+	if err != nil {
+		return "", err
+	}
+	if len(quotes) == 0 {
+		return "", ErrUnavailable
+	}
+	name := strings.TrimSpace(quotes[0].N)
+	if name == "" {
+		return "", ErrUnavailable
+	}
+	p.nameCache.Store(stockID, name)
+	return name, nil
+}
+
 // misStockInfo mirrors the per-symbol payload returned by MIS
-// getStockInfo. We pull only the fields needed for breadth: code,
-// previous close, latest trade, previous trade, session open, plus
-// tick time.
+// getStockInfo. We pull only the fields needed for breadth + name
+// lookup: code, name, previous close, latest trade, previous trade,
+// session open, plus tick time.
 type misStockInfo struct {
 	Code string `json:"c"`  // stock code, e.g. "2330"
+	N    string `json:"n"`  // Chinese short name, e.g. "台積電"
+	NF   string `json:"nf"` // Chinese full name, e.g. "台灣積體電路製造股份有限公司"
 	Y    string `json:"y"`  // previous-day close
 	Z    string `json:"z"`  // latest trade price ("-" when no recent tick)
 	PZ   string `json:"pz"` // previous trade price (fallback for Z)

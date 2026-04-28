@@ -221,6 +221,18 @@ type PerStockProvider interface {
 	GetForStock(ctx context.Context, stockID string, asOf time.Time) (StockData, error)
 }
 
+// NameProvider is an optional extension for resolving the Chinese
+// short name of a TW listing — Yahoo's chart endpoint returns a Latin-
+// only shortName for `<id>.TW` symbols, so we fall back to TWSE's MIS
+// getStockInfo endpoint which carries the localized 證券簡稱 in the
+// `n` field. isOTC selects the MIS prefix (`tse_` for 上市, `otc_` for
+// 上櫃). Returns ErrUnavailable when MIS has no row for the symbol or
+// when the wired provider doesn't implement NameProvider; the /stock
+// handler logs and falls back to the upstream Latin name.
+type NameProvider interface {
+	LookupName(ctx context.Context, stockID string, isOTC bool) (string, error)
+}
+
 // LiveBreadth is the intra-day breadth snapshot computed by polling
 // MIS's per-stock real-time API and aggregating across the listed
 // equity universes — split per exchange because TWSE 上市 (TSE main)
@@ -307,6 +319,13 @@ type HTTPProvider struct {
 	liveErr    error
 	liveHasOK  bool
 	liveFlight singleflight.Group
+
+	// nameCache memoizes per-stock CN name lookups across requests.
+	// Names are stable enough that we cache them forever — TWSE does
+	// rename listings occasionally (corporate actions) but at a cadence
+	// that's fine to absorb on process restart. Keys are stockID
+	// strings (e.g. "2330"), values are the trimmed CN short name.
+	nameCache sync.Map
 }
 
 // New returns an HTTPProvider with a 5s per-request timeout against the
@@ -914,4 +933,17 @@ func (c *Cached) GetForStock(ctx context.Context, stockID string, asOf time.Time
 		return StockData{}, ErrUnavailable
 	}
 	return psp.GetForStock(ctx, stockID, asOf)
+}
+
+// LookupName delegates to the inner provider when it implements
+// NameProvider. The inner HTTPProvider memoizes results forever in a
+// process-local sync.Map, so this passthrough doesn't add a separate
+// cache layer. Returns ErrUnavailable when the inner provider doesn't
+// support it.
+func (c *Cached) LookupName(ctx context.Context, stockID string, isOTC bool) (string, error) {
+	np, ok := c.inner.(NameProvider)
+	if !ok {
+		return "", ErrUnavailable
+	}
+	return np.LookupName(ctx, stockID, isOTC)
 }

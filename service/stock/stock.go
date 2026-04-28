@@ -252,7 +252,8 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 		// market: T86 is afterTrading, so the per-stock fetch is gated on
 		// q.IsClosed or dateOverride to avoid showing stale positioning
 		// labelled as today's price.
-		if stockID := twStockID(symbol); stockID != "" && (q.IsClosed || dateOverride) {
+		stockID := twStockID(symbol)
+		if stockID != "" && (q.IsClosed || dateOverride) {
 			if psp, ok := h.twse.(twse.PerStockProvider); ok {
 				asOfQuery := asOf
 				if !dateOverride {
@@ -263,6 +264,31 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 					log.Warn().Err(perr).Str("stock", stockID).Msg("twse per-stock fetch failed; falling back to market-wide positioning")
 				} else {
 					perStock = ps
+				}
+			}
+		}
+
+		// CN name override: Yahoo's chart endpoint returns Latin
+		// shortName for TW listings (e.g. "TAIWAN SEMICONDUCTOR
+		// MANUFACTUR" for 2330.TW). MIS getStockInfo carries the
+		// localized 證券簡稱 in `n`. Prefer perStock.Name when T86
+		// already gave us one; otherwise hit MIS via the optional
+		// NameProvider. The MIS lookup is memoized forever in the
+		// HTTPProvider's process-local map, so repeat /stock/<id>
+		// requests don't fan out an extra HTTP call. Failures are
+		// best-effort: log and keep Yahoo's Latin name as fallback.
+		if stockID != "" {
+			switch {
+			case perStock.Name != "":
+				q.Name = perStock.Name
+			default:
+				if np, ok := h.twse.(twse.NameProvider); ok {
+					isOTC := strings.HasSuffix(symbol, ".TWO")
+					if name, lerr := np.LookupName(c.Request.Context(), stockID, isOTC); lerr == nil {
+						q.Name = name
+					} else if lerr != twse.ErrUnavailable {
+						log.Debug().Err(lerr).Str("stock", stockID).Msg("twse name lookup failed; keeping upstream name")
+					}
 				}
 			}
 		}
