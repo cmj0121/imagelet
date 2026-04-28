@@ -512,13 +512,11 @@ func TestServeAcceptPylonReturnsRawSource(t *testing.T) {
 		t.Errorf("Content-Type = %q, want prefix text/pylon", got)
 	}
 	body := rec.Body.String()
-	// New banner shape: an outer bordered box `[ ... ]` containing the
-	// title row + a borderless `( <headline> | banner )` directive.
-	if !strings.Contains(body, "[\n") {
-		t.Errorf("body missing titled-banner outer bracket\n--- body ---\n%s", body)
+	if !strings.Contains(body, "[ ") {
+		t.Errorf("body missing opening bracket\n--- body ---\n%s", body)
 	}
-	if !strings.Contains(body, "| banner )") {
-		t.Errorf("body missing inner banner sentinel\n--- body ---\n%s", body)
+	if !strings.Contains(body, "| banner ]") {
+		t.Errorf("body missing banner sentinel\n--- body ---\n%s", body)
 	}
 	if !strings.Contains(body, "^GSPC") {
 		t.Errorf("body missing symbol\n--- body ---\n%s", body)
