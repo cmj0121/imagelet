@@ -36,6 +36,13 @@ Flags:
 | `GET`  | `/stock`   | Banner-rendered regional stock-index quote.                                |
 | `*`    | _other_    | `404` banner above a fake Python traceback with the requested path inside. |
 
+Time-aware routes accept an optional `?date=YYYY-MM-DD` query parameter
+to pin the response to a historical date. `/now?date=2012-02-02` keeps
+the wall-clock HH:MM but shifts the calendar / weekday / year-progress
+caption onto the requested day. `/stock?date=2012-02-02` loads the
+latest stock data on or before that date (closest completed trading
+session). Invalid dates fall through silently to the live path.
+
 ### `/`
 
 ```text
