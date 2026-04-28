@@ -159,6 +159,17 @@ type Provider interface {
 	Get(ctx context.Context) (MarketData, error)
 }
 
+// HistoricalProvider is an optional extension of Provider for fetching
+// market-wide TWSE aggregates pinned to a historical date (?date=
+// override path). GetAt walks back from asOf using the same lookback
+// loop as Get, returning the latest published trading day at or before
+// the requested date. Optional because not every Provider implementation
+// can answer historical queries; the /stock handler type-asserts and
+// surfaces ErrUnavailable when the wired provider doesn't implement it.
+type HistoricalProvider interface {
+	GetAt(ctx context.Context, asOf time.Time) (MarketData, error)
+}
+
 // LiveBreadth is the intra-day breadth snapshot computed by polling
 // MIS's per-stock real-time API and aggregating across the listed
 // equity universes — split per exchange because TWSE 上市 (TSE main)
@@ -304,10 +315,24 @@ const maxLookbackDays = 7
 // fallback. Partial-day data (BFI present, MARGN missing or vice
 // versa) is returned as-is; the renderer gates on Has* per-row.
 func (p *HTTPProvider) Get(ctx context.Context) (MarketData, error) {
+	return p.GetAt(ctx, time.Now())
+}
+
+// GetAt fetches both daily aggregates for the most recent published
+// trading day at or before asOf. Same lookback semantics as Get —
+// weekends are skipped and ErrUnavailable propagates through up to
+// maxLookbackDays — but the walk starts from asOf rather than "now".
+// Future-dated asOf is clamped to today to keep the loop bounded
+// against the live calendar.
+func (p *HTTPProvider) GetAt(ctx context.Context, asOf time.Time) (MarketData, error) {
 	now := time.Now().In(twLoc)
+	if asOf.IsZero() || asOf.After(now) {
+		asOf = now
+	}
+	asOf = asOf.In(twLoc)
 
 	for daysBack := 0; daysBack < maxLookbackDays; daysBack++ {
-		probe := now.AddDate(0, 0, -daysBack)
+		probe := asOf.AddDate(0, 0, -daysBack)
 		// TWSE is closed on weekends; skipping shaves up to 2
 		// guaranteed-empty round trips per call.
 		switch probe.Weekday() {
@@ -701,4 +726,19 @@ func (c *Cached) FetchLiveBreadth(ctx context.Context) (LiveBreadth, error) {
 		return LiveBreadth{}, ErrUnavailable
 	}
 	return lbp.FetchLiveBreadth(ctx)
+}
+
+// GetAt delegates to the inner provider when it implements
+// HistoricalProvider. Historical lookups bypass the single-entry cache
+// entirely — that cache holds today's market-wide aggregate and is
+// indistinguishable per-key, so a date-pinned response would either
+// poison the cache for the live path or require a parallel keyed cache
+// that adds complexity for a rare path. Re-running upstream is fine.
+// Returns ErrUnavailable when the inner provider doesn't support it.
+func (c *Cached) GetAt(ctx context.Context, asOf time.Time) (MarketData, error) {
+	hp, ok := c.inner.(HistoricalProvider)
+	if !ok {
+		return MarketData{}, ErrUnavailable
+	}
+	return hp.GetAt(ctx, asOf)
 }

@@ -20,23 +20,53 @@ import (
 // NewWithEndpoint for tests.
 const defaultEndpoint = "https://query1.finance.yahoo.com/v8/finance/chart/%s?interval=1d&range=2d"
 
+// defaultEndpointAt is the v8 chart URL template for a historical window
+// query: %s = symbol, %d %d = period1 / period2 Unix seconds. Used by
+// GetAt — narrow window (asOf-14d → asOf+1d) keeps the response small
+// while covering enough trading days that any holiday gap still resolves
+// to a real bar.
+const defaultEndpointAt = "https://query1.finance.yahoo.com/v8/finance/chart/%s?interval=1d&period1=%d&period2=%d"
+
+// historicalLookbackDays is the days-before-asOf window passed as
+// period1. 14 calendar days covers ~10 trading sessions — comfortably
+// past the longest TWSE / NYSE holiday gap (Lunar New Year ~5 days)
+// while keeping the response tiny.
+const historicalLookbackDays = 14
+
 // Provider satisfies quote.Provider against Yahoo Finance.
 type Provider struct {
-	endpoint string
-	client   *http.Client
+	endpoint   string
+	endpointAt string
+	client     *http.Client
 }
 
 // New returns a Provider configured against the default Yahoo endpoint
 // with a 5-second per-request timeout. Use NewWithEndpoint for tests.
 func New() *Provider {
-	return NewWithEndpoint(defaultEndpoint, &http.Client{Timeout: 5 * time.Second})
+	return &Provider{
+		endpoint:   defaultEndpoint,
+		endpointAt: defaultEndpointAt,
+		client:     &http.Client{Timeout: 5 * time.Second},
+	}
 }
 
 // NewWithEndpoint returns a Provider with a custom URL template (containing
 // exactly one %s for the symbol) and HTTP client — primarily for tests
-// pointed at httptest.Server.
+// pointed at httptest.Server. The historical-window endpoint is set to
+// a derivative of `endpoint` so a single fixture server can serve both
+// the live and as-of paths; tests that exercise historical paths can
+// override via NewWithEndpoints.
 func NewWithEndpoint(endpoint string, client *http.Client) *Provider {
-	return &Provider{endpoint: endpoint, client: client}
+	return &Provider{endpoint: endpoint, endpointAt: endpoint, client: client}
+}
+
+// NewWithEndpoints lets tests point the live and historical paths at
+// different URL templates — e.g. when a fixture server distinguishes
+// between range= and period1/period2 queries by routing on the path.
+// `endpoint` is the live (range=2d) template; `endpointAt` is the
+// historical template containing one %s + two %d slots.
+func NewWithEndpoints(endpoint, endpointAt string, client *http.Client) *Provider {
+	return &Provider{endpoint: endpoint, endpointAt: endpointAt, client: client}
 }
 
 // Get fetches the quote for symbol. Network errors are returned as-is.
@@ -94,6 +124,125 @@ func (p *Provider) Get(ctx context.Context, symbol string) (quote.Quote, error) 
 	}, nil
 }
 
+// GetAt fetches the latest bar at or before asOf using a narrow
+// period1/period2 window over the v8 chart endpoint. Future-dated asOf
+// is clamped to "now" defensively so callers can't loop the upstream
+// against a never-existing date. Returns quote.ErrUnavailable when the
+// fixed lookback window contains no bars (delisted symbol, or symbol
+// listed after asOf).
+//
+// The reconstructed Quote sets IsClosed=true unconditionally — a
+// historical bar is by definition closed regardless of what
+// currentTradingPeriod.regular reports for "today". 52-week range fields
+// are left zero (window too narrow to compute); the renderer's
+// Has52WeekRange guard then suppresses the 52w bar gracefully.
+func (p *Provider) GetAt(ctx context.Context, symbol string, asOf time.Time) (quote.Quote, error) {
+	if asOf.After(time.Now()) {
+		asOf = time.Now()
+	}
+	period1 := asOf.AddDate(0, 0, -historicalLookbackDays).Unix()
+	period2 := asOf.AddDate(0, 0, 1).Unix()
+
+	url := fmt.Sprintf(p.endpointAt, symbol, period1, period2)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return quote.Quote{}, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; imagelet/0.2)")
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return quote.Quote{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return quote.Quote{}, fmt.Errorf("yahoo: %s: %s", resp.Status, body)
+	}
+
+	var raw chartResponse
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return quote.Quote{}, err
+	}
+	if raw.Chart.Error != nil && raw.Chart.Error.Description != "" {
+		return quote.Quote{}, fmt.Errorf("yahoo: %s", raw.Chart.Error.Description)
+	}
+	if len(raw.Chart.Result) == 0 {
+		return quote.Quote{}, quote.ErrUnavailable
+	}
+
+	result := raw.Chart.Result[0]
+	if len(result.Timestamp) == 0 || len(result.Indicators.Quote) == 0 {
+		return quote.Quote{}, quote.ErrUnavailable
+	}
+	ind := result.Indicators.Quote[0]
+
+	// Bars come ordered ascending by timestamp; walk backwards looking for
+	// the latest bar with t ≤ end-of-asOf-day AND a non-null close. The
+	// cutoff is the end of asOf's CALENDAR day in its own location — not
+	// `asOf + 24h` — because exchanges stamp daily bars at session-open
+	// (e.g. ~14:30 UTC for US markets), so a noon-UTC asOf with a +24h
+	// cutoff would pull in the next day's bar. Yahoo occasionally returns
+	// null OHLC for a slot during pre-market or data gaps (decoded to 0)
+	// — skipping those keeps GetAt honest.
+	y, mo, d := asOf.Date()
+	asOfCutoff := time.Date(y, mo, d, 23, 59, 59, 0, asOf.Location()).Unix()
+	pickIdx := -1
+	for i := len(result.Timestamp) - 1; i >= 0; i-- {
+		if result.Timestamp[i] > asOfCutoff {
+			continue
+		}
+		if i >= len(ind.Close) || ind.Close[i] <= 0 {
+			continue
+		}
+		pickIdx = i
+		break
+	}
+	if pickIdx < 0 {
+		return quote.Quote{}, quote.ErrUnavailable
+	}
+
+	prevClose := 0.0
+	for i := pickIdx - 1; i >= 0; i-- {
+		if i < len(ind.Close) && ind.Close[i] > 0 {
+			prevClose = ind.Close[i]
+			break
+		}
+	}
+
+	q := quote.Quote{
+		Symbol:    result.Meta.Symbol,
+		Last:      ind.Close[pickIdx],
+		Open:      safeAt(ind.Open, pickIdx),
+		PrevClose: prevClose,
+		Currency:  result.Meta.Currency,
+		AsOf:      time.Unix(result.Timestamp[pickIdx], 0),
+		IsClosed:  true,
+		DayHigh:   safeAt(ind.High, pickIdx),
+		DayLow:    safeAt(ind.Low, pickIdx),
+	}
+	if q.Symbol == "" {
+		q.Symbol = symbol
+	}
+	return q, nil
+}
+
+// safeAt returns arr[i] when in-range and positive, else 0. Yahoo
+// occasionally returns null OHLC slots during data gaps (decoded as 0
+// for float64); the zero acts as a sentinel for the renderer's HasOHLC
+// gate so a partial bar gracefully drops the OHLC bar rather than
+// rendering noise.
+func safeAt(arr []float64, i int) float64 {
+	if i < 0 || i >= len(arr) {
+		return 0
+	}
+	if arr[i] < 0 {
+		return 0
+	}
+	return arr[i]
+}
+
 // latestOpen returns the most recent non-zero session open from the
 // chart's OHLCV history. Yahoo's v8 chart-meta omits regularMarketOpen
 // (only the day's High / Low / Last are surfaced there); the session
@@ -133,6 +282,7 @@ type chartResponse struct {
 		Result []struct {
 			Meta       chartMeta       `json:"meta"`
 			Indicators chartIndicators `json:"indicators"`
+			Timestamp  []int64         `json:"timestamp"`
 		} `json:"result"`
 		Error *struct {
 			Code        string `json:"code"`
@@ -145,11 +295,15 @@ type chartResponse struct {
 // under indicators.quote[0] — the [0] is historical (one entry per
 // provider; chart endpoints only ever fill one), the inner arrays are
 // per-bar OHLCV indexed by the sibling timestamp[] array on Result.
-// We only consume the open[] array (for session Open) since the chart-
-// meta block already surfaces Last / DayHigh / DayLow.
+// The live Get path uses only open[] (chart-meta surfaces Last / DayHigh
+// / DayLow), but the historical GetAt path needs the full quartet to
+// reconstruct a bar, so all four fields are decoded.
 type chartIndicators struct {
 	Quote []struct {
-		Open []float64 `json:"open"`
+		Open  []float64 `json:"open"`
+		High  []float64 `json:"high"`
+		Low   []float64 `json:"low"`
+		Close []float64 `json:"close"`
 	} `json:"quote"`
 }
 
