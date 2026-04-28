@@ -470,6 +470,35 @@ func TestServeBrowserGetsHTML(t *testing.T) {
 	}
 }
 
+// TestServeBrowserHTMLHasDateNav pins the date-nav post-processor wiring
+// into the HTML response path. The handler must inject the prev/next
+// chevron DOM, the help dialog, and the inline behavior <script> on top
+// of the BannerBoxes-wrapped body — so /stock browsers get the same
+// keyboard navigation surface as the standalone WrapHTMLWithDateNav
+// variant exposes for /now and friends.
+func TestServeBrowserHTMLHasDateNav(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := newRouter(fakeProvider{q: freshQuote()})
+
+	req := httptest.NewRequest(http.MethodGet, "/stock", nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/html; charset=utf-8", got)
+	}
+	body := rec.Body.String()
+	for _, sub := range []string{"<script>", `data-imagelet-nav="-1"`, `id="imagelet-help"`} {
+		if !strings.Contains(body, sub) {
+			t.Errorf("HTML body missing date-nav fragment %q\n--- body ---\n%s", sub, body)
+		}
+	}
+}
+
 func TestServeFormatPNG(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := newRouter(fakeProvider{q: freshQuote()})

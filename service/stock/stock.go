@@ -430,6 +430,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 			ImageType:   "image/png",
 			PageURL:     middleware.AbsoluteURL(c, ""),
 		}
+		body = render.InjectDateNav(body)
 		c.Data(http.StatusOK, "text/html; charset=utf-8", render.InjectOGMeta(body, og))
 		return
 	}
