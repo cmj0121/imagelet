@@ -50,8 +50,13 @@ func Register(r gin.IRouter) {
 // over the User-Agent-based mode and returns the raw pylon source so
 // callers can render it themselves. Cache-Control: no-store is set on
 // every response because the body changes every minute.
+//
+// When ?date=YYYY-MM-DD is present, middleware.NowFor reprojects the wall-
+// clock H/M/S onto the requested date — the headline still shows the real
+// current time, but the date / weekday strip / year-progress caption all
+// reflect the requested day.
 func Handler(c *gin.Context) {
-	t := time.Now().In(middleware.GetLocation(c))
+	t := middleware.NowFor(c)
 	head := headline(t)
 	lines := metadataLines(t)
 
