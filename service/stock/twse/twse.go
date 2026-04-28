@@ -298,6 +298,7 @@ type HTTPProvider struct {
 	miIndex       string
 	t86           string // T86 per-stock 三大法人 endpoint (production-only; empty disables GetForStock)
 	twt93u        string // TWT93U per-stock 信用額度總量管制 (production-only; empty disables GetSecuritiesLending)
+	miMargnStock  string // MI_MARGN per-stock 融資/融券 (production-only; empty disables GetStockMargin)
 	taifexFutures string // TAIFEX 三大法人區分各期貨契約 download (production-only; empty disables GetRetailFutures)
 	taifexPCR     string // TAIFEX 臺指選擇權 Put/Call ratio (production-only; empty disables GetOptionsPCR)
 	taifexVIX     string // TAIFEX VIX monthly dump URL template — must contain a single %s for YYYYMM
@@ -347,6 +348,7 @@ func New() *HTTPProvider {
 	p.misInfoEndpoint = defaultMISInfoEndpoint
 	p.t86 = defaultT86Endpoint
 	p.twt93u = defaultTWT93UEndpoint
+	p.miMargnStock = defaultMIMARGNStockEndpoint
 	p.taifexFutures = defaultTAIFEXFuturesEndpoint
 	p.taifexPCR = defaultTAIFEXPCREndpoint
 	p.taifexVIX = defaultTAIFEXVIXURLTemplate
@@ -989,6 +991,19 @@ func (c *Cached) GetSecuritiesLending(ctx context.Context, stockID string, asOf 
 		return SecuritiesLending{}, ErrUnavailable
 	}
 	return slp.GetSecuritiesLending(ctx, stockID, asOf)
+}
+
+// GetStockMargin delegates to the inner provider when it implements
+// StockMarginProvider. Same per-stock + per-date keying caveat as
+// GetSecuritiesLending — bypasses the single-entry market-wide cache
+// for now. Returns ErrUnavailable when the inner provider doesn't
+// support it.
+func (c *Cached) GetStockMargin(ctx context.Context, stockID string, asOf time.Time) (StockMargin, error) {
+	smp, ok := c.inner.(StockMarginProvider)
+	if !ok {
+		return StockMargin{}, ErrUnavailable
+	}
+	return smp.GetStockMargin(ctx, stockID, asOf)
 }
 
 // GetRetailFutures delegates to the inner provider when it implements
