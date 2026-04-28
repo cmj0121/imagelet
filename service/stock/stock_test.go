@@ -582,11 +582,12 @@ func TestServeTWPathSVGUsesChineseLabels(t *testing.T) {
 }
 
 // TestServeTWPathOpenMarketHidesEndOfDay pins the open-market gating:
-// 籌碼面 (positioning / 三大法人) and 信用餘額 (credit balance) are
-// TWSE end-of-day datasets and read as stale during the trading
-// session, so they must NOT render when q.IsClosed is false. 漲跌家數
-// (breadth) is intra-day and stays in both states; the OHLC bar above
-// also stays. Complement to TestServeTWPathIncludesEnrichment which
+// every TW enrichment row sources from a TWSE `afterTrading/` endpoint
+// that publishes once-per-day after close, so when q.IsClosed is false
+// the provider's lookback returns yesterday's numbers. None of the
+// three sections (positioning / breadth / credit) may render in that
+// state — only the OHLC bar above remains, sourced from Yahoo's intra-
+// day chart. Complement to TestServeTWPathIncludesEnrichment which
 // pins the closed-market full-enrichment view.
 func TestServeTWPathOpenMarketHidesEndOfDay(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -607,16 +608,22 @@ func TestServeTWPathOpenMarketHidesEndOfDay(t *testing.T) {
 	}
 	body := rec.Body.String()
 
-	// Real-time content must still render: breadth row + OHLC bar.
-	for _, want := range []string{"漲跌家數", "漲 312", "O", "C"} {
+	// OHLC bar (Yahoo intra-day source) must still render.
+	for _, want := range []string{"O", "C"} {
 		if !strings.Contains(body, want) {
-			t.Errorf("open-market body missing real-time token %q\n--- body ---\n%s", want, body)
+			t.Errorf("open-market body missing OHLC token %q\n--- body ---\n%s", want, body)
 		}
 	}
-	// End-of-day labels must be absent.
-	for _, banned := range []string{"外資籌碼", "投信籌碼", "自營籌碼", "合計籌碼", "信用餘額"} {
-		if strings.Contains(body, banned) {
-			t.Errorf("open-market body should not contain end-of-day label %q\n--- body ---\n%s", banned, body)
+	// All TW enrichment labels must be absent — every row sources from
+	// an end-of-day TWSE endpoint.
+	banned := []string{
+		"外資籌碼", "投信籌碼", "自營籌碼", "合計籌碼",
+		"漲跌家數",
+		"信用餘額",
+	}
+	for _, label := range banned {
+		if strings.Contains(body, label) {
+			t.Errorf("open-market body should not contain end-of-day label %q\n--- body ---\n%s", label, body)
 		}
 	}
 }

@@ -284,21 +284,27 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, stale, useEng
 		}
 	}
 
-	// Market-state gating: 籌碼面 (positioning / 三大法人) and 信用餘額
-	// (credit balance) are TWSE end-of-day datasets — during open hours
-	// they carry the previous session's numbers and read as stale. Drop
-	// both while q.IsClosed is false so an open-market render focuses
-	// on real-time info (the OHLC bar above and the breadth row below).
-	// 漲跌家數 (breadth) is intra-day so it stays in both states.
+	// Market-state gating: every TW enrichment row sources from a TWSE
+	// `afterTrading/` endpoint that publishes once-per-day after close —
+	// MI_INDEX (breadth) included, despite the row reading like an
+	// intra-day metric. During open hours the provider's lookback walks
+	// back to yesterday's published file, so the row would carry the
+	// previous session's counts labelled the same as today's price.
+	// Drop all three TW sections while q.IsClosed is false; the open-
+	// market render relies on the OHLC bar above for real-time signal.
+	// (Future: switch breadth to a true intra-day endpoint — see e.g.
+	// MIS getStatis at mis.twse.com.tw — and reinstate during open.)
 	var groups [][]string
-	if q.IsClosed && tw.HasInstitutional() {
-		groups = append(groups, positioningRows(tw, useEnglish))
-	}
-	if tw.HasBreadth() {
-		groups = append(groups, technicalRows(tw, useEnglish))
-	}
-	if q.IsClosed && tw.HasMargin() {
-		groups = append(groups, creditRows(tw, useEnglish))
+	if q.IsClosed {
+		if tw.HasInstitutional() {
+			groups = append(groups, positioningRows(tw, useEnglish))
+		}
+		if tw.HasBreadth() {
+			groups = append(groups, technicalRows(tw, useEnglish))
+		}
+		if tw.HasMargin() {
+			groups = append(groups, creditRows(tw, useEnglish))
+		}
 	}
 	for i, g := range groups {
 		if i > 0 {
