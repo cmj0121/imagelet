@@ -39,7 +39,12 @@ func freshTW() twse.MarketData {
 		DealerNet:       8_878_366_186,
 		Net:             55_003_318_855,
 		MarginLongTWD:   440_907_083_000,
+		MarginShortTWD:  12_345_678_000,
+		MarginLongLots:  1_502_330,
 		MarginShortLots: 190_811,
+		AdvanceCount:    312,
+		DeclineCount:    691,
+		UnchangedCount:  63,
 	}
 }
 
@@ -417,8 +422,10 @@ func TestIndexNameFor(t *testing.T) {
 }
 
 // TestServeTWPathIncludesEnrichment pins that a TW visitor sees the
-// institutional + margin block in the ASCII surface (with Chinese
-// labels). Exercises Path 1 region-conditional formatting.
+// 籌碼面 (positioning) borderless captions and the 信用交易 (credit)
+// bordered box in the ASCII surface, with Chinese labels. Exercises the
+// Path 1 region-conditional formatting and the layered banner / captions
+// / box layout.
 func TestServeTWPathIncludesEnrichment(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	q := freshQuote()
@@ -436,7 +443,16 @@ func TestServeTWPathIncludesEnrichment(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"三大法人", "外資", "投信", "自營", "合計", "融資餘額", "融券餘額", "TAIEX · Taiwan"} {
+	for _, want := range []string{
+		// Header
+		"TAIEX · Taiwan",
+		// Positioning group: compound labels on each row
+		"外資籌碼", "投信籌碼", "自營籌碼", "合計籌碼",
+		// Breadth row: compound label + raw counts
+		"漲跌家數", "漲 312", "跌 691", "平 63",
+		// Credit group: compound label on the single row
+		"信用餘額", "融資", "融券",
+	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("ASCII body missing %q\n--- body ---\n%s", want, body)
 		}
@@ -491,9 +507,10 @@ func TestServeTWPathPNGUsesEnglishLabels(t *testing.T) {
 // TestServeTWPathSVGUsesChineseLabels pins the locale-consistency rule:
 // SVG carries CN labels for TW visitors, matching the ASCII and
 // text/pylon surfaces. Browsers supply CJK glyphs via font fallback,
-// so SVG renders 三大法人 / 外資 / 投信 / 自營 / 合計 / 融資餘額
-// without tofu. PNG is the lone EN holdout (basicfont.Face7x13 has zero
-// CJK coverage); see TestServeTWPathPNGUsesEnglishLabels.
+// so SVG renders 籌碼面 / 外資 / 投信 / 自營 / 合計 / 信用餘額 /
+// 融資 / 融券 without tofu. PNG is the lone EN holdout
+// (basicfont.Face7x13 has zero CJK coverage); see
+// TestServeTWPathPNGUsesEnglishLabels.
 func TestServeTWPathSVGUsesChineseLabels(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	q := freshQuote()
@@ -514,14 +531,22 @@ func TestServeTWPathSVGUsesChineseLabels(t *testing.T) {
 		t.Errorf("Content-Type = %q, want image/svg+xml", got)
 	}
 	body := rec.Body.String()
-	for _, cn := range []string{"三大法人", "外資", "投信", "自營", "合計", "融資餘額", "融券餘額"} {
+	for _, cn := range []string{
+		"漲跌家數",
+		"外資籌碼", "投信籌碼", "自營籌碼", "合計籌碼",
+		"信用餘額", "融資", "融券",
+	} {
 		if !strings.Contains(body, cn) {
 			t.Errorf("SVG body missing CN label %q\n--- body ---\n%s", cn, body)
 		}
 	}
 	// EN labels MUST NOT leak into the SVG path now that locale drives
 	// the label set instead of mode.
-	for _, en := range []string{"institutional", "foreign", "dealer", "trust"} {
+	for _, en := range []string{
+		"breadth",
+		"foreign", "trust", "dealer", "total",
+		"balance",
+	} {
 		if strings.Contains(body, en) {
 			t.Errorf("SVG body contains EN label %q (should be CN)\n--- body ---\n%s", en, body)
 		}
@@ -554,7 +579,9 @@ func TestServeTWUpstreamFailureKeepsBaseRender(t *testing.T) {
 		t.Errorf("base render missing ^TWII\n--- body ---\n%s", body)
 	}
 	// TW block silently omitted.
-	if strings.Contains(body, "三大法人") || strings.Contains(body, "融資餘額") {
+	if strings.Contains(body, "漲跌家數") ||
+		strings.Contains(body, "外資籌碼") ||
+		strings.Contains(body, "信用餘額") {
 		t.Errorf("TW block rendered despite upstream failure\n--- body ---\n%s", body)
 	}
 }
@@ -576,7 +603,13 @@ func TestServeNonTWPathNoEnrichment(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if strings.Contains(body, "三大法人") || strings.Contains(body, "institutional") {
-		t.Errorf("non-TW path leaked TW enrichment\n--- body ---\n%s", body)
+	for _, label := range []string{
+		"漲跌家數", "breadth",
+		"外資籌碼", "foreign",
+		"信用餘額", "balance",
+	} {
+		if strings.Contains(body, label) {
+			t.Errorf("non-TW path leaked TW enrichment %q\n--- body ---\n%s", label, body)
+		}
 	}
 }
