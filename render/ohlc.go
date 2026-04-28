@@ -14,20 +14,29 @@ import (
 // Marker order on the bar (`O...C` vs `C...O`) is the secondary
 // direction cue; readers familiar with either convention can decode
 // either way.
+//
+// The prev-close marker (▼) is overlaid on the top edge-label row
+// at the prev-close column — pointing down toward the bar — when
+// callers supply a positive prev-close. Useful for spotting the
+// day's gap (open vs prev-close) and where Close ended relative to
+// yesterday at a glance. When the prev-close label would collide
+// with the Low / High edge labels, the marker is dropped (edges win).
 const (
 	ohlcWick        = '─'
 	ohlcBodyBull    = '█'
 	ohlcBodyBear    = '░'
 	ohlcMarkerOpen  = 'O'
 	ohlcMarkerClose = 'C'
+	ohlcMarkerPrev  = '▼'
 )
 
 // OHLCBar renders an OHLC range bar as three equal-width strings: the
 // top row carries Low (left-anchored) and High (right-anchored) labels
-// at the bar edges; the bar row maps [low, high] across `width` columns
-// with `O` / `C` glyphs at the Open / Close positions and the body
-// filled between them; the bottom row carries Open / Close labels
-// centered under their markers.
+// at the bar edges with an optional prev-close ▼ marker + label
+// overlaid at the prev-close column; the bar row maps [low, high]
+// across `width` columns with `O` / `C` glyphs at the Open / Close
+// positions and the body filled between them; the bottom row carries
+// Open / Close labels centered under their markers.
 //
 // `format` is supplied by the caller so price formatting (locale,
 // precision, thousands separator) lives in one place — typically the
@@ -40,7 +49,14 @@ const (
 // body is narrow): the label closer to the run-edge wins, the inner
 // label is dropped. Doji (Open == Close, markers fuse to `OC`) renders
 // a single midpoint label.
-func OHLCBar(open, high, low, last float64, width int, format func(float64) string) (top, bar, bottom string) {
+//
+// `prevClose` is the previous trading day's close. Pass 0 to omit
+// the ▼ marker (e.g. when upstream did not supply a prev-close).
+// Values outside [low, high] are clamped to the edge — gap-up opens
+// pin the marker to the left edge, gap-downs to the right. The
+// marker + label is silently dropped if it would collide with the
+// Low / High edge labels.
+func OHLCBar(open, high, low, last, prevClose float64, width int, format func(float64) string) (top, bar, bottom string) {
 	if high <= low || width < 8 {
 		return "", "", ""
 	}
@@ -49,9 +65,63 @@ func OHLCBar(open, high, low, last float64, width int, format func(float64) stri
 	closePos := clampInt(int(math.Round((last-low)/span*float64(width-1))), 0, width-1)
 
 	top = ohlcEdgeLabels(format(low), format(high), width)
+	if prevClose > 0 {
+		prevPos := clampInt(int(math.Round((prevClose-low)/span*float64(width-1))), 0, width-1)
+		top = overlayPrevMarker(top, format(prevClose), prevPos, len(format(low)), len(format(high)), width)
+	}
 	bar = ohlcBarRow(openPos, closePos, last >= open, width)
 	bottom = ohlcMarkerLabels(format(open), format(last), openPos, closePos, width)
 	return
+}
+
+// overlayPrevMarker writes `▼ <label>` over `top` at column `prevPos`
+// — pointing at the bar's prev-close column. Drops the marker
+// silently if its span (▼ + space + label) would collide with the
+// Low or High edge labels already on the row, since those are the
+// load-bearing axis labels and the prev marker is supplementary.
+//
+// Layout: ▼ sits at prevPos itself; the label tucks in to the right
+// when there's space, otherwise to the left. lowLen / highLen are
+// the rendered widths of the existing edge labels and define the
+// keep-out zones the overlay must avoid.
+func overlayPrevMarker(top, label string, prevPos, lowLen, highLen, width int) string {
+	const gap = 1 // space between ▼ and the price label
+	span := 1 + gap + len(label)
+	// Require a 1-column gap between edge labels and the overlay so a
+	// prev-close marker that lands right next to the Low or High label
+	// doesn't visually fuse — `4,440.00▼ 4,450.00` reads as one token,
+	// `4,440.00 ▼ 4,450.00` reads as two.
+	leftEdge := lowLen + 1            // overlay must start at column ≥ lowLen+1
+	rightEdge := width - highLen - 1  // overlay must end at column ≤ width-highLen-1
+	// Try right-of-marker layout first.
+	start := prevPos
+	end := start + span
+	if start >= leftEdge && end <= rightEdge {
+		return writeOverlay(top, prevPos, label, true)
+	}
+	// Fall back to left-of-marker layout.
+	start = prevPos - (gap + len(label))
+	end = prevPos + 1
+	if start >= leftEdge && end <= rightEdge {
+		return writeOverlay(top, prevPos, label, false)
+	}
+	// Neither side fits without colliding — drop the overlay.
+	return top
+}
+
+// writeOverlay returns `top` with `▼` placed at prevPos and `label`
+// placed adjacent (right side when rightSide=true, else left).
+func writeOverlay(top string, prevPos int, label string, rightSide bool) string {
+	runes := []rune(top)
+	runes[prevPos] = ohlcMarkerPrev
+	if rightSide {
+		// `▼ <label>` — label starts at prevPos+2.
+		writeRunes(runes, label, prevPos+2)
+	} else {
+		// `<label> ▼` — label ends at prevPos-1, starts at prevPos-1-len(label)+1.
+		writeRunes(runes, label, prevPos-1-len(label))
+	}
+	return string(runes)
 }
 
 // ohlcBarRow builds the bar string. Markers are placed at openPos and

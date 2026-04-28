@@ -49,7 +49,13 @@ session). Invalid dates fall through silently to the live path.
 percent-encoded — `/stock/%5EGSPC` for `^GSPC`. The TW enrichment
 block (institutional flow / breadth / margin balance) activates by
 symbol suffix (`.TW`, `.TWO`) or the `^TWII` index, independent of
-the visitor's region.
+the visitor's region. For `<id>.TW` symbols, the 三大法人 rows show
+PER-STOCK flow (TWSE T86) instead of the market-wide aggregate.
+
+Each rendered quote shows: symbol + Yahoo short/long name as the
+title, OHLC range bar with a ▼ marker for the previous close,
+session volume + dollar volume in the caption, and the four
+institutional rows (when applicable).
 
 ### `/`
 

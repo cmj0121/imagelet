@@ -105,10 +105,14 @@ var pngMagic = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
 // fixed UTC instant so the caption date is stable across CI runs. OHLC
 // is populated (Open=4460, DayLow=4440, DayHigh=4520, Close=Last=4500.50)
 // so HasOHLC() is true and the renderer emits the OHLC range bar — a
-// bullish layout with body filled between Open and Close.
+// bullish layout with body filled between Open and Close. Name /
+// LongName populate the title row so handler tests can assert the
+// `<symbol> · <name>` shape without monkey-patching the upstream.
 func freshQuote() quote.Quote {
 	return quote.Quote{
 		Symbol:    "^GSPC",
+		Name:      "S&P 500",
+		LongName:  "S&P 500 INDEX",
 		Last:      4500.50,
 		Open:      4460.00,
 		PrevClose: 4450.00,
@@ -117,6 +121,7 @@ func freshQuote() quote.Quote {
 		IsClosed:  false,
 		DayHigh:   4520.00,
 		DayLow:    4440.00,
+		Volume:    3_179_035_000,
 	}
 }
 
@@ -249,16 +254,19 @@ func (p *histProvider) GetAt(_ context.Context, _ string, asOf time.Time) (quote
 }
 
 // histTWSE satisfies twse.Provider + twse.HistoricalProvider +
-// twse.LiveBreadthProvider so the handler can route across all three
-// branches deterministically.
+// twse.LiveBreadthProvider + twse.PerStockProvider so the handler can
+// route across all four branches deterministically.
 type histTWSE struct {
-	mu        sync.Mutex
-	live      twse.LiveBreadth
-	dataLive  twse.MarketData
-	dataHist  twse.MarketData
-	getAtCall int
-	liveCall  int
-	getCall   int
+	mu          sync.Mutex
+	live        twse.LiveBreadth
+	dataLive    twse.MarketData
+	dataHist    twse.MarketData
+	perStock    map[string]twse.StockData
+	perStockErr error
+	getAtCall   int
+	liveCall    int
+	getCall     int
+	perStockCall int
 }
 
 func (p *histTWSE) Get(_ context.Context) (twse.MarketData, error) {
@@ -280,6 +288,20 @@ func (p *histTWSE) FetchLiveBreadth(_ context.Context) (twse.LiveBreadth, error)
 	defer p.mu.Unlock()
 	p.liveCall++
 	return p.live, nil
+}
+
+func (p *histTWSE) GetForStock(_ context.Context, stockID string, _ time.Time) (twse.StockData, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.perStockCall++
+	if p.perStockErr != nil {
+		return twse.StockData{}, p.perStockErr
+	}
+	d, ok := p.perStock[stockID]
+	if !ok {
+		return twse.StockData{}, twse.ErrUnavailable
+	}
+	return d, nil
 }
 
 // TestServeDateOverrideUsesGetAt pins the contract that ?date=YYYY-MM-DD
@@ -618,24 +640,27 @@ func TestFormatPrice(t *testing.T) {
 	}
 }
 
-func TestIndexNameFor(t *testing.T) {
+func TestTitleFor(t *testing.T) {
 	cases := []struct {
-		symbol string
-		want   string
+		name        string
+		symbol      string
+		shortName   string
+		longName    string
+		useEnglish  bool
+		want        string
 	}{
-		{"^TWII", "TAIEX · Taiwan"},
-		{"^GSPC", "S&P 500 · United States"},
-		{"^N225", "Nikkei 225 · Japan"},
-		{"^HSI", "Hang Seng · Hong Kong"},
-		{"^FTSE", "FTSE 100 · United Kingdom"},
-		{"^GDAXI", "DAX · Germany"},
-		{"^UNKNOWN", ""}, // unmapped → empty (caller handles by omitting header)
-		{"", ""},
+		{"name_present_cn_surface", "2330.TW", "台積電", "Taiwan Semiconductor", false, "2330.TW · 台積電"},
+		{"name_present_png_uses_long", "2330.TW", "台積電", "Taiwan Semiconductor", true, "2330.TW · Taiwan Semiconductor"},
+		{"png_falls_back_to_short_when_long_missing", "2330.TW", "台積電", "", true, "2330.TW · 台積電"},
+		{"cn_falls_back_to_long_when_short_missing", "AAPL", "", "Apple Inc.", false, "AAPL · Apple Inc."},
+		{"both_missing_returns_symbol_only", "FOO", "", "", false, "FOO"},
+		{"index_with_short_name", "^GSPC", "S&P 500", "S&P 500", false, "^GSPC · S&P 500"},
 	}
 	for _, tc := range cases {
-		t.Run(tc.symbol, func(t *testing.T) {
-			if got := stock.IndexNameForTest(tc.symbol); got != tc.want {
-				t.Errorf("indexNameFor(%q) = %q, want %q", tc.symbol, got, tc.want)
+		t.Run(tc.name, func(t *testing.T) {
+			q := quote.Quote{Symbol: tc.symbol, Name: tc.shortName, LongName: tc.longName}
+			if got := stock.TitleForTest(tc.symbol, q, tc.useEnglish); got != tc.want {
+				t.Errorf("titleFor = %q, want %q", got, tc.want)
 			}
 		})
 	}
@@ -651,6 +676,8 @@ func TestServeTWPathIncludesEnrichment(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	q := freshQuote()
 	q.Symbol = "^TWII"
+	q.Name = "加權指數"
+	q.LongName = "TSEC weighted index"
 	q.Currency = "TWD"
 	q.IsClosed = true
 	r := newRouterWithTWSE(fakeProvider{q: q}, fakeTWSE{d: freshTW()})
@@ -666,8 +693,8 @@ func TestServeTWPathIncludesEnrichment(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		// Header
-		"TAIEX · Taiwan",
+		// Title row carries `<symbol> · <shortName>`.
+		"^TWII · 加權指數",
 		// Positioning group: compound labels on each row
 		"外資籌碼", "投信籌碼", "自營籌碼", "合計籌碼",
 		// Breadth row: compound label + raw counts
@@ -1077,6 +1104,90 @@ func TestServeSymbolTWEnrichmentBySuffix(t *testing.T) {
 					tw.getCall, tc.wantTWCalls, tc.path, tc.country)
 			}
 		})
+	}
+}
+
+// TestServeSymbolPerStockOverlaysMarketWide pins the contract that a
+// .TW symbol (e.g. /stock/2330.tw) on the closed-market path routes
+// through twse.PerStockProvider — and the rendered 三大法人 rows
+// reflect THAT stock's flow, not the market-wide BFI82U numbers.
+func TestServeSymbolPerStockOverlaysMarketWide(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "2330.TW"
+	q.Currency = "TWD"
+	q.IsClosed = true
+	q.Last = 1000.0 // round price → easy NTD conversion
+
+	tw := &histTWSE{
+		dataLive: freshTW(), // market-wide; should NOT show in per-stock body
+		perStock: map[string]twse.StockData{
+			"2330": {
+				StockID:    "2330",
+				Name:       "台積電",
+				ForeignNet: 5_100_000,  // 5.1M shares × 1000 NTD = 5.1B NTD
+				TrustNet:   1_000_000,  // 1.0M × 1000 = 1.0B
+				DealerNet:  300_000,    // 0.3M × 1000 = 0.3B
+				Net:        6_400_000,  // 6.4M × 1000 = 6.4B
+			},
+		},
+	}
+	r := newRouterWithTWSE(fakeProvider{q: q}, tw)
+
+	req := httptest.NewRequest(http.MethodGet, "/stock/2330.tw", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if tw.perStockCall != 1 {
+		t.Errorf("PerStock calls = %d, want 1", tw.perStockCall)
+	}
+	body := rec.Body.String()
+	// Per-stock row labels still 籌碼 (same shape as market-wide).
+	for _, want := range []string{"外資籌碼", "投信籌碼", "自營籌碼", "合計籌碼"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing per-stock label %q\n--- body ---\n%s", want, body)
+		}
+	}
+	// Per-stock NTD: foreign 5.1B; the market-wide fixture has 43.9B
+	// in foreign, so seeing 5.1B confirms the per-stock path won.
+	if !strings.Contains(body, "+5.1B") {
+		t.Errorf("body missing per-stock foreign +5.1B\n--- body ---\n%s", body)
+	}
+	if strings.Contains(body, "+43.9B") {
+		t.Errorf("body leaked market-wide foreign +43.9B on per-stock path\n--- body ---\n%s", body)
+	}
+}
+
+// TestServeSymbolPerStockUpstreamMissFallsBack pins that a T86 miss
+// (delisted, OTC-only, etc.) gracefully falls back to the market-wide
+// positioning rows rather than dropping the entire 三大法人 group.
+func TestServeSymbolPerStockUpstreamMissFallsBack(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "9999.TW"
+	q.Currency = "TWD"
+	q.IsClosed = true
+
+	// Empty perStock map → GetForStock returns ErrUnavailable.
+	tw := &histTWSE{dataLive: freshTW()}
+	r := newRouterWithTWSE(fakeProvider{q: q}, tw)
+
+	req := httptest.NewRequest(http.MethodGet, "/stock/9999.tw", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	// Market-wide foreign +43.9B from freshTW should appear.
+	if !strings.Contains(body, "+43.9B") {
+		t.Errorf("body missing market-wide fallback +43.9B\n--- body ---\n%s", body)
 	}
 }
 

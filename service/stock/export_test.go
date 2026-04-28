@@ -8,6 +8,6 @@ package stock
 // Not part of the public API.
 var FormatPriceForTest = formatPrice
 
-// IndexNameForTest exposes indexNameFor for the external test package.
+// TitleForTest exposes titleFor for the external test package.
 // Not part of the public API.
-var IndexNameForTest = indexNameFor
+var TitleForTest = titleFor
