@@ -153,6 +153,34 @@ func TestInjectDateNav_ComposesWithOGMeta(t *testing.T) {
 	}
 }
 
+// TestInjectDateNav_HasPastDatePill pins the past-date indicator markup and
+// the JS hook that toggles it: the element id, the CSS class, and the
+// refreshPastDatePill function name must all reach the rendered output so
+// the pill becomes visible client-side when ?date= is set.
+func TestInjectDateNav_HasPastDatePill(t *testing.T) {
+	out := InjectDateNav(WrapHTML([]byte("<svg/>")))
+	s := string(out)
+	for _, want := range []string{
+		`id="imagelet-pastdate"`,
+		`class="imagelet-pastdate"`,
+		"refreshPastDatePill",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("InjectDateNav output missing past-date pill fragment %q\nfull:\n%s", want, s)
+		}
+	}
+}
+
+// TestInjectDateNav_PastDatePillStartsHidden proves the default-hidden CSS
+// reaches the response so the pill never flashes for users without a
+// ?date= override. We pin the literal `display:none` in the style block.
+func TestInjectDateNav_PastDatePillStartsHidden(t *testing.T) {
+	out := InjectDateNav(WrapHTML([]byte("<svg/>")))
+	if !strings.Contains(string(out), "display:none") {
+		t.Errorf("InjectDateNav output missing display:none hint for pastdate pill:\n%s", out)
+	}
+}
+
 // TestWrapHTMLWithDateNav_PreservesSVG checks the SVG body lands between
 // </head> and the first nav button — i.e. it sits inside <body> ahead of
 // the injected DOM, where InjectOGMeta and any future enrichment expect it.
