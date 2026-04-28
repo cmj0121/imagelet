@@ -293,11 +293,12 @@ var ErrUnavailable = errors.New("twse: market data unavailable")
 // HTTPProvider hits the legacy TWSE endpoints. UA is spoofed because Go's
 // default User-Agent occasionally hits CDN gates.
 type HTTPProvider struct {
-	bfi82u  string
-	miMargn string
-	miIndex string
-	t86     string // T86 per-stock 三大法人 endpoint (production-only; empty disables GetForStock)
-	client  *http.Client
+	bfi82u        string
+	miMargn       string
+	miIndex       string
+	t86           string // T86 per-stock 三大法人 endpoint (production-only; empty disables GetForStock)
+	taifexFutures string // TAIFEX 三大法人區分各期貨契約 download (production-only; empty disables GetRetailFutures)
+	client        *http.Client
 
 	// Live breadth state — separate plane from the daily Get() pipeline.
 	// Empty endpoints disable FetchLiveBreadth; New() populates them with
@@ -342,6 +343,7 @@ func New() *HTTPProvider {
 	p.otcUniverseEndpoint = defaultOTCUniverseEndpoint
 	p.misInfoEndpoint = defaultMISInfoEndpoint
 	p.t86 = defaultT86Endpoint
+	p.taifexFutures = defaultTAIFEXFuturesEndpoint
 	return p
 }
 
@@ -946,4 +948,19 @@ func (c *Cached) LookupName(ctx context.Context, stockID string, isOTC bool) (st
 		return "", ErrUnavailable
 	}
 	return np.LookupName(ctx, stockID, isOTC)
+}
+
+// GetRetailFutures delegates to the inner provider when it implements
+// RetailFuturesProvider. The TAIFEX upstream is per-contract POST and
+// has its own day lookback; the single-entry market-wide cache here
+// can't represent it without keying. Bypasses the cache for now —
+// repeat-traffic costs can drive a date+contract keyed cache later
+// without changing this contract. Returns ErrUnavailable when the
+// inner provider doesn't support it.
+func (c *Cached) GetRetailFutures(ctx context.Context, asOf time.Time) (RetailFutures, error) {
+	rfp, ok := c.inner.(RetailFuturesProvider)
+	if !ok {
+		return RetailFutures{}, ErrUnavailable
+	}
+	return rfp.GetRetailFutures(ctx, asOf)
 }
