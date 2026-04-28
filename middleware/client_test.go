@@ -19,15 +19,34 @@ func TestClientDetector(t *testing.T) {
 		ua   string
 		want render.Mode
 	}{
-		{"empty_ua", "", render.ModeASCII},
+		// Empty / unknown UAs default to PNG — image service serving
+		// images by default.
+		{"empty_ua", "", render.ModePNG},
+		{"unknown_client", "MyCustomFetcher/1.0", render.ModePNG},
+
+		// Real browsers get the HTML page.
 		{"chrome_browser", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", render.ModeHTML},
 		{"firefox_browser", "Mozilla/5.0 (Windows NT 10.0) Gecko/20100101 Firefox/121.0", render.ModeHTML},
-		{"mozilla_lowercase", "mozilla/5.0 weird-bot", render.ModeHTML},
+		{"mozilla_lowercase", "mozilla/5.0 weird-thing", render.ModeHTML},
+
+		// CLI / scripting clients want plain text.
 		{"curl", "curl/8.4.0", render.ModeASCII},
 		{"wget", "Wget/1.21.4", render.ModeASCII},
 		{"go_http_client", "Go-http-client/1.1", render.ModeASCII},
 		{"python_requests", "python-requests/2.31.0", render.ModeASCII},
 		{"httpie", "HTTPie/3.2.2", render.ModeASCII},
+
+		// Link-unfurl bots — get PNG so the preview embeds the image
+		// directly. Discordbot / LinkedInBot fake "Mozilla"; the
+		// classifier checks the bot list before the Mozilla branch.
+		{"telegram_bot", "TelegramBot (like TwitterBot)", render.ModePNG},
+		{"facebook_external_hit", "facebookexternalhit/1.1", render.ModePNG},
+		{"twitterbot", "Twitterbot/1.0", render.ModePNG},
+		{"slackbot", "Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)", render.ModePNG},
+		{"discordbot", "Mozilla/5.0 (compatible; Discordbot/2.0)", render.ModePNG},
+		{"linkedinbot", "LinkedInBot/1.0 (compatible; Mozilla/5.0)", render.ModePNG},
+		{"whatsapp", "WhatsApp/2.23.20.0", render.ModePNG},
+		{"line", "Line/13.5.0", render.ModePNG},
 	}
 
 	for _, tc := range tests {
