@@ -73,7 +73,8 @@ func (p *Provider) Get(ctx context.Context, symbol string) (quote.Quote, error) 
 	if len(raw.Chart.Result) == 0 {
 		return quote.Quote{}, quote.ErrUnavailable
 	}
-	m := raw.Chart.Result[0].Meta
+	result := raw.Chart.Result[0]
+	m := result.Meta
 	if m.RegularMarketPrice == 0 {
 		return quote.Quote{}, quote.ErrUnavailable
 	}
@@ -81,6 +82,7 @@ func (p *Provider) Get(ctx context.Context, symbol string) (quote.Quote, error) 
 	return quote.Quote{
 		Symbol:     m.Symbol,
 		Last:       m.RegularMarketPrice,
+		Open:       latestOpen(result.Indicators),
 		PrevClose:  m.ChartPreviousClose,
 		Currency:   m.Currency,
 		AsOf:       time.Unix(m.RegularMarketTime, 0),
@@ -90,6 +92,28 @@ func (p *Provider) Get(ctx context.Context, symbol string) (quote.Quote, error) 
 		Week52High: m.FiftyTwoWeekHigh,
 		Week52Low:  m.FiftyTwoWeekLow,
 	}, nil
+}
+
+// latestOpen returns the most recent non-zero session open from the
+// chart's OHLCV history. Yahoo's v8 chart-meta omits regularMarketOpen
+// (only the day's High / Low / Last are surfaced there); the session
+// open lives in indicators.quote[0].open[], indexed by timestamp[]. The
+// last entry corresponds to the current session — but Yahoo can return
+// `null` for that slot during rare upstream gaps (which encoding/json
+// decodes to 0 for float64), so we walk back from the tail and take
+// the first non-zero value. Returns 0 when no value is usable; the
+// renderer's HasOHLC() then gracefully omits the bar.
+func latestOpen(ind chartIndicators) float64 {
+	if len(ind.Quote) == 0 {
+		return 0
+	}
+	opens := ind.Quote[0].Open
+	for i := len(opens) - 1; i >= 0; i-- {
+		if opens[i] > 0 {
+			return opens[i]
+		}
+	}
+	return 0
 }
 
 // marketClosed returns true when the request time is outside the
@@ -107,13 +131,26 @@ func marketClosed(m chartMeta, nowUnix int64) bool {
 type chartResponse struct {
 	Chart struct {
 		Result []struct {
-			Meta chartMeta `json:"meta"`
+			Meta       chartMeta       `json:"meta"`
+			Indicators chartIndicators `json:"indicators"`
 		} `json:"result"`
 		Error *struct {
 			Code        string `json:"code"`
 			Description string `json:"description"`
 		} `json:"error"`
 	} `json:"chart"`
+}
+
+// chartIndicators holds the OHLCV history arrays. Yahoo nests them
+// under indicators.quote[0] — the [0] is historical (one entry per
+// provider; chart endpoints only ever fill one), the inner arrays are
+// per-bar OHLCV indexed by the sibling timestamp[] array on Result.
+// We only consume the open[] array (for session Open) since the chart-
+// meta block already surfaces Last / DayHigh / DayLow.
+type chartIndicators struct {
+	Quote []struct {
+		Open []float64 `json:"open"`
+	} `json:"quote"`
 }
 
 type chartMeta struct {

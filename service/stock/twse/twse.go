@@ -159,6 +159,58 @@ type Provider interface {
 	Get(ctx context.Context) (MarketData, error)
 }
 
+// LiveBreadth is the intra-day breadth snapshot computed by polling
+// MIS's per-stock real-time API and aggregating across the listed
+// equity universes — split per exchange because TWSE 上市 (TSE main)
+// and 上櫃 (TPEx OTC) are distinct markets with separate symbol
+// universes (~1075 + ~883 4-digit stocks respectively) and trading
+// participants tend to read them as separate signals.
+//
+// Distinct from MarketData.{Advance,Decline,Unchanged}Count — those
+// are MI_INDEX afterTrading post-close totals (TSE only); LiveBreadth
+// updates throughout the trading session as ticks land.
+type LiveBreadth struct {
+	// 上市 (TSE main board, queried via MIS tse_XXXX.tw)
+	TSEAdvance   int64
+	TSEDecline   int64
+	TSEUnchanged int64
+
+	// 上櫃 (TPEx OTC, queried via MIS otc_XXXX.tw)
+	OTCAdvance   int64
+	OTCDecline   int64
+	OTCUnchanged int64
+
+	AsOf time.Time // latest tick time observed across both universes
+}
+
+// HasTSEBreadth reports whether the live fetch produced any TSE
+// (上市) counts. Renderer gates the 上市 row on this.
+func (b LiveBreadth) HasTSEBreadth() bool {
+	return b.TSEAdvance != 0 || b.TSEDecline != 0 || b.TSEUnchanged != 0
+}
+
+// HasOTCBreadth reports whether the live fetch produced any TPEx
+// (上櫃) counts. Renderer gates the 上櫃 row on this.
+func (b LiveBreadth) HasOTCBreadth() bool {
+	return b.OTCAdvance != 0 || b.OTCDecline != 0 || b.OTCUnchanged != 0
+}
+
+// HasBreadth reports whether either universe produced counts.
+// Renderer gate matching MarketData.HasBreadth so callers can branch
+// uniformly.
+func (b LiveBreadth) HasBreadth() bool {
+	return b.HasTSEBreadth() || b.HasOTCBreadth()
+}
+
+// LiveBreadthProvider is implemented by providers that can compute
+// intra-day breadth snapshots. Optional — Provider does not embed it.
+// The /stock handler type-asserts and uses live breadth during open
+// hours when the provider supports it; closed-hours render falls back
+// to MI_INDEX afterTrading via Provider.Get.
+type LiveBreadthProvider interface {
+	FetchLiveBreadth(ctx context.Context) (LiveBreadth, error)
+}
+
 // ErrUnavailable signals "upstream answered but data is empty / no
 // trading session" -- distinct from transport errors. Cache layer can
 // extend backoff for this signal.
@@ -171,23 +223,63 @@ type HTTPProvider struct {
 	miMargn string
 	miIndex string
 	client  *http.Client
+
+	// Live breadth state — separate plane from the daily Get() pipeline.
+	// Empty endpoints disable FetchLiveBreadth; New() populates them with
+	// production URLs, NewWithEndpoints leaves them empty so existing
+	// fixture-server tests don't accidentally hit live infrastructure.
+	universeEndpoint    string // STOCK_DAY_ALL — TSE 上市 universe
+	otcUniverseEndpoint string // tpex_mainboard_quotes — 上櫃 universe
+	misInfoEndpoint     string
+
+	universeMu      sync.Mutex
+	universeData    []string
+	universeAt      time.Time
+	otcUniverseData []string
+	otcUniverseAt   time.Time
+
+	liveMu     sync.Mutex
+	liveData   LiveBreadth
+	liveAt     time.Time
+	liveErr    error
+	liveHasOK  bool
+	liveFlight singleflight.Group
 }
 
 // New returns an HTTPProvider with a 5s per-request timeout against the
-// production endpoints.
+// production endpoints, including the live breadth pipeline.
 func New() *HTTPProvider {
-	return NewWithEndpoints(
+	p := NewWithEndpoints(
 		defaultBFI82UEndpoint,
 		defaultMIMARGNEndpoint,
 		defaultMIINDEXEndpoint,
 		&http.Client{Timeout: 5 * time.Second},
 	)
+	p.universeEndpoint = defaultStockUniverseEndpoint
+	p.otcUniverseEndpoint = defaultOTCUniverseEndpoint
+	p.misInfoEndpoint = defaultMISInfoEndpoint
+	return p
 }
 
 // NewWithEndpoints lets tests point the provider at httptest.Server URLs.
 // Each template MUST contain exactly one %s for the YYYYMMDD CE date.
+// The live breadth endpoints are NOT set here — call SetLiveBreadthEndpoints
+// to enable that pipeline against a separate fixture server.
 func NewWithEndpoints(bfi82u, miMargn, miIndex string, client *http.Client) *HTTPProvider {
 	return &HTTPProvider{bfi82u: bfi82u, miMargn: miMargn, miIndex: miIndex, client: client}
+}
+
+// SetLiveBreadthEndpoints overrides the upstream URLs used by
+// FetchLiveBreadth: `tseUniverse` is the TWSE OpenAPI STOCK_DAY_ALL
+// feed for the 上市 universe, `otcUniverse` is the TPEx OpenAPI
+// tpex_mainboard_quotes feed for 上櫃 (empty disables the OTC half),
+// `misInfo` is the MIS getStockInfo endpoint accepting `?ex_ch=...`
+// queries built per-call. Tests point these at httptest.Server URLs
+// to exercise the live pipeline without touching production.
+func (p *HTTPProvider) SetLiveBreadthEndpoints(tseUniverse, otcUniverse, misInfo string) {
+	p.universeEndpoint = tseUniverse
+	p.otcUniverseEndpoint = otcUniverse
+	p.misInfoEndpoint = misInfo
 }
 
 // maxLookbackDays caps the walk-back when probing for the most recent
@@ -594,4 +686,19 @@ func (c *Cached) Get(ctx context.Context) (MarketData, error) {
 		return MarketData{}, err
 	}
 	return val.(MarketData), nil
+}
+
+// FetchLiveBreadth delegates to the inner provider when it implements
+// LiveBreadthProvider, so a Cached-wrapped HTTPProvider in production
+// still surfaces the live-breadth pipeline. We don't add an outer TTL
+// here — the inner HTTPProvider already has its own 30s success / 60s
+// failure cache for live breadth with singleflight stampede control,
+// so wrapping again would only add latency without changing semantics.
+// Returns ErrUnavailable when the inner provider doesn't support it.
+func (c *Cached) FetchLiveBreadth(ctx context.Context) (LiveBreadth, error) {
+	lbp, ok := c.inner.(LiveBreadthProvider)
+	if !ok {
+		return LiveBreadth{}, ErrUnavailable
+	}
+	return lbp.FetchLiveBreadth(ctx)
 }

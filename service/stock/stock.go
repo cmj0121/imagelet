@@ -87,6 +87,14 @@ var indexNameBySymbol = map[string]string{
 // middleware's "US" default country.
 const defaultSymbol = "^GSPC"
 
+// ohlcWidth is the column count of the OHLC range bar. 65 spreads the
+// wicks and body wide enough to read marker positions at a glance and
+// reduces the chance of Open/Close label collision on narrow bodies,
+// while still fitting comfortably inside the 600px HTML wrapper cap
+// with pylon's monospace SVG glyphs (~5px/char × 65 = ~325px before
+// box parens and padding).
+const ohlcWidth = 65
+
 // indexNameFor returns the human-readable header line for symbol, or
 // empty string if symbol isn't in indexNameBySymbol. Callers MUST handle
 // the empty case (omit the header row) so unknown symbols still render.
@@ -135,12 +143,35 @@ func (h *handler) serve(c *gin.Context) {
 	// TW-specific enrichment is best-effort: failure here MUST NOT block
 	// the rendered response. We log and proceed with empty MarketData,
 	// which causes the TW block to be omitted gracefully.
+	//
+	// Two paths into the same MarketData carrier:
+	//  - Closed market: Provider.Get fetches the daily afterTrading
+	//    triple (BFI82U positioning, MI_MARGN credit, MI_INDEX breadth)
+	//    and the renderer surfaces all three sections.
+	//  - Open market: positioning + credit are stale (TWSE freezes them
+	//    until ~16:00) so we skip Provider.Get; instead, if the wired
+	//    provider also implements twse.LiveBreadthProvider, we fetch
+	//    the live intra-day breadth snapshot (computed by polling MIS
+	//    across the listed-equity universe) and stamp just the breadth
+	//    fields onto MarketData. The renderer then shows the breadth
+	//    row alone, gated as before.
 	var tw twse.MarketData
+	var live twse.LiveBreadth
 	if country == "TW" && h.twse != nil {
-		tw, err = h.twse.Get(c.Request.Context())
-		if err != nil {
-			log.Warn().Err(err).Msg("twse upstream failed; omitting TW enrichment block")
-			tw = twse.MarketData{}
+		ctx := c.Request.Context()
+		if q.IsClosed {
+			tw, err = h.twse.Get(ctx)
+			if err != nil {
+				log.Warn().Err(err).Msg("twse upstream failed; omitting TW enrichment block")
+				tw = twse.MarketData{}
+			}
+		} else if lbp, ok := h.twse.(twse.LiveBreadthProvider); ok {
+			b, lerr := lbp.FetchLiveBreadth(ctx)
+			if lerr != nil {
+				log.Warn().Err(lerr).Msg("twse live breadth failed; omitting breadth row")
+			} else {
+				live = b
+			}
 		}
 	}
 
@@ -153,7 +184,7 @@ func (h *handler) serve(c *gin.Context) {
 	// labels via the ASCII path; honors both Accept: text/pylon and
 	// ?format=pylon for header/query parity.
 	if middleware.WantsPylonSource(c) {
-		bs := buildBlocks(symbol, q, tw, stale, false)
+		bs := buildBlocks(symbol, q, tw, live, stale, false)
 		c.Data(http.StatusOK, "text/pylon",
 			[]byte(render.BannerSourceBoxes(headline, bs.captions, bs.boxes())))
 		return
@@ -167,7 +198,7 @@ func (h *handler) serve(c *gin.Context) {
 	// PNG is the only EN holdout — pylon's PNG uses basicfont.Face7x13
 	// which has zero CJK coverage; CN there would render as tofu.
 	useEnglish := mode == render.ModePNG
-	bs := buildBlocks(symbol, q, tw, stale, useEnglish)
+	bs := buildBlocks(symbol, q, tw, live, stale, useEnglish)
 
 	renderAt := func(m render.Mode) ([]byte, error) {
 		return render.BannerBoxes(headline, bs.captions, bs.boxes(), m)
@@ -201,18 +232,28 @@ func (h *handler) serve(c *gin.Context) {
 // group boundaries.
 type stockBlocks struct {
 	captions []string
+	ohlc     []string
 	body     []string
 }
 
-// boxes wraps the body rows in a single AlignLeft BoxBlock so all rows
-// share one alignment context (no inter-group stagger from independent
-// per-block centering). Returns nil when body is empty so non-TW
-// visitors render as banner+captions only.
+// boxes assembles the data section under the banner + captions as a
+// single AlignLeft borderless box: the OHLC range bar (3 rows + ZWSP
+// breath) stacks above the TW enrichment rows (positioning / breadth
+// / credit). Folding both into one box (rather than two) shares the
+// alignment context — pylon's AlignLeft only flush-lefts rows WITHIN
+// a box, and adjacent boxes are independently centered in the figure;
+// a narrower row (e.g. breadth alone during open) would otherwise
+// sit centered while the wider OHLC bar stays left-aligned in its
+// own box. Returns nil when both halves are empty so non-TW visitors
+// without OHLC render as banner+captions only.
 func (bs stockBlocks) boxes() []render.BoxBlock {
-	if len(bs.body) == 0 {
+	rows := make([]string, 0, len(bs.ohlc)+len(bs.body))
+	rows = append(rows, bs.ohlc...)
+	rows = append(rows, bs.body...)
+	if len(rows) == 0 {
 		return nil
 	}
-	return []render.BoxBlock{{Rows: bs.body, Align: render.AlignLeft}}
+	return []render.BoxBlock{{Rows: rows, Align: render.AlignLeft}}
 }
 
 // blankRow is the U+200B (zero-width space) separator row that creates
@@ -227,7 +268,7 @@ const blankRow = "​"
 // font (basicfont.Face7x13) has zero CJK coverage so Chinese would
 // render as tofu. Every other surface (ASCII, text/pylon, SVG, HTML)
 // uses the Chinese label set.
-func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, stale, useEnglish bool) stockBlocks {
+func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, live twse.LiveBreadth, stale, useEnglish bool) stockBlocks {
 	bs := stockBlocks{captions: make([]string, 0, 2)}
 
 	// Index name comes from a static map but contains "S&P 500" — `&P`
@@ -257,14 +298,38 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, stale, useEng
 		q.AsOf.Format("2006-01-02"),
 	)))
 
+	if q.HasOHLC() {
+		top, bar, bottom := render.OHLCBar(q.Open, q.DayHigh, q.DayLow, q.Last, ohlcWidth, formatPrice)
+		if bar != "" {
+			// Trailing ZWSP row gives the OHLC block breathing room
+			// before whatever comes next (TW enrichment block, or the
+			// bottom of the figure for non-TW visitors). A literal
+			// empty row would be trimmed by pylon; ZWSP holds the line.
+			bs.ohlc = []string{top, bar, bottom, blankRow}
+		}
+	}
+
+	// Market-state gating: 籌碼面 (positioning) and 信用餘額 (credit)
+	// source from TWSE `afterTrading/` endpoints that publish once-per-
+	// day after close — during open hours the provider's lookback walks
+	// back to yesterday's file, so those rows would carry the previous
+	// session's numbers labelled the same as today's price. Gate them
+	// on q.IsClosed so they only render when the data is actually
+	// today's.
+	//
+	// Breadth has two sources: when closed, MI_INDEX afterTrading carries
+	// the day's TSE-only totals on MarketData and we render a single
+	// 漲跌家數 row; when open, live carries per-exchange counts (上市 +
+	// 上櫃) computed by polling MIS across both universes, and we render
+	// one row per exchange.
 	var groups [][]string
-	if tw.HasInstitutional() {
+	if q.IsClosed && tw.HasInstitutional() {
 		groups = append(groups, positioningRows(tw, useEnglish))
 	}
-	if tw.HasBreadth() {
-		groups = append(groups, technicalRows(tw, useEnglish))
+	if rows := breadthRows(tw, live, q.IsClosed, useEnglish); len(rows) > 0 {
+		groups = append(groups, rows)
 	}
-	if tw.HasMargin() {
+	if q.IsClosed && tw.HasMargin() {
 		groups = append(groups, creditRows(tw, useEnglish))
 	}
 	for i, g := range groups {
@@ -276,19 +341,79 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, stale, useEng
 	return bs
 }
 
-// technicalRows formats the breadth section as a single 漲跌家數 row
-// carrying the SignedBar (driven by BreadthScore, which excludes 持平)
-// followed by raw advance / decline / unchanged counts. One row keeps
-// the section compact next to the four-row positioning block.
-func technicalRows(tw twse.MarketData, useEnglish bool) []string {
+// breadthRows picks the right breadth presentation for the market
+// state. Closed market reads from tw (MI_INDEX afterTrading TSE
+// totals) and emits one row labelled 漲跌家數. Open market reads
+// from live (per-exchange MIS aggregate) and emits one row per
+// populated exchange labelled 上市 / 上櫃 — TPEx outages can leave
+// only 上市 populated, in which case the 上櫃 row is silently
+// skipped. Returns nil when no source is available.
+func breadthRows(tw twse.MarketData, live twse.LiveBreadth, isClosed, useEnglish bool) []string {
 	const halfWidth = 10
-	bar := render.SignedBar(tw.BreadthScore(), 1.0, halfWidth)
-	if useEnglish {
-		return []string{fmt.Sprintf("breadth  %s  up %d  down %d  even %d",
-			bar, tw.AdvanceCount, tw.DeclineCount, tw.UnchangedCount)}
+	if !isClosed && live.HasBreadth() {
+		var rows []string
+		if live.HasTSEBreadth() {
+			rows = append(rows, breadthRow(
+				tseLabel(useEnglish),
+				live.TSEAdvance, live.TSEDecline, live.TSEUnchanged,
+				halfWidth, useEnglish,
+			))
+		}
+		if live.HasOTCBreadth() {
+			rows = append(rows, breadthRow(
+				otcLabel(useEnglish),
+				live.OTCAdvance, live.OTCDecline, live.OTCUnchanged,
+				halfWidth, useEnglish,
+			))
+		}
+		return rows
 	}
-	return []string{fmt.Sprintf("漲跌家數  %s  漲 %d 跌 %d 平 %d",
-		bar, tw.AdvanceCount, tw.DeclineCount, tw.UnchangedCount)}
+	if tw.HasBreadth() {
+		return []string{breadthRow(
+			closedLabel(useEnglish),
+			tw.AdvanceCount, tw.DeclineCount, tw.UnchangedCount,
+			halfWidth, useEnglish,
+		)}
+	}
+	return nil
+}
+
+// breadthRow formats one breadth line: label + SignedBar + counts.
+// Shared shape across the closed-market 漲跌家數 row and the open-
+// market 上市 / 上櫃 split rows so column widths line up under
+// AlignLeft regardless of which path produced them.
+func breadthRow(label string, adv, dec, unc int64, halfWidth int, useEnglish bool) string {
+	moving := adv + dec
+	score := 0.0
+	if moving > 0 {
+		score = float64(adv-dec) / float64(moving)
+	}
+	bar := render.SignedBar(score, 1.0, halfWidth)
+	if useEnglish {
+		return fmt.Sprintf("%s  %s  up %d  down %d  even %d", label, bar, adv, dec, unc)
+	}
+	return fmt.Sprintf("%s  %s  漲 %d 跌 %d 平 %d", label, bar, adv, dec, unc)
+}
+
+func tseLabel(en bool) string {
+	if en {
+		return "tse  "
+	}
+	return "上市"
+}
+
+func otcLabel(en bool) string {
+	if en {
+		return "otc  "
+	}
+	return "上櫃"
+}
+
+func closedLabel(en bool) string {
+	if en {
+		return "breadth"
+	}
+	return "漲跌家數"
 }
 
 // positioningRows formats the 三大法人 section: 外資籌碼 / 投信籌碼 /
