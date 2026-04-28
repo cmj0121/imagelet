@@ -218,6 +218,9 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	var perStock twse.StockData
 	var live twse.LiveBreadth
 	var retail twse.RetailFutures
+	var lending twse.SecuritiesLending
+	var pcr twse.OptionsPCR
+	var vix twse.VIX
 	if enrichTW && h.twse != nil {
 		ctx := c.Request.Context()
 		switch {
@@ -303,19 +306,42 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 		// alongside today's price during the live session. Failures
 		// are best-effort: log and zero out so the renderer skips the
 		// 散戶 group gracefully.
-		if rfp, ok := h.twse.(twse.RetailFuturesProvider); ok && (q.IsClosed || dateOverride) {
+		if (q.IsClosed || dateOverride) && (h.twse != nil) {
 			ctx := c.Request.Context()
 			asOfQuery := asOf
 			if !dateOverride {
 				asOfQuery = time.Now()
 			}
-			r, rerr := rfp.GetRetailFutures(ctx, asOfQuery)
-			if rerr != nil {
-				if rerr != twse.ErrUnavailable {
+
+			if rfp, ok := h.twse.(twse.RetailFuturesProvider); ok {
+				if r, rerr := rfp.GetRetailFutures(ctx, asOfQuery); rerr == nil {
+					retail = r
+				} else if rerr != twse.ErrUnavailable {
 					log.Warn().Err(rerr).Msg("taifex retail futures fetch failed; omitting 散戶 group")
 				}
-			} else {
-				retail = r
+			}
+			if op, ok := h.twse.(twse.OptionsPCRProvider); ok {
+				if v, perr := op.GetOptionsPCR(ctx, asOfQuery); perr == nil {
+					pcr = v
+				} else if perr != twse.ErrUnavailable {
+					log.Warn().Err(perr).Msg("taifex pcr fetch failed; omitting PCR row")
+				}
+			}
+			if vp, ok := h.twse.(twse.VIXProvider); ok {
+				if v, verr := vp.GetVIX(ctx, asOfQuery); verr == nil {
+					vix = v
+				} else if verr != twse.ErrUnavailable {
+					log.Warn().Err(verr).Msg("taifex vix fetch failed; omitting VIX row")
+				}
+			}
+			if stockID != "" {
+				if slp, ok := h.twse.(twse.SecuritiesLendingProvider); ok {
+					if l, lerr := slp.GetSecuritiesLending(ctx, stockID, asOfQuery); lerr == nil {
+						lending = l
+					} else if lerr != twse.ErrUnavailable {
+						log.Warn().Err(lerr).Str("stock", stockID).Msg("twse securities-lending fetch failed; omitting 借券 row")
+					}
+				}
 			}
 		}
 	}
@@ -329,7 +355,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	// labels via the ASCII path; honors both Accept: text/pylon and
 	// ?format=pylon for header/query parity.
 	if middleware.WantsPylonSource(c) {
-		bs := buildBlocks(symbol, q, tw, perStock, live, retail, stale, false)
+		bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, pcr, vix, stale, false)
 		c.Data(http.StatusOK, "text/pylon",
 			[]byte(render.BannerSourceBoxes(headline, "", bs.captions, bs.boxes())))
 		return
@@ -343,7 +369,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	// PNG is the only EN holdout — pylon's PNG uses basicfont.Face7x13
 	// which has zero CJK coverage; CN there would render as tofu.
 	useEnglish := mode == render.ModePNG
-	bs := buildBlocks(symbol, q, tw, perStock, live, retail, stale, useEnglish)
+	bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, pcr, vix, stale, useEnglish)
 
 	renderAt := func(m render.Mode) ([]byte, error) {
 		return render.BannerBoxes(headline, "", bs.captions, bs.boxes(), m)
@@ -435,7 +461,7 @@ const blankRow = "​"
 // the 三大法人 group: when the symbol carries a TWSE stock id and
 // T86 returned a row, we render PER-STOCK flow with shares; otherwise
 // fall back to the market-wide BFI82U numbers in NTD.
-func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse.StockData, live twse.LiveBreadth, retail twse.RetailFutures, stale, useEnglish bool) stockBlocks {
+func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse.StockData, live twse.LiveBreadth, retail twse.RetailFutures, lending twse.SecuritiesLending, pcr twse.OptionsPCR, vix twse.VIX, stale, useEnglish bool) stockBlocks {
 	bs := stockBlocks{captions: make([]string, 0, 3)}
 
 	// Title row: `<symbol> · <name>`. The symbol/name pair contains
@@ -512,8 +538,23 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 	if q.IsClosed && tw.HasMargin() {
 		groups = append(groups, creditRows(tw, useEnglish))
 	}
+	if q.IsClosed && lending.Has() {
+		groups = append(groups, []string{lendingRow(lending, useEnglish)})
+	}
 	if q.IsClosed && retail.HasAny() {
 		groups = append(groups, retailFuturesRows(retail, useEnglish))
+	}
+	if q.IsClosed && (pcr.Has() || vix.Has()) {
+		var rows []string
+		if pcr.Has() {
+			rows = append(rows, pcrRow(pcr, useEnglish))
+		}
+		if vix.Has() {
+			rows = append(rows, vixRow(vix, useEnglish))
+		}
+		if len(rows) > 0 {
+			groups = append(groups, rows)
+		}
 	}
 	for i, g := range groups {
 		if i > 0 {
@@ -710,6 +751,46 @@ func absMaxInt64(vs ...int64) int64 {
 		}
 	}
 	return m
+}
+
+// lendingRow formats the 借券賣出 row: standing securities-lending
+// short balance in lots (1 張 = 1000 shares). The headline metric is
+// the standing balance, not per-day flow — high values flag
+// significant outstanding short pressure on the listing. Single row,
+// no SignedBar (the value is unsigned and a bar without a comparator
+// adds noise rather than information).
+func lendingRow(d twse.SecuritiesLending, useEnglish bool) string {
+	lots := d.Balance / 1000 // shares → 張
+	if useEnglish {
+		return fmt.Sprintf("sbl-bal     %s lots", formatThousands(lots))
+	}
+	return fmt.Sprintf("借券賣出  %s 張", formatThousands(lots))
+}
+
+// pcrRow formats the 台指選擇權 Put/Call ratio: percent value with
+// a ▲ / ▼ glyph cueing whether puts (bearish positioning) or calls
+// dominate. PCR > 100 means more puts open — historically interpreted
+// contrarian (high retail bearish hedging often precedes upside).
+// Single row.
+func pcrRow(p twse.OptionsPCR, useEnglish bool) string {
+	arrow := "▲"
+	if p.OIRatio > 100 {
+		arrow = "▼"
+	}
+	if useEnglish {
+		return fmt.Sprintf("opt-pcr     %.1f%%  %s", p.OIRatio, arrow)
+	}
+	return fmt.Sprintf("台指選擇  PCR %.1f%%  %s", p.OIRatio, arrow)
+}
+
+// vixRow formats the 波動指數 row: current Taiwan VIX as a decimal.
+// No bar — VIX has no natural [-1, 1] mapping and the absolute level
+// is the read at a glance.
+func vixRow(v twse.VIX, useEnglish bool) string {
+	if useEnglish {
+		return fmt.Sprintf("vix         %.2f", v.Value)
+	}
+	return fmt.Sprintf("波動指數  %.2f", v.Value)
 }
 
 // retailFuturesRows formats the 散戶 section: 小台散戶 / 微台散戶
