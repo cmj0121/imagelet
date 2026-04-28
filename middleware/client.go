@@ -31,23 +31,39 @@ const uaLogLimit = 120
 // User-Agent header and stores the chosen render.Mode on the gin context.
 // Handlers retrieve it with GetMode.
 //
-// Classification rule:
-//   - empty UA                              -> render.ModeASCII (safe default)
-//   - UA contains "Mozilla" (case-insens.)  -> render.ModeHTML (browsers)
-//   - UA matches a known link-unfurl bot    -> render.ModeHTML (so OG meta
-//     fragment (TelegramBot, facebook-       in <head> reaches the crawler;
-//     externalhit, Twitterbot, Slackbot,     without HTML the bot sees
-//     LinkedInBot, Discordbot, WhatsApp,     text/plain ASCII and renders
-//     Pinterest, redditbot, LinkedIn-        no preview)
-//     Inspector, embedly, …)
-//   - everything else                       -> render.ModeASCII (CLI tools)
+// Three-bucket classification rule:
 //
-// Browsers default to HTML so a top-level navigation to / or /now reads
-// like a page (title, viewport, centered SVG) rather than a raw image.
-// Third-party sites embedding imagelet via `<img src="…">` should append
-// `?format=png` (or `?format=svg`) to keep the raw-image contract — the
-// UA classifier alone can't distinguish a top-level navigation from an
-// image sub-request.
+//	┌────────────────────────────────────────┬──────────────────┐
+//	│ User-Agent                             │ render.Mode      │
+//	├────────────────────────────────────────┼──────────────────┤
+//	│ CLI / scripting client (curl, wget,    │ render.ModeASCII │
+//	│ HTTPie, go-http-client, python-        │                  │
+//	│ requests, libwww, okhttp, …)           │                  │
+//	├────────────────────────────────────────┼──────────────────┤
+//	│ Real browser (Mozilla in UA, not       │ render.ModeHTML  │
+//	│ also a known unfurl bot)               │                  │
+//	├────────────────────────────────────────┼──────────────────┤
+//	│ Everything else: link-unfurl bots      │ render.ModePNG   │
+//	│ (TelegramBot, Slackbot, Twitterbot,    │                  │
+//	│ facebookexternalhit, Discordbot, …),   │                  │
+//	│ unknown clients, empty UA              │                  │
+//	└────────────────────────────────────────┴──────────────────┘
+//
+// Why PNG by default for non-browser non-CLI clients: an image service
+// should serve images. Unfurl bots that parse OG meta from HTML keep
+// working through the explicit og:image URL (which carries ?format=png
+// to force the image path on the second hop), but bots that simply
+// embed whatever the link returns now get a usable image directly
+// instead of falling back to a bare URL.
+//
+// Some unfurl bots (Discordbot, LinkedInBot) embed "Mozilla" in their
+// UA to bypass crude bot filters; the unfurlBots list is checked before
+// the Mozilla → HTML branch so they land on PNG with the rest.
+//
+// Third-party sites embedding imagelet via `<img src="…">` should still
+// append `?format=png` (or `?format=svg`) explicitly — the UA classifier
+// alone can't tell a top-level browser navigation from an image
+// sub-request, and most browsers send the same UA for both.
 //
 // The decision is logged at debug level so operators can confirm the rule
 // fires correctly during dev. The middleware is stateless and safe to install
@@ -134,24 +150,44 @@ func WantsPylonSource(c *gin.Context) bool {
 	return false
 }
 
-// linkUnfurlBots are case-insensitive substrings present in the User-
-// Agent of bots that fetch a URL specifically to extract Open Graph /
-// Twitter Card meta for link-preview rendering. Each entry MUST be
-// lowercase — the classify() loop compares against a lowercased UA.
+// cliTools are case-insensitive substrings that mark an HTTP client as a
+// CLI / scripting tool whose user wants plain text rather than HTML or a
+// PNG dumped into the terminal. Entries MUST be lowercase — the
+// classify() loop compares against a lowercased UA.
 //
-// These bots don't carry "Mozilla" in their UA so the original
-// classifier sent them down the ASCII path; without HTML they can't
-// see the <meta property="og:..."> tags and the link preview falls
-// back to a bare URL. Adding them to ModeHTML lets the OG meta block
-// reach them so cards render across the major chat / social
-// platforms.
+// Each pattern is anchored where useful (`curl/`, `java/`, `line/`) so
+// brand names embedded in unrelated UAs don't accidentally route a
+// browser or bot into the ASCII bucket.
+var cliTools = []string{
+	"curl/",
+	"wget",
+	"httpie",
+	"go-http-client",
+	"python-requests",
+	"python-urllib",
+	"libwww-perl",
+	"lwp-",
+	"okhttp",
+	"java/",
+	"powershell",
+}
+
+// unfurlBots are case-insensitive substrings present in the User-Agent
+// of bots that fetch a URL to render a link preview. Two roles:
 //
-// The list is curated rather than regex'd against generic strings
-// like "bot" or "crawler" — those would over-match search-engine
-// crawlers (Googlebot, Bingbot) that don't need HTML for ranking and
-// would inflate cache footprint. Keep it narrow; add by name as new
-// platforms surface.
-var linkUnfurlBots = []string{
+//  1. Some bots (Discordbot, LinkedInBot, Applebot) embed "Mozilla" in
+//     their UA to bypass crude bot filters. Without this list they'd
+//     fall into the Mozilla → HTML branch; we want them on PNG so the
+//     preview embeds the image directly.
+//  2. Most other unfurl bots (TelegramBot, facebookexternalhit, …)
+//     don't carry Mozilla and would already hit the default-PNG
+//     branch, but we list them here anyway so the classifier stays
+//     explicit about who's a bot vs. who's an unknown client.
+//
+// Curated rather than regex'd against generic "bot" / "crawler" —
+// those would over-match search-engine crawlers (Googlebot, Bingbot)
+// where HTML is fine and arguably preferred for indexing.
+var unfurlBots = []string{
 	"facebookexternalhit",
 	"twitterbot",
 	"slackbot",
@@ -171,17 +207,30 @@ var linkUnfurlBots = []string{
 
 // classify implements the User-Agent decision rule. Pulled out so tests can
 // exercise it directly without spinning up a gin engine.
+//
+// Order matters:
+//  1. CLI tools beat everything (Mozilla-bearing CLI wrappers exist in
+//     the wild — `httpie` ships one — so this branch must run first).
+//  2. Unfurl bots beat the Mozilla branch (Discordbot etc. fake
+//     Mozilla; without this they'd land on HTML).
+//  3. Mozilla → HTML covers real browsers.
+//  4. Everything else falls through to PNG.
 func classify(ua string) render.Mode {
 	low := strings.ToLower(ua)
+	for _, t := range cliTools {
+		if strings.Contains(low, t) {
+			return render.ModeASCII
+		}
+	}
+	for _, b := range unfurlBots {
+		if strings.Contains(low, b) {
+			return render.ModePNG
+		}
+	}
 	if strings.Contains(low, "mozilla") {
 		return render.ModeHTML
 	}
-	for _, b := range linkUnfurlBots {
-		if strings.Contains(low, b) {
-			return render.ModeHTML
-		}
-	}
-	return render.ModeASCII
+	return render.ModePNG
 }
 
 // truncate returns at most max bytes of s. If truncation occurs an ellipsis
