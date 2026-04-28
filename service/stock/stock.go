@@ -311,10 +311,29 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 		return
 	}
 	if mode == render.ModeHTML {
-		c.Data(http.StatusOK, "text/html; charset=utf-8", body)
+		og := render.OGMeta{
+			Title:       titleFor(symbol, q, false),
+			Description: ogDescription(q),
+			ImageURL:    middleware.AbsoluteURL(c, "format=svg"),
+			PageURL:     middleware.AbsoluteURL(c, ""),
+		}
+		c.Data(http.StatusOK, "text/html; charset=utf-8", render.InjectOGMeta(body, og))
 		return
 	}
 	c.Data(http.StatusOK, "text/plain; charset=utf-8", body)
+}
+
+// ogDescription builds the og:description / twitter:description for the
+// /stock page. Mirrors the on-figure primary caption row: change-percent
+// arrow, signed change percent, formatted price, currency. Reads as a
+// glanceable summary in a chat preview unfurl.
+func ogDescription(q quote.Quote) string {
+	arrow := "▲"
+	if q.ChangePercent() < 0 {
+		arrow = "▼"
+	}
+	return fmt.Sprintf("%s %+.2f%%  %s %s",
+		arrow, q.ChangePercent(), formatPrice(q.Last), q.Currency)
 }
 
 // stockBlocks is the per-surface render content for render.BannerSourceBoxes.

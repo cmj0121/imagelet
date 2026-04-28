@@ -86,10 +86,25 @@ func Handler(c *gin.Context) {
 		return
 	}
 	if mode == render.ModeHTML {
-		c.Data(http.StatusOK, "text/html; charset=utf-8", body)
+		og := render.OGMeta{
+			Title:       "imagelet · " + head,
+			Description: ogDescription(t),
+			ImageURL:    middleware.AbsoluteURL(c, "format=svg"),
+			PageURL:     middleware.AbsoluteURL(c, ""),
+		}
+		c.Data(http.StatusOK, "text/html; charset=utf-8", render.InjectOGMeta(body, og))
 		return
 	}
 	c.Data(http.StatusOK, "text/plain; charset=utf-8", body)
+}
+
+// ogDescription builds the og:description / twitter:description for the
+// /now page. Format matches the on-figure caption row 1: date, UTC offset,
+// weekday name — readable at a glance in a chat preview unfurl.
+func ogDescription(t time.Time) string {
+	_, off := t.Zone()
+	return fmt.Sprintf("%s UTC%+d · %s",
+		t.Format("2006-01-02"), off/3600, t.Format("Monday"))
 }
 
 // headline returns the wall-clock time as HH:MM.
