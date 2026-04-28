@@ -172,17 +172,14 @@ var cliTools = []string{
 	"powershell",
 }
 
-// unfurlBots are case-insensitive substrings present in the User-Agent
-// of bots that fetch a URL to render a link preview. Two roles:
-//
-//  1. Some bots (Discordbot, LinkedInBot, Applebot) embed "Mozilla" in
-//     their UA to bypass crude bot filters. Without this list they'd
-//     fall into the Mozilla → HTML branch; we want them on PNG so the
-//     preview embeds the image directly.
-//  2. Most other unfurl bots (TelegramBot, facebookexternalhit, …)
-//     don't carry Mozilla and would already hit the default-PNG
-//     branch, but we list them here anyway so the classifier stays
-//     explicit about who's a bot vs. who's an unknown client.
+// unfurlBots are case-insensitive substrings for bots that fetch a URL
+// to render a link preview. The list exists primarily because some of
+// them (Discordbot, LinkedInBot, Applebot) embed "Mozilla" in their UA
+// to bypass crude bot filters — without this list they'd fall into the
+// Mozilla → HTML branch, but we want them on PNG so the preview embeds
+// the image directly. Mozilla-free bots (TelegramBot, facebookexternalhit)
+// would hit the default-PNG branch anyway; they're listed here to keep
+// the classifier explicit about who's a bot vs. an unknown client.
 //
 // Curated rather than regex'd against generic "bot" / "crawler" —
 // those would over-match search-engine crawlers (Googlebot, Bingbot)
@@ -205,8 +202,7 @@ var unfurlBots = []string{
 	"line/",
 }
 
-// classify implements the User-Agent decision rule. Pulled out so tests can
-// exercise it directly without spinning up a gin engine.
+// classify implements the User-Agent decision rule.
 //
 // Order matters:
 //  1. CLI tools beat everything (Mozilla-bearing CLI wrappers exist in
@@ -217,20 +213,27 @@ var unfurlBots = []string{
 //  4. Everything else falls through to PNG.
 func classify(ua string) render.Mode {
 	low := strings.ToLower(ua)
-	for _, t := range cliTools {
-		if strings.Contains(low, t) {
-			return render.ModeASCII
-		}
-	}
-	for _, b := range unfurlBots {
-		if strings.Contains(low, b) {
-			return render.ModePNG
-		}
-	}
-	if strings.Contains(low, "mozilla") {
+	switch {
+	case containsAny(low, cliTools):
+		return render.ModeASCII
+	case containsAny(low, unfurlBots):
+		return render.ModePNG
+	case strings.Contains(low, "mozilla"):
 		return render.ModeHTML
+	default:
+		return render.ModePNG
 	}
-	return render.ModePNG
+}
+
+// containsAny reports whether s contains any of the given substrings.
+// Caller is responsible for case-folding s and needles consistently.
+func containsAny(s string, needles []string) bool {
+	for _, n := range needles {
+		if strings.Contains(s, n) {
+			return true
+		}
+	}
+	return false
 }
 
 // truncate returns at most max bytes of s. If truncation occurs an ellipsis
