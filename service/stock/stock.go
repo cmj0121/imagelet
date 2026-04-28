@@ -313,33 +313,37 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 				asOfQuery = time.Now()
 			}
 
-			if rfp, ok := h.twse.(twse.RetailFuturesProvider); ok {
-				if r, rerr := rfp.GetRetailFutures(ctx, asOfQuery); rerr == nil {
-					retail = r
-				} else if rerr != twse.ErrUnavailable {
-					log.Warn().Err(rerr).Msg("taifex retail futures fetch failed; omitting 散戶 group")
-				}
-			}
-			if op, ok := h.twse.(twse.OptionsPCRProvider); ok {
-				if v, perr := op.GetOptionsPCR(ctx, asOfQuery); perr == nil {
-					pcr = v
-				} else if perr != twse.ErrUnavailable {
-					log.Warn().Err(perr).Msg("taifex pcr fetch failed; omitting PCR row")
-				}
-			}
-			if vp, ok := h.twse.(twse.VIXProvider); ok {
-				if v, verr := vp.GetVIX(ctx, asOfQuery); verr == nil {
-					vix = v
-				} else if verr != twse.ErrUnavailable {
-					log.Warn().Err(verr).Msg("taifex vix fetch failed; omitting VIX row")
-				}
-			}
 			if stockID != "" {
+				// Per-stock view: only the per-symbol signal applies.
+				// Retail futures, PCR, and VIX are market-wide and
+				// would just be noise alongside a single ticker.
 				if slp, ok := h.twse.(twse.SecuritiesLendingProvider); ok {
 					if l, lerr := slp.GetSecuritiesLending(ctx, stockID, asOfQuery); lerr == nil {
 						lending = l
 					} else if lerr != twse.ErrUnavailable {
 						log.Warn().Err(lerr).Str("stock", stockID).Msg("twse securities-lending fetch failed; omitting 借券 row")
+					}
+				}
+			} else {
+				if rfp, ok := h.twse.(twse.RetailFuturesProvider); ok {
+					if r, rerr := rfp.GetRetailFutures(ctx, asOfQuery); rerr == nil {
+						retail = r
+					} else if rerr != twse.ErrUnavailable {
+						log.Warn().Err(rerr).Msg("taifex retail futures fetch failed; omitting 散戶 group")
+					}
+				}
+				if op, ok := h.twse.(twse.OptionsPCRProvider); ok {
+					if v, perr := op.GetOptionsPCR(ctx, asOfQuery); perr == nil {
+						pcr = v
+					} else if perr != twse.ErrUnavailable {
+						log.Warn().Err(perr).Msg("taifex pcr fetch failed; omitting PCR row")
+					}
+				}
+				if vp, ok := h.twse.(twse.VIXProvider); ok {
+					if v, verr := vp.GetVIX(ctx, asOfQuery); verr == nil {
+						vix = v
+					} else if verr != twse.ErrUnavailable {
+						log.Warn().Err(verr).Msg("taifex vix fetch failed; omitting VIX row")
 					}
 				}
 			}
@@ -541,20 +545,11 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 	if q.IsClosed && lending.Has() {
 		groups = append(groups, []string{lendingRow(lending, useEnglish)})
 	}
+	if q.IsClosed && (pcr.Has() || vix.Has()) {
+		groups = append(groups, []string{marketSentimentRow(pcr, vix, useEnglish)})
+	}
 	if q.IsClosed && retail.HasAny() {
 		groups = append(groups, retailFuturesRows(retail, useEnglish))
-	}
-	if q.IsClosed && (pcr.Has() || vix.Has()) {
-		var rows []string
-		if pcr.Has() {
-			rows = append(rows, pcrRow(pcr, useEnglish))
-		}
-		if vix.Has() {
-			rows = append(rows, vixRow(vix, useEnglish))
-		}
-		if len(rows) > 0 {
-			groups = append(groups, rows)
-		}
 	}
 	for i, g := range groups {
 		if i > 0 {
@@ -767,30 +762,33 @@ func lendingRow(d twse.SecuritiesLending, useEnglish bool) string {
 	return fmt.Sprintf("借券賣出  %s 張", formatThousands(lots))
 }
 
-// pcrRow formats the 台指選擇權 Put/Call ratio: percent value with
-// a ▲ / ▼ glyph cueing whether puts (bearish positioning) or calls
-// dominate. PCR > 100 means more puts open — historically interpreted
-// contrarian (high retail bearish hedging often precedes upside).
-// Single row.
-func pcrRow(p twse.OptionsPCR, useEnglish bool) string {
-	arrow := "▲"
-	if p.OIRatio > 100 {
-		arrow = "▼"
+// marketSentimentRow combines the 台指選擇權 Put/Call ratio and the
+// Taiwan VIX onto a single line: PCR carries a ▲ / ▼ glyph (PCR > 100
+// = puts dominate, drawn ▼; otherwise ▲), VIX is the close-of-session
+// value to two decimals. Either half may be empty when its upstream
+// fetcher is unavailable; in that case the row collapses to whichever
+// signal is present. Callers gate on (pcr.Has() || vix.Has()).
+func marketSentimentRow(p twse.OptionsPCR, v twse.VIX, useEnglish bool) string {
+	var parts []string
+	if p.Has() {
+		arrow := "▲"
+		if p.OIRatio > 100 {
+			arrow = "▼"
+		}
+		if useEnglish {
+			parts = append(parts, fmt.Sprintf("opt-pcr  %.1f%%%s", p.OIRatio, arrow))
+		} else {
+			parts = append(parts, fmt.Sprintf("台指選擇  PCR %.1f%%%s", p.OIRatio, arrow))
+		}
 	}
-	if useEnglish {
-		return fmt.Sprintf("opt-pcr     %.1f%%  %s", p.OIRatio, arrow)
+	if v.Has() {
+		if useEnglish {
+			parts = append(parts, fmt.Sprintf("vix  %.2f", v.Value))
+		} else {
+			parts = append(parts, fmt.Sprintf("波動指數  %.2f", v.Value))
+		}
 	}
-	return fmt.Sprintf("台指選擇  PCR %.1f%%  %s", p.OIRatio, arrow)
-}
-
-// vixRow formats the 波動指數 row: current Taiwan VIX as a decimal.
-// No bar — VIX has no natural [-1, 1] mapping and the absolute level
-// is the read at a glance.
-func vixRow(v twse.VIX, useEnglish bool) string {
-	if useEnglish {
-		return fmt.Sprintf("vix         %.2f", v.Value)
-	}
-	return fmt.Sprintf("波動指數  %.2f", v.Value)
+	return strings.Join(parts, "  ")
 }
 
 // retailFuturesRows formats the 散戶 section: 小台散戶 / 微台散戶
