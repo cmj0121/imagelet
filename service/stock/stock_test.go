@@ -938,3 +938,195 @@ func TestServeNonTWPathNoEnrichment(t *testing.T) {
 		}
 	}
 }
+
+// --- /stock/:symbol tests --------------------------------------------------
+
+// TestServeSymbolReachesProvider pins that /stock/:symbol forwards the
+// uppercased path segment to the provider and renders the result. The
+// spy records the symbol(s) it was asked for so we can assert path
+// normalization (lowercase → upper).
+func TestServeSymbolReachesProvider(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cases := []struct {
+		name       string
+		path       string
+		wantSymbol string
+	}{
+		{"plain_us_stock", "/stock/aapl", "AAPL"},
+		{"already_upper", "/stock/AAPL", "AAPL"},
+		{"index_with_caret_encoded", "/stock/%5EGSPC", "^GSPC"},
+		{"tw_stock_lowercase_suffix", "/stock/2330.tw", "2330.TW"},
+		{"tpex_stock", "/stock/5274.two", "5274.TWO"},
+		{"hyphen_class", "/stock/brk-b", "BRK-B"},
+		{"fx_pair", "/stock/eurusd=x", "EURUSD=X"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spy := &spyProvider{q: freshQuote()}
+			r := newRouter(spy)
+
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.Header.Set("User-Agent", "curl/8.4.0")
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
+			}
+			if got := spy.lastSymbol(); got != tc.wantSymbol {
+				t.Errorf("provider asked for %q, want %q", got, tc.wantSymbol)
+			}
+		})
+	}
+}
+
+// TestServeSymbolInvalidReturns404 pins that a symbol matching gin's
+// :symbol slot but failing the allowlist (non-permitted chars, or
+// length > symbolMaxLen) returns 404 BEFORE any upstream call.
+//
+// Note: an empty path segment (`/stock/`) is intercepted by gin's
+// RedirectTrailingSlash and 301'd back to `/stock`, so it never
+// reaches validSymbol; the empty-string guard inside validSymbol is
+// defensive belt-and-braces, not the primary defense.
+func TestServeSymbolInvalidReturns404(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cases := []struct {
+		name string
+		path string
+	}{
+		{"contains_space", "/stock/aa%20pl"},
+		{"contains_quote", "/stock/aa%27pl"},
+		{"contains_underscore", "/stock/aa_pl"},
+		{"too_long", "/stock/abcdefghijklmnopq"}, // 17 chars
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spy := &spyProvider{q: freshQuote()}
+			r := newRouter(spy)
+
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.Header.Set("User-Agent", "curl/8.4.0")
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNotFound {
+				t.Errorf("status = %d, want 404 (body=%q)", rec.Code, rec.Body.String())
+			}
+			if spy.lastSymbol() != "" {
+				t.Errorf("provider was called for invalid symbol %q", spy.lastSymbol())
+			}
+		})
+	}
+}
+
+// TestServeSymbolTrailingSlashRedirects documents gin's default
+// behavior: `/stock/` → 301 → `/stock`. We don't fight gin here —
+// the redirect lands on the region-routed handler which behaves as
+// before. Pinned so a future router change doesn't silently regress.
+func TestServeSymbolTrailingSlashRedirects(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	spy := &spyProvider{q: freshQuote()}
+	r := newRouter(spy)
+
+	req := httptest.NewRequest(http.MethodGet, "/stock/", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMovedPermanently {
+		t.Errorf("status = %d, want 301", rec.Code)
+	}
+}
+
+// TestServeSymbolTWEnrichmentBySuffix pins that .TW / .TWO / ^TWII
+// activate the TW enrichment block regardless of CF-IPCountry. The
+// existing TW path-test verifies the rendered labels; here we just
+// pin that the twse provider was called.
+func TestServeSymbolTWEnrichmentBySuffix(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cases := []struct {
+		name        string
+		path        string
+		country     string
+		wantTWCalls int
+	}{
+		{"tse_suffix", "/stock/2330.tw", "US", 1},
+		{"otc_suffix", "/stock/5274.two", "JP", 1},
+		{"taiex_index", "/stock/%5ETWII", "DE", 1},
+		{"non_tw_symbol_in_tw_country", "/stock/aapl", "TW", 0},
+		{"index_us", "/stock/%5EGSPC", "TW", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := freshQuote()
+			q.IsClosed = true // closed-market path so twse.Get is exercised
+			tw := &histTWSE{dataLive: freshTW(), dataHist: freshTW()}
+			r := newRouterWithTWSE(fakeProvider{q: q}, tw)
+
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.Header.Set("User-Agent", "curl/8.4.0")
+			req.Header.Set("CF-IPCountry", tc.country)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			if tw.getCall != tc.wantTWCalls {
+				t.Errorf("twse.Get calls = %d, want %d (path=%s, country=%s)",
+					tw.getCall, tc.wantTWCalls, tc.path, tc.country)
+			}
+		})
+	}
+}
+
+// TestServeSymbolDateOverride pins that the symbol route honors
+// ?date= and routes through GetAt — same contract as /stock.
+func TestServeSymbolDateOverride(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	live := freshQuote()
+	live.Last = 9999.99
+	hist := freshQuote()
+	hist.Last = 1300.42
+	hist.AsOf = time.Date(2012, 2, 2, 16, 0, 0, 0, time.UTC)
+	hist.IsClosed = true
+
+	p := &histProvider{live: live, hist: hist}
+	r := newRouter(p)
+
+	req := httptest.NewRequest(http.MethodGet, "/stock/aapl?date=2012-02-02", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if p.getAtCall != 1 {
+		t.Errorf("GetAt called %d times, want 1", p.getAtCall)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "1,300.42") {
+		t.Errorf("body missing historical Last 1,300.42\n--- body ---\n%s", body)
+	}
+}
+
+// TestServeSymbolUpstream503Surfaces pins that an upstream miss on
+// the symbol path returns 503 with the same shape as /stock — keeps
+// the contract uniform across the two routes.
+func TestServeSymbolUpstream503Surfaces(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := newRouter(fakeProvider{err: quote.ErrUnavailable})
+
+	req := httptest.NewRequest(http.MethodGet, "/stock/aapl", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	if got := rec.Header().Get("Retry-After"); got != "60" {
+		t.Errorf("Retry-After = %q, want 60", got)
+	}
+}

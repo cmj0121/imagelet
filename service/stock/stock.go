@@ -103,15 +103,25 @@ func indexNameFor(symbol string) string {
 	return indexNameBySymbol[symbol]
 }
 
-// Register mounts GET /stock on r. r is typed as gin.IRouter so the
-// service can be installed on either a *gin.Engine or a route group.
-// p is the quote provider -- typically a cached.Provider wrapping
-// yahoo.Provider in production. tw is the TW-specific market-data
-// provider; pass nil to disable the TW enrichment block (the renderer
-// gracefully omits it).
+// Register mounts GET /stock and GET /stock/:symbol on r. r is typed
+// as gin.IRouter so the service can be installed on either a
+// *gin.Engine or a route group. p is the quote provider -- typically
+// a cached.Provider wrapping yahoo.Provider in production. tw is the
+// TW-specific market-data provider; pass nil to disable the TW
+// enrichment block (the renderer gracefully omits it).
+//
+// Route shape:
+//
+//   - GET /stock              → region-routed (CF-IPCountry) → symbol map.
+//   - GET /stock/:symbol      → caller-specified Yahoo symbol. The
+//     `^` index prefix must be percent-encoded as %5E by clients that
+//     don't auto-encode it (curl encodes; some shells don't). TW
+//     enrichment activates by symbol suffix (.TW / .TWO) or the
+//     ^TWII index, independent of the visitor's country.
 func Register(r gin.IRouter, p quote.Provider, tw twse.Provider) {
 	h := &handler{provider: p, twse: tw}
 	r.GET("/stock", h.serve)
+	r.GET("/stock/:symbol", h.serveSymbol)
 }
 
 // handler holds the dependencies for the /stock endpoint.
@@ -136,13 +146,35 @@ func (h *handler) fetchQuote(ctx context.Context, symbol string, asOf time.Time,
 	return hp.GetAt(ctx, symbol, asOf)
 }
 
-// serve resolves the country, looks up the symbol, fetches a Quote (and
-// TW market data when applicable), and renders the result. See package
-// doc for the negotiation rules.
+// serve handles GET /stock — the region-routed entry point. It maps
+// the caller's country (from CF-IPCountry, or ?region= override) to
+// a symbol via the symbolByCountry table and dispatches to renderSymbol.
 func (h *handler) serve(c *gin.Context) {
 	country := resolveCountry(c)
 	symbol := symbolFor(country)
+	h.renderSymbol(c, symbol, isTWSymbol(symbol))
+}
 
+// serveSymbol handles GET /stock/:symbol — the caller-specified entry
+// point. The path segment is normalized (uppercased + trimmed) and
+// validated against an allowlist before reaching upstream. TW
+// enrichment activates by symbol suffix (.TW / .TWO) or the ^TWII
+// index, independent of the visitor's region.
+func (h *handler) serveSymbol(c *gin.Context) {
+	symbol := strings.ToUpper(strings.TrimSpace(c.Param("symbol")))
+	if !validSymbol(symbol) {
+		c.Header("Cache-Control", "no-store")
+		c.String(http.StatusNotFound, "invalid symbol\n")
+		return
+	}
+	h.renderSymbol(c, symbol, isTWSymbol(symbol))
+}
+
+// renderSymbol fetches a Quote (and TW market data when enrichTW is
+// true), then content-negotiates and writes the response. Shared body
+// for both /stock and /stock/:symbol — the only difference between the
+// two routes is how the symbol and the enrichTW gate are derived.
+func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	asOf, dateOverride := middleware.GetDate(c)
 
 	q, err := h.fetchQuote(c.Request.Context(), symbol, asOf, dateOverride)
@@ -179,7 +211,7 @@ func (h *handler) serve(c *gin.Context) {
 	//    breadth row alone, gated as before.
 	var tw twse.MarketData
 	var live twse.LiveBreadth
-	if country == "TW" && h.twse != nil {
+	if enrichTW && h.twse != nil {
 		ctx := c.Request.Context()
 		switch {
 		case dateOverride:
@@ -606,6 +638,53 @@ func symbolFor(country string) string {
 		return s
 	}
 	return defaultSymbol
+}
+
+// isTWSymbol reports whether symbol describes a Taiwan listing — TWSE
+// 上市 (`.TW` suffix), TPEx 上櫃 (`.TWO` suffix), or the TAIEX index
+// itself (`^TWII`). The /stock handler uses this to decide whether to
+// request the TW market-wide enrichment block (institutional flow,
+// breadth, margin balance), which is relevant for ANY TW listing
+// because those aggregates describe market context, not the
+// individual stock.
+//
+// Symbol is expected uppercased (the caller-symbol path normalizes
+// via strings.ToUpper); region-routed callers feed the symbolByCountry
+// table which is uppercase by construction.
+func isTWSymbol(symbol string) bool {
+	if symbol == "^TWII" {
+		return true
+	}
+	return strings.HasSuffix(symbol, ".TW") || strings.HasSuffix(symbol, ".TWO")
+}
+
+// symbolMaxLen caps the path-symbol length. Real Yahoo symbols are
+// well under this — `BRK-B`, `2330.TW`, `EURUSD=X`, `^GSPC` — so 16
+// is comfortably above the longest reasonable input while bounding
+// upstream URL length.
+const symbolMaxLen = 16
+
+// validSymbol applies a strict allowlist to the path-supplied symbol
+// before it reaches upstream. Permitted: A-Z, 0-9, `.` (exchange
+// suffix), `-` (e.g. BRK-B), `^` (index prefix), `=` (FX/futures).
+// Anything else is rejected with 404 — the handler doesn't 4xx on
+// unknown-but-shaped symbols (Yahoo's no-data response surfaces as
+// 503 already), so 404 here is reserved for "couldn't even ATTEMPT
+// the upstream call" and keeps the contract clean.
+func validSymbol(symbol string) bool {
+	if symbol == "" || len(symbol) > symbolMaxLen {
+		return false
+	}
+	for _, r := range symbol {
+		switch {
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '.', r == '-', r == '^', r == '=':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // formatPrice formats v as a non-negative decimal with two decimal places
