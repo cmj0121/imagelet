@@ -34,6 +34,12 @@ const uaLogLimit = 120
 // Classification rule:
 //   - empty UA                              -> render.ModeASCII (safe default)
 //   - UA contains "Mozilla" (case-insens.)  -> render.ModeHTML (browsers)
+//   - UA matches a known link-unfurl bot    -> render.ModeHTML (so OG meta
+//     fragment (TelegramBot, facebook-       in <head> reaches the crawler;
+//     externalhit, Twitterbot, Slackbot,     without HTML the bot sees
+//     LinkedInBot, Discordbot, WhatsApp,     text/plain ASCII and renders
+//     Pinterest, redditbot, LinkedIn-        no preview)
+//     Inspector, embedly, …)
 //   - everything else                       -> render.ModeASCII (CLI tools)
 //
 // Browsers default to HTML so a top-level navigation to / or /now reads
@@ -128,11 +134,52 @@ func WantsPylonSource(c *gin.Context) bool {
 	return false
 }
 
+// linkUnfurlBots are case-insensitive substrings present in the User-
+// Agent of bots that fetch a URL specifically to extract Open Graph /
+// Twitter Card meta for link-preview rendering. Each entry MUST be
+// lowercase — the classify() loop compares against a lowercased UA.
+//
+// These bots don't carry "Mozilla" in their UA so the original
+// classifier sent them down the ASCII path; without HTML they can't
+// see the <meta property="og:..."> tags and the link preview falls
+// back to a bare URL. Adding them to ModeHTML lets the OG meta block
+// reach them so cards render across the major chat / social
+// platforms.
+//
+// The list is curated rather than regex'd against generic strings
+// like "bot" or "crawler" — those would over-match search-engine
+// crawlers (Googlebot, Bingbot) that don't need HTML for ranking and
+// would inflate cache footprint. Keep it narrow; add by name as new
+// platforms surface.
+var linkUnfurlBots = []string{
+	"facebookexternalhit",
+	"twitterbot",
+	"slackbot",
+	"linkedinbot",
+	"linkedininspector",
+	"discordbot",
+	"telegrambot",
+	"whatsapp",
+	"pinterestbot",
+	"redditbot",
+	"embedly",
+	"vkshare",
+	"applebot",
+	"skypeuripreview",
+	"line/",
+}
+
 // classify implements the User-Agent decision rule. Pulled out so tests can
 // exercise it directly without spinning up a gin engine.
 func classify(ua string) render.Mode {
-	if strings.Contains(strings.ToLower(ua), "mozilla") {
+	low := strings.ToLower(ua)
+	if strings.Contains(low, "mozilla") {
 		return render.ModeHTML
+	}
+	for _, b := range linkUnfurlBots {
+		if strings.Contains(low, b) {
+			return render.ModeHTML
+		}
 	}
 	return render.ModeASCII
 }

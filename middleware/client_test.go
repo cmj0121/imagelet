@@ -28,6 +28,19 @@ func TestClientDetector(t *testing.T) {
 		{"go_http_client", "Go-http-client/1.1", render.ModeASCII},
 		{"python_requests", "python-requests/2.31.0", render.ModeASCII},
 		{"httpie", "HTTPie/3.2.2", render.ModeASCII},
+
+		// Link-unfurl bots — none of these carry "Mozilla" but they
+		// fetch the page URL specifically to extract OG meta tags
+		// from the <head>. Without HTML they get ASCII and the
+		// preview falls back to a bare URL.
+		{"telegram_bot", "TelegramBot (like TwitterBot)", render.ModeHTML},
+		{"facebook_external_hit", "facebookexternalhit/1.1", render.ModeHTML},
+		{"twitterbot", "Twitterbot/1.0", render.ModeHTML},
+		{"slackbot", "Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)", render.ModeHTML},
+		{"discordbot", "Mozilla/5.0 (compatible; Discordbot/2.0)", render.ModeHTML},
+		{"linkedinbot", "LinkedInBot/1.0 (compatible; Mozilla/5.0)", render.ModeHTML},
+		{"whatsapp", "WhatsApp/2.23.20.0", render.ModeHTML},
+		{"line", "Line/13.5.0", render.ModeHTML},
 	}
 
 	for _, tc := range tests {
