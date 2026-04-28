@@ -22,16 +22,17 @@ import (
 // HasDayRange() / Has52WeekRange() as the signal to omit the corresponding
 // progress-bar row gracefully — no error, just no bar.
 type Quote struct {
-	Symbol      string    // canonical symbol, e.g. "^GSPC"
-	Last        float64   // last trade / current price
-	PrevClose   float64   // previous trading day's close (for change %)
-	Currency    string    // ISO 4217 like "USD", "TWD"
-	AsOf        time.Time // server-side time of the quote (regularMarketTime)
-	IsClosed    bool      // market is currently closed
-	DayHigh     float64   // intraday session high; 0 when missing
-	DayLow      float64   // intraday session low; 0 when missing
-	Week52High  float64   // trailing 52-week high; 0 when missing
-	Week52Low   float64   // trailing 52-week low; 0 when missing
+	Symbol     string    // canonical symbol, e.g. "^GSPC"
+	Last       float64   // last trade / current price (also OHLC's Close)
+	Open       float64   // session open; 0 when missing
+	PrevClose  float64   // previous trading day's close (for change %)
+	Currency   string    // ISO 4217 like "USD", "TWD"
+	AsOf       time.Time // server-side time of the quote (regularMarketTime)
+	IsClosed   bool      // market is currently closed
+	DayHigh    float64   // intraday session high; 0 when missing
+	DayLow     float64   // intraday session low; 0 when missing
+	Week52High float64   // trailing 52-week high; 0 when missing
+	Week52Low  float64   // trailing 52-week low; 0 when missing
 }
 
 // HasDayRange reports whether DayHigh and DayLow are both populated and
@@ -39,6 +40,15 @@ type Quote struct {
 // whether to draw the day-range progress bar.
 func (q Quote) HasDayRange() bool {
 	return q.DayHigh > 0 && q.DayLow > 0 && q.DayLow < q.DayHigh
+}
+
+// HasOHLC reports whether the full OHLC quartet (Open / DayHigh / DayLow
+// / Last) is populated and forms a meaningful range. The renderer uses
+// this to decide whether to draw the OHLC range bar; degenerate ranges
+// (Low == High, missing Open) gracefully omit the bar instead of
+// emitting a zero-width or NaN render.
+func (q Quote) HasOHLC() bool {
+	return q.Open > 0 && q.HasDayRange() && q.Last > 0
 }
 
 // Has52WeekRange reports whether Week52High and Week52Low are both

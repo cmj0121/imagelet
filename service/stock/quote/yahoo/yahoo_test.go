@@ -60,6 +60,15 @@ func TestGetOpenMarket(t *testing.T) {
 	if q.DayHigh == 0 || q.DayLow == 0 {
 		t.Errorf("DayHigh / DayLow not parsed: high=%v low=%v", q.DayHigh, q.DayLow)
 	}
+	// Session Open is parsed from indicators.quote[0].open[last] because
+	// Yahoo's chart-meta omits regularMarketOpen. Fixture has open[]
+	// populated so this should land non-zero and HasOHLC() should agree.
+	if q.Open == 0 {
+		t.Errorf("Open == 0, want non-zero (parsed from indicators.quote[0].open)")
+	}
+	if !q.HasOHLC() {
+		t.Errorf("HasOHLC = false, want true (fixture has full OHLC quartet)")
+	}
 	if q.Week52High == 0 || q.Week52Low == 0 {
 		t.Errorf("Week52High / Week52Low not parsed: high=%v low=%v", q.Week52High, q.Week52Low)
 	}
