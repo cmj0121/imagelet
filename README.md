@@ -57,6 +57,14 @@ title, OHLC range bar with a ▼ marker for the previous close,
 session volume + dollar volume in the caption, and the four
 institutional rows (when applicable).
 
+HTML responses carry Open Graph + Twitter Card meta tags so links
+shared on Slack / Discord / Twitter / Facebook unfurl with a title,
+description, and preview image. The `og:image` URL points at the
+same page's SVG render (`?format=svg`); Discord, Slack, and Telegram
+display SVG previews, while Twitter and Facebook fall back to the
+plain link if their crawler can't decode SVG. Switching the preview
+to PNG (universal compatibility) is a one-line query change.
+
 ### `/`
 
 ```text
