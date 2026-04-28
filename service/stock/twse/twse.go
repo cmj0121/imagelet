@@ -161,22 +161,45 @@ type Provider interface {
 
 // LiveBreadth is the intra-day breadth snapshot computed by polling
 // MIS's per-stock real-time API and aggregating across the listed
-// equity universe (~1075 4-digit-code stocks). Distinct from
-// MarketData.{Advance,Decline,Unchanged}Count — those are MI_INDEX
-// afterTrading post-close totals; this updates throughout the
-// trading session as ticks land.
+// equity universes — split per exchange because TWSE 上市 (TSE main)
+// and 上櫃 (TPEx OTC) are distinct markets with separate symbol
+// universes (~1075 + ~883 4-digit stocks respectively) and trading
+// participants tend to read them as separate signals.
+//
+// Distinct from MarketData.{Advance,Decline,Unchanged}Count — those
+// are MI_INDEX afterTrading post-close totals (TSE only); LiveBreadth
+// updates throughout the trading session as ticks land.
 type LiveBreadth struct {
-	AdvanceCount   int64     // 漲家數
-	DeclineCount   int64     // 跌家數
-	UnchangedCount int64     // 平盤家數 (traded at price == prev close)
-	AsOf           time.Time // latest tick time observed across the batch
+	// 上市 (TSE main board, queried via MIS tse_XXXX.tw)
+	TSEAdvance   int64
+	TSEDecline   int64
+	TSEUnchanged int64
+
+	// 上櫃 (TPEx OTC, queried via MIS otc_XXXX.tw)
+	OTCAdvance   int64
+	OTCDecline   int64
+	OTCUnchanged int64
+
+	AsOf time.Time // latest tick time observed across both universes
 }
 
-// HasBreadth reports whether the live-breadth fetch produced any
-// tracked stocks. Renderer gate, mirroring MarketData.HasBreadth so
-// the render-side check stays source-agnostic.
+// HasTSEBreadth reports whether the live fetch produced any TSE
+// (上市) counts. Renderer gates the 上市 row on this.
+func (b LiveBreadth) HasTSEBreadth() bool {
+	return b.TSEAdvance != 0 || b.TSEDecline != 0 || b.TSEUnchanged != 0
+}
+
+// HasOTCBreadth reports whether the live fetch produced any TPEx
+// (上櫃) counts. Renderer gates the 上櫃 row on this.
+func (b LiveBreadth) HasOTCBreadth() bool {
+	return b.OTCAdvance != 0 || b.OTCDecline != 0 || b.OTCUnchanged != 0
+}
+
+// HasBreadth reports whether either universe produced counts.
+// Renderer gate matching MarketData.HasBreadth so callers can branch
+// uniformly.
 func (b LiveBreadth) HasBreadth() bool {
-	return b.AdvanceCount != 0 || b.DeclineCount != 0 || b.UnchangedCount != 0
+	return b.HasTSEBreadth() || b.HasOTCBreadth()
 }
 
 // LiveBreadthProvider is implemented by providers that can compute
@@ -205,12 +228,15 @@ type HTTPProvider struct {
 	// Empty endpoints disable FetchLiveBreadth; New() populates them with
 	// production URLs, NewWithEndpoints leaves them empty so existing
 	// fixture-server tests don't accidentally hit live infrastructure.
-	universeEndpoint string
-	misInfoEndpoint  string
+	universeEndpoint    string // STOCK_DAY_ALL — TSE 上市 universe
+	otcUniverseEndpoint string // tpex_mainboard_quotes — 上櫃 universe
+	misInfoEndpoint     string
 
-	universeMu   sync.Mutex
-	universeData []string
-	universeAt   time.Time
+	universeMu      sync.Mutex
+	universeData    []string
+	universeAt      time.Time
+	otcUniverseData []string
+	otcUniverseAt   time.Time
 
 	liveMu     sync.Mutex
 	liveData   LiveBreadth
@@ -230,6 +256,7 @@ func New() *HTTPProvider {
 		&http.Client{Timeout: 5 * time.Second},
 	)
 	p.universeEndpoint = defaultStockUniverseEndpoint
+	p.otcUniverseEndpoint = defaultOTCUniverseEndpoint
 	p.misInfoEndpoint = defaultMISInfoEndpoint
 	return p
 }
@@ -243,14 +270,15 @@ func NewWithEndpoints(bfi82u, miMargn, miIndex string, client *http.Client) *HTT
 }
 
 // SetLiveBreadthEndpoints overrides the upstream URLs used by
-// FetchLiveBreadth: `universe` is the TWSE OpenAPI STOCK_DAY_ALL feed
-// (no template — fetched as-is), `misInfo` is the MIS getStockInfo
-// endpoint accepting an `?ex_ch=tse_XXXX.tw|...&json=1` query string
-// (no template — query is built per-call). Tests point these at
-// httptest.Server URLs to exercise the live pipeline without touching
-// production.
-func (p *HTTPProvider) SetLiveBreadthEndpoints(universe, misInfo string) {
-	p.universeEndpoint = universe
+// FetchLiveBreadth: `tseUniverse` is the TWSE OpenAPI STOCK_DAY_ALL
+// feed for the 上市 universe, `otcUniverse` is the TPEx OpenAPI
+// tpex_mainboard_quotes feed for 上櫃 (empty disables the OTC half),
+// `misInfo` is the MIS getStockInfo endpoint accepting `?ex_ch=...`
+// queries built per-call. Tests point these at httptest.Server URLs
+// to exercise the live pipeline without touching production.
+func (p *HTTPProvider) SetLiveBreadthEndpoints(tseUniverse, otcUniverse, misInfo string) {
+	p.universeEndpoint = tseUniverse
+	p.otcUniverseEndpoint = otcUniverse
 	p.misInfoEndpoint = misInfo
 }
 

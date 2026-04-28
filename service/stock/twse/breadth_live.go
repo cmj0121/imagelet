@@ -40,12 +40,19 @@ import (
 
 const (
 	// defaultStockUniverseEndpoint is the TWSE OpenAPI feed listing every
-	// security that traded on the previous session. Filtered to 4-digit
-	// non-zero-prefix codes for the breadth count.
+	// security that traded on the previous session (上市). Filtered to
+	// 4-digit non-zero-prefix codes for the breadth count.
 	defaultStockUniverseEndpoint = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
 
-	// defaultMISInfoEndpoint is TWSE's MIS real-time per-stock backend.
-	// Build the query string per call: `?ex_ch=tse_XXXX.tw|…&json=1`.
+	// defaultOTCUniverseEndpoint is the TPEx OpenAPI feed listing every
+	// 上櫃 security. Same 4-digit filter as the TSE side; the field
+	// carrying the code differs (SecuritiesCompanyCode vs Code) so we
+	// decode into a separate row shape.
+	defaultOTCUniverseEndpoint = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes"
+
+	// defaultMISInfoEndpoint is TWSE's MIS real-time per-stock backend
+	// (also serves OTC quotes). Build per-call queries with
+	// `?ex_ch=tse_XXXX.tw|otc_XXXX.tw|…&json=1`.
 	defaultMISInfoEndpoint = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
 
 	// misBatchSize caps the number of symbols per MIS request. TWSE's
@@ -81,14 +88,16 @@ const (
 var stockCodeRegexp = regexp.MustCompile(`^[1-9][0-9]{3}$`)
 
 // FetchLiveBreadth returns an intra-day breadth snapshot computed by
-// polling MIS across the TWSE-listed equity universe. Cached 30s on
+// polling MIS across both the TSE (上市) and TPEx (上櫃) listed-equity
+// universes. Counts are kept separate per exchange. Cached 30s on
 // success, 60s on failure; concurrent callers during a miss are
 // deduped via singleflight.
 //
-// Returns ErrUnavailable when the live pipeline is disabled (universe
-// or MIS endpoint unset — e.g. NewWithEndpoints without a follow-up
-// SetLiveBreadthEndpoints call). Transport errors propagate verbatim
-// for caller-side fallback / cache decisions.
+// Returns ErrUnavailable when the live pipeline is disabled (TSE
+// universe or MIS endpoint unset). The OTC universe is optional —
+// when its endpoint is empty the function still returns TSE-only
+// breadth instead of erroring, so callers can opt into OTC by
+// setting the TPEx endpoint and not break otherwise.
 func (p *HTTPProvider) FetchLiveBreadth(ctx context.Context) (LiveBreadth, error) {
 	if p.universeEndpoint == "" || p.misInfoEndpoint == "" {
 		return LiveBreadth{}, ErrUnavailable
@@ -126,37 +135,56 @@ func (p *HTTPProvider) FetchLiveBreadth(ctx context.Context) (LiveBreadth, error
 	return val.(LiveBreadth), nil
 }
 
-// fetchLiveBreadth runs the universe + MIS pipeline once. Universe is
-// re-used from the in-process cache when fresh; MIS batches are fanned
-// out with bounded concurrency.
+// fetchLiveBreadth runs the universe + MIS pipeline once per exchange.
+// TSE (上市) is required — its absence is an error; OTC (上櫃) is
+// optional and skipped silently when the universe endpoint is unset
+// or fails. Universes are re-used from the in-process caches when
+// fresh; MIS batches are fanned out with bounded concurrency across
+// both exchanges combined.
 func (p *HTTPProvider) fetchLiveBreadth(ctx context.Context) (LiveBreadth, error) {
-	universe, err := p.fetchUniverse(ctx)
+	tseUniverse, err := p.fetchUniverse(ctx, exchangeTSE)
 	if err != nil {
 		return LiveBreadth{}, err
 	}
-	if len(universe) == 0 {
+	if len(tseUniverse) == 0 {
 		return LiveBreadth{}, ErrUnavailable
 	}
 
-	batches := chunkSymbols(universe, misBatchSize)
-	type batchResult struct {
-		quotes []misStockInfo
-		err    error
+	var otcUniverse []string
+	if p.otcUniverseEndpoint != "" {
+		// OTC fetch is best-effort: a TPEx outage shouldn't drop the
+		// 上市 row too. Log silently via empty universe → no OTC counts.
+		if u, err := p.fetchUniverse(ctx, exchangeOTC); err == nil {
+			otcUniverse = u
+		}
 	}
-	results := make([]batchResult, len(batches))
+
+	tseBatches := chunkSymbols(tseUniverse, misBatchSize)
+	otcBatches := chunkSymbols(otcUniverse, misBatchSize)
+	type batchResult struct {
+		exchange exchange
+		quotes   []misStockInfo
+		err      error
+	}
+	results := make([]batchResult, len(tseBatches)+len(otcBatches))
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(misConcurrency)
-	for i, batch := range batches {
-		i, batch := i, batch
+	emit := func(idx int, ex exchange, batch []string) {
 		g.Go(func() error {
-			quotes, err := p.fetchMISBatch(gctx, batch)
-			results[i] = batchResult{quotes: quotes, err: err}
+			quotes, err := p.fetchMISBatch(gctx, ex, batch)
+			results[idx] = batchResult{exchange: ex, quotes: quotes, err: err}
 			// Per-batch errors don't fail the whole fetch; partial
 			// breadth from the surviving batches is still useful and
 			// MIS can flap on individual chunks.
 			return nil
 		})
+	}
+	for i, b := range tseBatches {
+		emit(i, exchangeTSE, b)
+	}
+	for i, b := range otcBatches {
+		emit(len(tseBatches)+i, exchangeOTC, b)
 	}
 	if err := g.Wait(); err != nil {
 		return LiveBreadth{}, err
@@ -164,46 +192,86 @@ func (p *HTTPProvider) fetchLiveBreadth(ctx context.Context) (LiveBreadth, error
 
 	var out LiveBreadth
 	var latestTick time.Time
-	anySuccess := false
+	tseOK := false
 	for _, r := range results {
 		if r.err != nil {
 			continue
 		}
-		anySuccess = true
+		if r.exchange == exchangeTSE {
+			tseOK = true
+		}
 		for _, q := range r.quotes {
 			direction, tick := classifyTick(q)
-			switch direction {
-			case dirUp:
-				out.AdvanceCount++
-			case dirDown:
-				out.DeclineCount++
-			case dirFlat:
-				out.UnchangedCount++
+			switch r.exchange {
+			case exchangeTSE:
+				switch direction {
+				case dirUp:
+					out.TSEAdvance++
+				case dirDown:
+					out.TSEDecline++
+				case dirFlat:
+					out.TSEUnchanged++
+				}
+			case exchangeOTC:
+				switch direction {
+				case dirUp:
+					out.OTCAdvance++
+				case dirDown:
+					out.OTCDecline++
+				case dirFlat:
+					out.OTCUnchanged++
+				}
 			}
 			if tick.After(latestTick) {
 				latestTick = tick
 			}
 		}
 	}
-	if !anySuccess {
+	// At minimum the TSE pipeline must have produced something; an
+	// all-OTC-only render isn't useful and likely indicates a TSE
+	// outage we should surface.
+	if !tseOK {
 		return LiveBreadth{}, ErrUnavailable
 	}
 	out.AsOf = latestTick
 	return out, nil
 }
 
-// fetchUniverse pulls the TWSE-listed equity symbols from STOCK_DAY_ALL
-// and filters to 4-digit non-zero-prefix codes. Cached 4h; concurrent
-// misses share the in-flight refresh under universeMu.
-func (p *HTTPProvider) fetchUniverse(ctx context.Context) ([]string, error) {
+// exchange enumerates the two universes the live pipeline polls.
+type exchange int
+
+const (
+	exchangeTSE exchange = iota // 上市 / TSE main board
+	exchangeOTC                 // 上櫃 / TPEx OTC
+)
+
+// misPrefix returns the MIS ex_ch prefix for the exchange — `tse_`
+// for TSE main, `otc_` for TPEx. MIS multiplexes both behind the
+// same getStockInfo endpoint, distinguished by prefix.
+func (e exchange) misPrefix() string {
+	switch e {
+	case exchangeOTC:
+		return "otc_"
+	default:
+		return "tse_"
+	}
+}
+
+// fetchUniverse pulls the listed-equity symbols for `ex` and filters
+// to 4-digit non-zero-prefix codes. TSE reads STOCK_DAY_ALL with the
+// "Code" field; TPEx reads tpex_mainboard_quotes with the
+// "SecuritiesCompanyCode" field. Both cached 4h independently;
+// concurrent misses share the in-flight refresh under universeMu.
+func (p *HTTPProvider) fetchUniverse(ctx context.Context, ex exchange) ([]string, error) {
 	p.universeMu.Lock()
 	defer p.universeMu.Unlock()
 
-	if len(p.universeData) > 0 && time.Since(p.universeAt) < universeRefreshTTL {
-		return p.universeData, nil
+	endpoint, cached, cachedAt := p.universeFor(ex)
+	if len(cached) > 0 && time.Since(cachedAt) < universeRefreshTTL {
+		return cached, nil
 	}
 
-	body, err := p.fetch(ctx, p.universeEndpoint)
+	body, err := p.fetch(ctx, endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -213,25 +281,56 @@ func (p *HTTPProvider) fetchUniverse(ctx context.Context) ([]string, error) {
 	}
 	symbols := make([]string, 0, len(raw))
 	for _, r := range raw {
-		if stockCodeRegexp.MatchString(r.Code) {
-			symbols = append(symbols, r.Code)
+		code := r.Code
+		if code == "" {
+			code = r.SecuritiesCompanyCode
+		}
+		if stockCodeRegexp.MatchString(code) {
+			symbols = append(symbols, code)
 		}
 	}
-	p.universeData = symbols
-	p.universeAt = time.Now()
+	p.storeUniverse(ex, symbols)
 	return symbols, nil
 }
 
+// universeFor returns the endpoint URL plus the current cache snapshot
+// for the given exchange. universeMu must be held.
+func (p *HTTPProvider) universeFor(ex exchange) (endpoint string, cached []string, cachedAt time.Time) {
+	switch ex {
+	case exchangeOTC:
+		return p.otcUniverseEndpoint, p.otcUniverseData, p.otcUniverseAt
+	default:
+		return p.universeEndpoint, p.universeData, p.universeAt
+	}
+}
+
+// storeUniverse writes the freshly-fetched symbol list back to the
+// appropriate cache slot. universeMu must be held.
+func (p *HTTPProvider) storeUniverse(ex exchange, symbols []string) {
+	now := time.Now()
+	switch ex {
+	case exchangeOTC:
+		p.otcUniverseData = symbols
+		p.otcUniverseAt = now
+	default:
+		p.universeData = symbols
+		p.universeAt = now
+	}
+}
+
 // fetchMISBatch issues one MIS getStockInfo call carrying up to
-// misBatchSize symbols. The MIS endpoint requires a Referer header
-// matching its own host or it returns rtcode 9999.
-func (p *HTTPProvider) fetchMISBatch(ctx context.Context, symbols []string) ([]misStockInfo, error) {
+// misBatchSize symbols on the given exchange. The MIS endpoint
+// requires a Referer header matching its own host or it returns
+// rtcode 9999. Exchange picks the prefix (tse_ for 上市, otc_ for
+// 上櫃); MIS multiplexes both behind the same handler.
+func (p *HTTPProvider) fetchMISBatch(ctx context.Context, ex exchange, symbols []string) ([]misStockInfo, error) {
 	if len(symbols) == 0 {
 		return nil, nil
 	}
+	prefix := ex.misPrefix()
 	parts := make([]string, len(symbols))
 	for i, s := range symbols {
-		parts[i] = "tse_" + s + ".tw"
+		parts[i] = prefix + s + ".tw"
 	}
 	q := url.Values{
 		"ex_ch": []string{strings.Join(parts, "|")},
@@ -375,7 +474,11 @@ type misResponse struct {
 	MsgArray  []misStockInfo `json:"msgArray"`
 }
 
-// universeRow captures the only field we read from STOCK_DAY_ALL.
+// universeRow captures the symbol field across both universe feeds.
+// TSE STOCK_DAY_ALL uses "Code"; TPEx tpex_mainboard_quotes uses
+// "SecuritiesCompanyCode". Decoding both fields lets one struct
+// serve both feeds — only one is populated per row.
 type universeRow struct {
-	Code string `json:"Code"`
+	Code                  string `json:"Code"`
+	SecuritiesCompanyCode string `json:"SecuritiesCompanyCode"`
 }

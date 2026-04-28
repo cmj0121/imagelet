@@ -643,10 +643,11 @@ func TestServeTWPathOpenMarketHidesEndOfDay(t *testing.T) {
 }
 
 // TestServeTWPathOpenMarketRendersLiveBreadth pins the LiveBreadthProvider
-// path: when the wired TWSE provider implements LiveBreadthProvider and
-// the market is open, the breadth row IS rendered with live counts —
-// not yesterday's MI_INDEX numbers. Positioning + credit stay hidden
-// (still end-of-day). The OHLC bar above also stays.
+// split-rendering path: when the wired TWSE provider implements
+// LiveBreadthProvider and the market is open, the breadth section
+// renders one row per populated exchange — 上市 from TSE counts, 上櫃
+// from OTC counts. Closed-market labels (漲跌家數, 籌碼面, 信用餘額)
+// must NOT appear. The OHLC bar above also stays.
 func TestServeTWPathOpenMarketRendersLiveBreadth(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	q := freshQuote()
@@ -656,10 +657,13 @@ func TestServeTWPathOpenMarketRendersLiveBreadth(t *testing.T) {
 	tw := fakeLiveTWSE{
 		fakeTWSE: fakeTWSE{d: freshTW()}, // d is irrelevant during open
 		live: twse.LiveBreadth{
-			AdvanceCount:   444,
-			DeclineCount:   555,
-			UnchangedCount: 22,
-			AsOf:           time.Date(2026, 4, 28, 10, 30, 0, 0, time.UTC),
+			TSEAdvance:   444,
+			TSEDecline:   555,
+			TSEUnchanged: 22,
+			OTCAdvance:   333,
+			OTCDecline:   222,
+			OTCUnchanged: 11,
+			AsOf:         time.Date(2026, 4, 28, 10, 30, 0, 0, time.UTC),
 		},
 	}
 	r := newRouterWithTWSE(fakeProvider{q: q}, tw)
@@ -675,14 +679,17 @@ func TestServeTWPathOpenMarketRendersLiveBreadth(t *testing.T) {
 	}
 	body := rec.Body.String()
 
-	// Breadth row IS present, with the live counts (not freshTW's 312/691/63).
-	for _, want := range []string{"漲跌家數", "漲 444", "跌 555", "平 22"} {
+	// Both 上市 and 上櫃 rows present with their live counts.
+	for _, want := range []string{
+		"上市", "漲 444", "跌 555", "平 22",
+		"上櫃", "漲 333", "跌 222", "平 11",
+	} {
 		if !strings.Contains(body, want) {
-			t.Errorf("open-market body missing live-breadth token %q\n--- body ---\n%s", want, body)
+			t.Errorf("open-market body missing split-breadth token %q\n--- body ---\n%s", want, body)
 		}
 	}
-	// Positioning + credit still hidden.
-	for _, banned := range []string{"外資籌碼", "信用餘額"} {
+	// Closed-market labels must not appear during open hours.
+	for _, banned := range []string{"漲跌家數", "外資籌碼", "信用餘額"} {
 		if strings.Contains(body, banned) {
 			t.Errorf("open-market body should not contain end-of-day label %q\n--- body ---\n%s", banned, body)
 		}
