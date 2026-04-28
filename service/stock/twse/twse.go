@@ -297,7 +297,10 @@ type HTTPProvider struct {
 	miMargn       string
 	miIndex       string
 	t86           string // T86 per-stock 三大法人 endpoint (production-only; empty disables GetForStock)
+	twt93u        string // TWT93U per-stock 信用額度總量管制 (production-only; empty disables GetSecuritiesLending)
 	taifexFutures string // TAIFEX 三大法人區分各期貨契約 download (production-only; empty disables GetRetailFutures)
+	taifexPCR     string // TAIFEX 臺指選擇權 Put/Call ratio (production-only; empty disables GetOptionsPCR)
+	taifexVIX     string // TAIFEX VIX monthly dump URL template — must contain a single %s for YYYYMM
 	client        *http.Client
 
 	// Live breadth state — separate plane from the daily Get() pipeline.
@@ -343,7 +346,10 @@ func New() *HTTPProvider {
 	p.otcUniverseEndpoint = defaultOTCUniverseEndpoint
 	p.misInfoEndpoint = defaultMISInfoEndpoint
 	p.t86 = defaultT86Endpoint
+	p.twt93u = defaultTWT93UEndpoint
 	p.taifexFutures = defaultTAIFEXFuturesEndpoint
+	p.taifexPCR = defaultTAIFEXPCREndpoint
+	p.taifexVIX = defaultTAIFEXVIXURLTemplate
 	return p
 }
 
@@ -948,6 +954,41 @@ func (c *Cached) LookupName(ctx context.Context, stockID string, isOTC bool) (st
 		return "", ErrUnavailable
 	}
 	return np.LookupName(ctx, stockID, isOTC)
+}
+
+// GetOptionsPCR delegates to the inner provider when it implements
+// OptionsPCRProvider. Bypasses the single-entry market-wide cache —
+// the upstream is daily afterTrading and a date-keyed cache can be
+// added later if traffic justifies it.
+func (c *Cached) GetOptionsPCR(ctx context.Context, asOf time.Time) (OptionsPCR, error) {
+	op, ok := c.inner.(OptionsPCRProvider)
+	if !ok {
+		return OptionsPCR{}, ErrUnavailable
+	}
+	return op.GetOptionsPCR(ctx, asOf)
+}
+
+// GetVIX delegates to the inner provider when it implements VIXProvider.
+// Same caching note as GetOptionsPCR.
+func (c *Cached) GetVIX(ctx context.Context, asOf time.Time) (VIX, error) {
+	vp, ok := c.inner.(VIXProvider)
+	if !ok {
+		return VIX{}, ErrUnavailable
+	}
+	return vp.GetVIX(ctx, asOf)
+}
+
+// GetSecuritiesLending delegates to the inner provider when it implements
+// SecuritiesLendingProvider. Per-stock + per-date keying isn't represented
+// in the single-entry market-wide cache so we bypass for now; a date+stockID
+// keyed cache can be added later without changing this contract. Returns
+// ErrUnavailable when the inner provider doesn't support it.
+func (c *Cached) GetSecuritiesLending(ctx context.Context, stockID string, asOf time.Time) (SecuritiesLending, error) {
+	slp, ok := c.inner.(SecuritiesLendingProvider)
+	if !ok {
+		return SecuritiesLending{}, ErrUnavailable
+	}
+	return slp.GetSecuritiesLending(ctx, stockID, asOf)
 }
 
 // GetRetailFutures delegates to the inner provider when it implements
