@@ -88,15 +88,21 @@ var pngMagic = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
 
 // freshQuote returns a deterministic Quote that the handler can render.
 // Last > PrevClose so ChangePercent() is positive (▲ arrow). AsOf is a
-// fixed UTC instant so the caption date is stable across CI runs.
+// fixed UTC instant so the caption date is stable across CI runs. OHLC
+// is populated (Open=4460, DayLow=4440, DayHigh=4520, Close=Last=4500.50)
+// so HasOHLC() is true and the renderer emits the OHLC range bar — a
+// bullish layout with body filled between Open and Close.
 func freshQuote() quote.Quote {
 	return quote.Quote{
 		Symbol:    "^GSPC",
 		Last:      4500.50,
+		Open:      4460.00,
 		PrevClose: 4450.00,
 		Currency:  "USD",
 		AsOf:      time.Date(2026, 4, 15, 20, 0, 0, 0, time.UTC),
 		IsClosed:  false,
+		DayHigh:   4520.00,
+		DayLow:    4440.00,
 	}
 }
 
@@ -153,6 +159,14 @@ func TestServeOpenMarketASCII(t *testing.T) {
 	// ASCII frame uses + and - glyphs from the ascii theme.
 	if !strings.Contains(body, "+") || !strings.Contains(body, "-") {
 		t.Errorf("body does not look like an ASCII banner\n--- body ---\n%s", body)
+	}
+	// OHLC range bar is enabled when the quote carries the full OHLC
+	// quartet (freshQuote does). The bar glyphs (O, C, █ for bullish)
+	// land in the ASCII surface alongside the Low / High edge labels.
+	for _, want := range []string{"O", "C", "█", "4,440.00", "4,520.00", "4,460.00"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("ASCII body missing OHLC token %q\n--- body ---\n%s", want, body)
+		}
 	}
 }
 
@@ -318,6 +332,16 @@ func TestServeFormatSVGOverridesUA(t *testing.T) {
 			if !strings.Contains(body, "<svg ") || !strings.Contains(body, "</svg>") {
 				t.Errorf("body not bracketed by <svg> tags; got:\n%s", body)
 			}
+			// OHLC bar tokens survive pylon's SVG path. Pylon coalesces
+			// adjacent same-glyph runs into <rect> blocks (the body
+			// fill) and packs surrounding text into multi-char <text>
+			// elements, so the markers and edge labels show up as
+			// substrings rather than isolated nodes.
+			for _, want := range []string{"O", "C", "4,440.00", "4,520.00", "4,460.00"} {
+				if !strings.Contains(body, want) {
+					t.Errorf("SVG body missing OHLC token %q\n--- body ---\n%s", want, body)
+				}
+			}
 		})
 	}
 }
@@ -422,15 +446,17 @@ func TestIndexNameFor(t *testing.T) {
 }
 
 // TestServeTWPathIncludesEnrichment pins that a TW visitor sees the
-// 籌碼面 (positioning) borderless captions and the 信用交易 (credit)
-// bordered box in the ASCII surface, with Chinese labels. Exercises the
-// Path 1 region-conditional formatting and the layered banner / captions
-// / box layout.
+// 籌碼面 (positioning) borderless captions and the 信用餘額 (credit)
+// row in the ASCII surface, with Chinese labels. Exercises the closed-
+// market path: 籌碼面 and 信用餘額 are TWSE end-of-day datasets, so they
+// only render when q.IsClosed is true; during open hours those rows
+// are gated off (covered by TestServeTWPathOpenMarketHidesEndOfDay).
 func TestServeTWPathIncludesEnrichment(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	q := freshQuote()
 	q.Symbol = "^TWII"
 	q.Currency = "TWD"
+	q.IsClosed = true
 	r := newRouterWithTWSE(fakeProvider{q: q}, fakeTWSE{d: freshTW()})
 
 	req := httptest.NewRequest(http.MethodGet, "/stock", nil)
@@ -508,7 +534,8 @@ func TestServeTWPathPNGUsesEnglishLabels(t *testing.T) {
 // SVG carries CN labels for TW visitors, matching the ASCII and
 // text/pylon surfaces. Browsers supply CJK glyphs via font fallback,
 // so SVG renders 籌碼面 / 外資 / 投信 / 自營 / 合計 / 信用餘額 /
-// 融資 / 融券 without tofu. PNG is the lone EN holdout
+// 融資 / 融券 without tofu. Pins the closed-market path so the full
+// TW enrichment is asserted; PNG is the lone EN holdout
 // (basicfont.Face7x13 has zero CJK coverage); see
 // TestServeTWPathPNGUsesEnglishLabels.
 func TestServeTWPathSVGUsesChineseLabels(t *testing.T) {
@@ -516,6 +543,7 @@ func TestServeTWPathSVGUsesChineseLabels(t *testing.T) {
 	q := freshQuote()
 	q.Symbol = "^TWII"
 	q.Currency = "TWD"
+	q.IsClosed = true
 	r := newRouterWithTWSE(fakeProvider{q: q}, fakeTWSE{d: freshTW()})
 
 	req := httptest.NewRequest(http.MethodGet, "/stock?format=svg", nil)
@@ -549,6 +577,46 @@ func TestServeTWPathSVGUsesChineseLabels(t *testing.T) {
 	} {
 		if strings.Contains(body, en) {
 			t.Errorf("SVG body contains EN label %q (should be CN)\n--- body ---\n%s", en, body)
+		}
+	}
+}
+
+// TestServeTWPathOpenMarketHidesEndOfDay pins the open-market gating:
+// 籌碼面 (positioning / 三大法人) and 信用餘額 (credit balance) are
+// TWSE end-of-day datasets and read as stale during the trading
+// session, so they must NOT render when q.IsClosed is false. 漲跌家數
+// (breadth) is intra-day and stays in both states; the OHLC bar above
+// also stays. Complement to TestServeTWPathIncludesEnrichment which
+// pins the closed-market full-enrichment view.
+func TestServeTWPathOpenMarketHidesEndOfDay(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "^TWII"
+	q.Currency = "TWD"
+	q.IsClosed = false
+	r := newRouterWithTWSE(fakeProvider{q: q}, fakeTWSE{d: freshTW()})
+
+	req := httptest.NewRequest(http.MethodGet, "/stock", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	// Real-time content must still render: breadth row + OHLC bar.
+	for _, want := range []string{"漲跌家數", "漲 312", "O", "C"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("open-market body missing real-time token %q\n--- body ---\n%s", want, body)
+		}
+	}
+	// End-of-day labels must be absent.
+	for _, banned := range []string{"外資籌碼", "投信籌碼", "自營籌碼", "合計籌碼", "信用餘額"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("open-market body should not contain end-of-day label %q\n--- body ---\n%s", banned, body)
 		}
 	}
 }

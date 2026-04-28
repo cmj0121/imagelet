@@ -87,6 +87,14 @@ var indexNameBySymbol = map[string]string{
 // middleware's "US" default country.
 const defaultSymbol = "^GSPC"
 
+// ohlcWidth is the column count of the OHLC range bar. 65 spreads the
+// wicks and body wide enough to read marker positions at a glance and
+// reduces the chance of Open/Close label collision on narrow bodies,
+// while still fitting comfortably inside the 600px HTML wrapper cap
+// with pylon's monospace SVG glyphs (~5px/char × 65 = ~325px before
+// box parens and padding).
+const ohlcWidth = 65
+
 // indexNameFor returns the human-readable header line for symbol, or
 // empty string if symbol isn't in indexNameBySymbol. Callers MUST handle
 // the empty case (omit the header row) so unknown symbols still render.
@@ -201,18 +209,26 @@ func (h *handler) serve(c *gin.Context) {
 // group boundaries.
 type stockBlocks struct {
 	captions []string
+	ohlc     []string
 	body     []string
 }
 
-// boxes wraps the body rows in a single AlignLeft BoxBlock so all rows
-// share one alignment context (no inter-group stagger from independent
-// per-block centering). Returns nil when body is empty so non-TW
-// visitors render as banner+captions only.
+// boxes assembles the stacked AlignLeft sections under the banner +
+// captions: an OHLC range bar (3 rows: Low/High edge labels, bar with
+// O/C markers, Open/Close labels under the markers) for any visitor
+// whose quote carries the full OHLC quartet, followed by the TW
+// enrichment data block (positioning / breadth / credit) for TW
+// visitors. Both share AlignLeft so monospace columns line up flush-
+// left across rows. Either or both may be absent.
 func (bs stockBlocks) boxes() []render.BoxBlock {
-	if len(bs.body) == 0 {
-		return nil
+	var out []render.BoxBlock
+	if len(bs.ohlc) > 0 {
+		out = append(out, render.BoxBlock{Rows: bs.ohlc, Align: render.AlignLeft})
 	}
-	return []render.BoxBlock{{Rows: bs.body, Align: render.AlignLeft}}
+	if len(bs.body) > 0 {
+		out = append(out, render.BoxBlock{Rows: bs.body, Align: render.AlignLeft})
+	}
+	return out
 }
 
 // blankRow is the U+200B (zero-width space) separator row that creates
@@ -257,14 +273,31 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, stale, useEng
 		q.AsOf.Format("2006-01-02"),
 	)))
 
+	if q.HasOHLC() {
+		top, bar, bottom := render.OHLCBar(q.Open, q.DayHigh, q.DayLow, q.Last, ohlcWidth, formatPrice)
+		if bar != "" {
+			// Trailing ZWSP row gives the OHLC block breathing room
+			// before whatever comes next (TW enrichment block, or the
+			// bottom of the figure for non-TW visitors). A literal
+			// empty row would be trimmed by pylon; ZWSP holds the line.
+			bs.ohlc = []string{top, bar, bottom, blankRow}
+		}
+	}
+
+	// Market-state gating: 籌碼面 (positioning / 三大法人) and 信用餘額
+	// (credit balance) are TWSE end-of-day datasets — during open hours
+	// they carry the previous session's numbers and read as stale. Drop
+	// both while q.IsClosed is false so an open-market render focuses
+	// on real-time info (the OHLC bar above and the breadth row below).
+	// 漲跌家數 (breadth) is intra-day so it stays in both states.
 	var groups [][]string
-	if tw.HasInstitutional() {
+	if q.IsClosed && tw.HasInstitutional() {
 		groups = append(groups, positioningRows(tw, useEnglish))
 	}
 	if tw.HasBreadth() {
 		groups = append(groups, technicalRows(tw, useEnglish))
 	}
-	if tw.HasMargin() {
+	if q.IsClosed && tw.HasMargin() {
 		groups = append(groups, creditRows(tw, useEnglish))
 	}
 	for i, g := range groups {
