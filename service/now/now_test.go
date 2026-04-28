@@ -93,10 +93,10 @@ func TestNow(t *testing.T) {
 		// bodyMatch is one of: a regexp (text body), pngMagic sentinel, or nil.
 		// asciiSubtitle is true when the body is a text path that should also
 		// match the subtitle regex.
-		bodyPattern   *regexp.Regexp
-		bodyIsPNG     bool
-		bodyIsHTML    bool
-		asciiRows     bool
+		bodyPattern *regexp.Regexp
+		bodyIsPNG   bool
+		bodyIsHTML  bool
+		asciiRows   bool
 	}{
 		{
 			name:        "cli_returns_ascii_banner",

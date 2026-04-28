@@ -384,6 +384,17 @@ func (p *HTTPProvider) SetLiveBreadthEndpoints(tseUniverse, otcUniverse, misInfo
 	p.misInfoEndpoint = misInfo
 }
 
+// clampAsOfTW normalizes asOf to Asia/Taipei, defaulting to the current
+// TW wall-clock when asOf is zero or future-dated. Shared by the daily-
+// lookback fetchers so a single point governs the live-calendar guard.
+func clampAsOfTW(asOf time.Time) time.Time {
+	now := time.Now().In(twLoc)
+	if asOf.IsZero() || asOf.After(now) {
+		return now
+	}
+	return asOf.In(twLoc)
+}
+
 // maxLookbackDays caps the walk-back when probing for the most recent
 // trading day with published data. 7 days covers any weekend plus
 // 1–2 consecutive Taiwanese holidays (the longest in the TWSE
@@ -416,11 +427,7 @@ func (p *HTTPProvider) Get(ctx context.Context) (MarketData, error) {
 // Future-dated asOf is clamped to today to keep the loop bounded
 // against the live calendar.
 func (p *HTTPProvider) GetAt(ctx context.Context, asOf time.Time) (MarketData, error) {
-	now := time.Now().In(twLoc)
-	if asOf.IsZero() || asOf.After(now) {
-		asOf = now
-	}
-	asOf = asOf.In(twLoc)
+	asOf = clampAsOfTW(asOf)
 
 	for daysBack := 0; daysBack < maxLookbackDays; daysBack++ {
 		probe := asOf.AddDate(0, 0, -daysBack)
@@ -635,11 +642,7 @@ func (p *HTTPProvider) GetForStock(ctx context.Context, stockID string, asOf tim
 	if p.t86 == "" {
 		return StockData{}, ErrUnavailable
 	}
-	now := time.Now().In(twLoc)
-	if asOf.IsZero() || asOf.After(now) {
-		asOf = now
-	}
-	asOf = asOf.In(twLoc)
+	asOf = clampAsOfTW(asOf)
 
 	for daysBack := 0; daysBack < maxLookbackDays; daysBack++ {
 		probe := asOf.AddDate(0, 0, -daysBack)

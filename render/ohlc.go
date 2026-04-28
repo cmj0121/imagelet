@@ -91,8 +91,8 @@ func overlayPrevMarker(top, label string, prevPos, lowLen, highLen, width int) s
 	// prev-close marker that lands right next to the Low or High label
 	// doesn't visually fuse — `4,440.00▼ 4,450.00` reads as one token,
 	// `4,440.00 ▼ 4,450.00` reads as two.
-	leftEdge := lowLen + 1            // overlay must start at column ≥ lowLen+1
-	rightEdge := width - highLen - 1  // overlay must end at column ≤ width-highLen-1
+	leftEdge := lowLen + 1           // overlay must start at column ≥ lowLen+1
+	rightEdge := width - highLen - 1 // overlay must end at column ≤ width-highLen-1
 	// Try right-of-marker layout first.
 	start := prevPos
 	end := start + span
@@ -196,7 +196,7 @@ func ohlcMarkerLabels(open, last string, openPos, closePos, width int) string {
 	openEnd := openStart + len(open)
 	lastEnd := lastStart + len(last)
 	openLeft := openPos < closePos
-	collide := openLeft && openEnd > lastStart || !openLeft && lastEnd > openStart
+	collide := (openLeft && openEnd > lastStart) || (!openLeft && lastEnd > openStart)
 	if collide {
 		// Drop the inner label — keep the one closer to the bar edge.
 		// "Inner" means: when Open sits to the left of Close, Close is

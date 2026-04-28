@@ -678,7 +678,10 @@ func positioningRows(tw twse.MarketData, useEnglish bool) []string {
 	const halfWidth = 10
 	maxF := float64(absMaxInt64(tw.ForeignNet, tw.TrustNet, tw.DealerNet, tw.Net))
 
-	type entry struct{ labelEN, labelCN string; value int64 }
+	type entry struct {
+		labelEN, labelCN string
+		value            int64
+	}
 	rows := []entry{
 		{"foreign", "外資籌碼", tw.ForeignNet},
 		{"trust  ", "投信籌碼", tw.TrustNet},

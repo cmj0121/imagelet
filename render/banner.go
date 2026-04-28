@@ -27,17 +27,25 @@ import (
 // and never error; the wrapper keeps the (body, err) shape for caller
 // uniformity.
 func Banner(headline, subtitle string, mode Mode) ([]byte, error) {
-	ast := pylon.Parse(BannerSource(headline, subtitle))
-	if mode == ModePNG {
+	return renderAST(pylon.Parse(BannerSource(headline, subtitle)), mode)
+}
+
+// renderAST dispatches a parsed pylon AST to the requested render mode,
+// applying the GitHub-dark PaintSVG post-process to SVG/HTML output and
+// the trailing newline to ASCII. Shared by the Banner / BannerMulti /
+// BannerBoxes wrappers — every banner-shaped source uses pylon's native
+// theme so the per-mode dispatch is identical.
+func renderAST(ast pylon.AST, mode Mode) ([]byte, error) {
+	switch mode {
+	case ModePNG:
 		return pylon.RenderPNG(ast)
-	}
-	if mode == ModeSVG {
+	case ModeSVG:
 		return PaintSVG([]byte(pylon.RenderSVG(ast))), nil
-	}
-	if mode == ModeHTML {
+	case ModeHTML:
 		return WrapHTML(PaintSVG([]byte(pylon.RenderSVG(ast)))), nil
+	default:
+		return []byte(pylon.RenderASCII(ast) + "\n"), nil
 	}
-	return []byte(pylon.RenderASCII(ast) + "\n"), nil
 }
 
 // BannerSource returns the pylon source string Banner parses and renders.
@@ -60,17 +68,7 @@ func BannerSource(headline, subtitle string) string {
 // bytes. SVG goes through PaintSVG; HTML wraps the painted SVG. Same
 // error handling as Banner.
 func BannerMulti(headline string, lines []string, mode Mode) ([]byte, error) {
-	ast := pylon.Parse(BannerSourceMulti(headline, lines))
-	if mode == ModePNG {
-		return pylon.RenderPNG(ast)
-	}
-	if mode == ModeSVG {
-		return PaintSVG([]byte(pylon.RenderSVG(ast))), nil
-	}
-	if mode == ModeHTML {
-		return WrapHTML(PaintSVG([]byte(pylon.RenderSVG(ast)))), nil
-	}
-	return []byte(pylon.RenderASCII(ast) + "\n"), nil
+	return renderAST(pylon.Parse(BannerSourceMulti(headline, lines)), mode)
 }
 
 // BannerSourceMulti returns the pylon source for a banner stacked over N
@@ -235,15 +233,5 @@ func writeBoxInline(b *strings.Builder, blk BoxBlock) {
 // bannerTitle is the optional row that sits inside the banner box above
 // the headline; pass "" for the legacy single-line banner source.
 func BannerBoxes(headline, bannerTitle string, captions []string, boxes []BoxBlock, mode Mode) ([]byte, error) {
-	ast := pylon.Parse(BannerSourceBoxes(headline, bannerTitle, captions, boxes))
-	if mode == ModePNG {
-		return pylon.RenderPNG(ast)
-	}
-	if mode == ModeSVG {
-		return PaintSVG([]byte(pylon.RenderSVG(ast))), nil
-	}
-	if mode == ModeHTML {
-		return WrapHTML(PaintSVG([]byte(pylon.RenderSVG(ast)))), nil
-	}
-	return []byte(pylon.RenderASCII(ast) + "\n"), nil
+	return renderAST(pylon.Parse(BannerSourceBoxes(headline, bannerTitle, captions, boxes)), mode)
 }

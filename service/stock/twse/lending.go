@@ -77,11 +77,7 @@ func (p *HTTPProvider) GetSecuritiesLending(ctx context.Context, stockID string,
 	if p.twt93u == "" {
 		return SecuritiesLending{}, ErrUnavailable
 	}
-	now := time.Now().In(twLoc)
-	if asOf.IsZero() || asOf.After(now) {
-		asOf = now
-	}
-	asOf = asOf.In(twLoc)
+	asOf = clampAsOfTW(asOf)
 
 	for daysBack := 0; daysBack < maxLookbackDays; daysBack++ {
 		probe := asOf.AddDate(0, 0, -daysBack)
