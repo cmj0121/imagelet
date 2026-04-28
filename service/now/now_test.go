@@ -17,6 +17,7 @@ import (
 func newRouter() *gin.Engine {
 	r := gin.New()
 	r.Use(middleware.TimezoneDetector())
+	r.Use(middleware.DateOverrideDetector())
 	r.Use(middleware.ClientDetector())
 	now.Register(r)
 	return r
@@ -189,6 +190,66 @@ func TestNow(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestNowDateOverride pins the contract that ?date=YYYY-MM-DD shifts the
+// caption rows onto the requested calendar day while leaving the headline
+// (real wall-clock HH:MM) untouched. Both the date and the year-progress
+// percent reflect the override; an old historical date should produce a
+// 100% bar (the year is fully past) — testing 2012 because it's far enough
+// back that a regression on the override path can't accidentally pass by
+// reading "today".
+func TestNowDateOverride(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := newRouter()
+
+	req := httptest.NewRequest(http.MethodGet, "/now?date=2012-02-02", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-Timezone", "UTC")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "2012-02-02") {
+		t.Errorf("body missing override date 2012-02-02\n--- body ---\n%s", body)
+	}
+	// 2012-02-02 is a Thursday — the weekday strip should bracket "T".
+	// The 7-letter Sunday-first strip is `S M T W T F S`; the bracketed
+	// position must be column 4 (0-indexed: index 4) — the second T.
+	if !strings.Contains(body, "<T>") {
+		t.Errorf("body missing <T> bracket for Thursday\n--- body ---\n%s", body)
+	}
+	// year-progress reads the override date's day-of-year; Feb 2 = 9%
+	// (33 / 366 in 2012). Confirms the year-progress bar tracks the
+	// override, not "today".
+	if !strings.Contains(body, "9%") {
+		t.Errorf("body missing year-progress 9%% for 2012-02-02\n--- body ---\n%s", body)
+	}
+}
+
+// TestNowDateOverrideInvalidFallsThrough pins that an unparseable ?date=
+// value silently falls through to today (no 4xx) — matches the project's
+// fall-through pattern for ?format= and ?region=.
+func TestNowDateOverrideInvalidFallsThrough(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := newRouter()
+
+	req := httptest.NewRequest(http.MethodGet, "/now?date=not-a-date", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-Timezone", "UTC")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "0001-01-01") {
+		t.Errorf("invalid date stamped through as zero time\n--- body ---\n%s", body)
 	}
 }
 

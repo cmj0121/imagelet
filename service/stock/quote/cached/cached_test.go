@@ -144,6 +144,79 @@ func TestFailureCachedForFailureTTL(t *testing.T) {
 	}
 }
 
+// TestGetAtBypassesCache pins that historical lookups skip the in-memory
+// cache (which holds today's snapshot) and delegate to the inner
+// provider's HistoricalProvider.
+func TestGetAtBypassesCache(t *testing.T) {
+	hist := &histStub{
+		liveQuote:    quote.Quote{Symbol: "^GSPC", Last: 100},
+		histQuoteFor: map[string]quote.Quote{"2012-02-02": {Symbol: "^GSPC", Last: 1300, IsClosed: true}},
+	}
+	p := cached.NewWithTTL(hist, time.Hour, time.Hour)
+
+	// Prime cache with live Get → cached Last=100.
+	if _, err := p.Get(context.Background(), "^GSPC"); err != nil {
+		t.Fatalf("priming: %v", err)
+	}
+
+	// Historical lookup must NOT return the cached live value.
+	asOf := time.Date(2012, 2, 2, 0, 0, 0, 0, time.UTC)
+	q, err := p.GetAt(context.Background(), "^GSPC", asOf)
+	if err != nil {
+		t.Fatalf("GetAt: %v", err)
+	}
+	if q.Last != 1300 {
+		t.Errorf("Last = %v, want 1300 (historical bypasses cache)", q.Last)
+	}
+	if !q.IsClosed {
+		t.Errorf("IsClosed = false, want true (historical bar)")
+	}
+}
+
+// TestGetAtUnavailableWhenInnerNotHistorical confirms a cached.Provider
+// wrapping a basic quote.Provider (no HistoricalProvider) returns
+// quote.ErrUnavailable for as-of lookups rather than silently falling
+// back to live data.
+func TestGetAtUnavailableWhenInnerNotHistorical(t *testing.T) {
+	stub := &stubProvider{}
+	stub.setOK(quote.Quote{Symbol: "^GSPC", Last: 100})
+	p := cached.NewWithTTL(stub, time.Hour, time.Hour)
+
+	_, err := p.GetAt(context.Background(), "^GSPC", time.Now())
+	if !errors.Is(err, quote.ErrUnavailable) {
+		t.Errorf("err = %v, want quote.ErrUnavailable", err)
+	}
+}
+
+// histStub satisfies both quote.Provider and quote.HistoricalProvider.
+type histStub struct {
+	mu           sync.Mutex
+	liveQuote    quote.Quote
+	histQuoteFor map[string]quote.Quote
+}
+
+func (h *histStub) Get(_ context.Context, symbol string) (quote.Quote, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	q := h.liveQuote
+	if q.Symbol == "" {
+		q.Symbol = symbol
+	}
+	return q, nil
+}
+
+func (h *histStub) GetAt(_ context.Context, symbol string, asOf time.Time) (quote.Quote, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if q, ok := h.histQuoteFor[asOf.Format("2006-01-02")]; ok {
+		if q.Symbol == "" {
+			q.Symbol = symbol
+		}
+		return q, nil
+	}
+	return quote.Quote{}, quote.ErrUnavailable
+}
+
 func TestStaleQuoteWhenUpstreamFails(t *testing.T) {
 	stub := &stubProvider{}
 	stub.setOK(quote.Quote{Symbol: "^GSPC", Last: 100, PrevClose: 99})

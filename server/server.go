@@ -27,9 +27,14 @@ import (
 //  3. middleware.TimezoneDetector — resolves a *time.Location from the
 //     CF-Timezone header (Cloudflare) and stashes it on the gin context.
 //     Falls back to time.Local when the header is missing or unparseable.
-//  4. middleware.ClientDetector — classifies the request by User-Agent and
+//  4. middleware.DateOverrideDetector — parses an optional ?date=YYYY-MM-DD
+//     query parameter and stashes the resolved time on the gin context.
+//     Pinned AFTER TimezoneDetector so the date string is anchored to the
+//     caller's resolved location rather than time.Local. Lets time-aware
+//     handlers (/now, /stock) reproject onto a historical date.
+//  5. middleware.ClientDetector — classifies the request by User-Agent and
 //     stores the chosen render.Mode on the gin context.
-//  5. middleware.RegionDetector — reads the CF-IPCountry header and stashes
+//  6. middleware.RegionDetector — reads the CF-IPCountry header and stashes
 //     the visitor's 2-letter country code on the gin context. Lets handlers
 //     branch on country (e.g. service/stock picking a regional index) without
 //     re-parsing the header on every request.
@@ -42,6 +47,7 @@ func New() *gin.Engine {
 	r.Use(gin.Recovery())
 	r.Use(gin.Logger())
 	r.Use(middleware.TimezoneDetector())
+	r.Use(middleware.DateOverrideDetector())
 	r.Use(middleware.ClientDetector())
 	r.Use(middleware.RegionDetector())
 	r.GET("/healthz", healthzHandler)

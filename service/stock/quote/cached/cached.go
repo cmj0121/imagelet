@@ -120,3 +120,19 @@ func (p *Provider) Get(ctx context.Context, symbol string) (quote.Quote, error) 
 	p.mu.Unlock()
 	return q, nil
 }
+
+// GetAt delegates to the inner provider when it implements
+// quote.HistoricalProvider, so a cached-wrapped yahoo.Provider in
+// production still surfaces the historical-quote pipeline. Historical
+// lookups bypass the in-memory cache entirely — they're rare enough
+// that re-running upstream is cheaper than reasoning about a date-
+// keyed cache (which would also need TTL semantics that don't really
+// apply to immutable historical bars). Returns quote.ErrUnavailable
+// when the inner provider doesn't support historical fetches.
+func (p *Provider) GetAt(ctx context.Context, symbol string, asOf time.Time) (quote.Quote, error) {
+	hp, ok := p.inner.(quote.HistoricalProvider)
+	if !ok {
+		return quote.Quote{}, quote.ErrUnavailable
+	}
+	return hp.GetAt(ctx, symbol, asOf)
+}

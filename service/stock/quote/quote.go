@@ -107,6 +107,17 @@ type Provider interface {
 	Get(ctx context.Context, symbol string) (Quote, error)
 }
 
+// HistoricalProvider is an optional extension of Provider for fetching
+// quotes pinned to a historical date (?date= override path). GetAt
+// returns the latest bar at or before asOf — the closest completed
+// trading session, with IsClosed forced true since a past bar is by
+// definition closed. Optional because not every Provider can answer
+// historical queries; the /stock handler type-asserts and falls back
+// to ErrUnavailable when the wired provider doesn't implement it.
+type HistoricalProvider interface {
+	GetAt(ctx context.Context, symbol string, asOf time.Time) (Quote, error)
+}
+
 // ErrUnavailable signals "the provider answered but has no data for this
 // symbol" — distinct from transport errors. Cached providers may treat
 // ErrUnavailable as an extended-TTL failure to avoid hammering the

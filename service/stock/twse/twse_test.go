@@ -247,6 +247,140 @@ func TestParseTWSENumberStripsCommas(t *testing.T) {
 	}
 }
 
+// TestGetAtWalksBackFromAsOf pins that GetAt starts the lookback at the
+// provided asOf date rather than time.Now(). Use a Wednesday asOf so no
+// weekend skip interferes with the first probe.
+func TestGetAtWalksBackFromAsOf(t *testing.T) {
+	var seenDates []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Capture the date= query, route by path the way fixtureServer does.
+		if v := r.URL.Query().Get("d"); v != "" {
+			seenDates = append(seenDates, v)
+		}
+		var name string
+		switch {
+		case strings.Contains(r.URL.Path, "BFI82U"):
+			name = "bfi82u_open.json"
+		case strings.Contains(r.URL.Path, "MIMARGN"):
+			name = "mi_margn_open.json"
+		case strings.Contains(r.URL.Path, "MIINDEX"):
+			name = "mi_index_open.json"
+		default:
+			http.NotFound(w, r)
+			return
+		}
+		body, _ := os.ReadFile(filepath.Join("testdata", name))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	p := newProvider(srv)
+	loc, _ := time.LoadLocation("Asia/Taipei")
+	asOf := time.Date(2024, 1, 10, 12, 0, 0, 0, loc) // Wednesday — no weekend skip
+	_, err := p.GetAt(context.Background(), asOf)
+	if err != nil {
+		t.Fatalf("GetAt: %v", err)
+	}
+	if len(seenDates) == 0 {
+		t.Fatalf("upstream not hit")
+	}
+	if seenDates[0] != "20240110" {
+		t.Errorf("first probe date = %q, want 20240110", seenDates[0])
+	}
+}
+
+// TestGetAtFutureClampedToToday pins that a future-dated asOf does not
+// loop the upstream against impossible dates — clamped to today.
+func TestGetAtFutureClampedToToday(t *testing.T) {
+	var seenDates []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if v := r.URL.Query().Get("d"); v != "" {
+			seenDates = append(seenDates, v)
+		}
+		var name string
+		switch {
+		case strings.Contains(r.URL.Path, "BFI82U"):
+			name = "bfi82u_open.json"
+		case strings.Contains(r.URL.Path, "MIMARGN"):
+			name = "mi_margn_open.json"
+		case strings.Contains(r.URL.Path, "MIINDEX"):
+			name = "mi_index_open.json"
+		default:
+			http.NotFound(w, r)
+			return
+		}
+		body, _ := os.ReadFile(filepath.Join("testdata", name))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	p := newProvider(srv)
+	asOf := time.Now().Add(365 * 24 * time.Hour)
+	_, err := p.GetAt(context.Background(), asOf)
+	if err != nil {
+		t.Fatalf("GetAt: %v", err)
+	}
+	if len(seenDates) == 0 {
+		t.Fatalf("upstream not hit")
+	}
+	// First seen date must be today's (in TW), not 1 year hence.
+	twNow := time.Now().In(time.FixedZone("Asia/Taipei", 8*3600)).Format("20060102")
+	// Allow ±1 day to handle test running at midnight boundary.
+	if !strings.HasPrefix(seenDates[0], twNow[:6]) {
+		t.Errorf("first probe %q does not look clamped to today (~%s)", seenDates[0], twNow)
+	}
+}
+
+// TestCachedGetAtBypassesCache pins that historical lookups skip the
+// in-memory single-entry cache (which holds the live aggregate) and
+// delegate to the inner provider's HistoricalProvider.
+func TestCachedGetAtBypassesCache(t *testing.T) {
+	var calls int32
+	stub := histStub{
+		getFunc: func(_ context.Context) (twse.MarketData, error) {
+			return twse.MarketData{Net: 111}, nil
+		},
+		getAtFunc: func(_ context.Context, _ time.Time) (twse.MarketData, error) {
+			atomic.AddInt32(&calls, 1)
+			return twse.MarketData{Net: 222}, nil
+		},
+	}
+	c := twse.NewCachedWithTTL(stub, time.Hour, time.Hour)
+
+	// Prime cache with live Get → cached Net=111.
+	if _, err := c.Get(context.Background()); err != nil {
+		t.Fatalf("priming: %v", err)
+	}
+
+	// Historical lookup must NOT return the cached live value.
+	d, err := c.GetAt(context.Background(), time.Date(2012, 2, 2, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("GetAt: %v", err)
+	}
+	if d.Net != 222 {
+		t.Errorf("Net = %d, want 222 (historical should bypass live cache)", d.Net)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("inner GetAt calls = %d, want 1", got)
+	}
+}
+
+// TestCachedGetAtUnavailableWhenNotHistorical confirms a Cached wrapping
+// a non-HistoricalProvider returns ErrUnavailable for as-of lookups
+// rather than silently falling back to live data.
+func TestCachedGetAtUnavailableWhenNotHistorical(t *testing.T) {
+	stub := stubProvider{getFunc: func(_ context.Context) (twse.MarketData, error) {
+		return twse.MarketData{Net: 1}, nil
+	}}
+	c := twse.NewCachedWithTTL(stub, time.Hour, time.Hour)
+	_, err := c.GetAt(context.Background(), time.Now())
+	if !errors.Is(err, twse.ErrUnavailable) {
+		t.Errorf("err = %v, want ErrUnavailable", err)
+	}
+}
+
 // stubProvider is a hand-rolled twse.Provider stub.
 type stubProvider struct {
 	getFunc func(ctx context.Context) (twse.MarketData, error)
@@ -254,4 +388,19 @@ type stubProvider struct {
 
 func (s stubProvider) Get(ctx context.Context) (twse.MarketData, error) {
 	return s.getFunc(ctx)
+}
+
+// histStub satisfies both Provider and HistoricalProvider for testing
+// the Cached.GetAt delegation path.
+type histStub struct {
+	getFunc   func(ctx context.Context) (twse.MarketData, error)
+	getAtFunc func(ctx context.Context, asOf time.Time) (twse.MarketData, error)
+}
+
+func (s histStub) Get(ctx context.Context) (twse.MarketData, error) {
+	return s.getFunc(ctx)
+}
+
+func (s histStub) GetAt(ctx context.Context, asOf time.Time) (twse.MarketData, error) {
+	return s.getAtFunc(ctx, asOf)
 }
