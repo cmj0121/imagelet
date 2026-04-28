@@ -425,11 +425,12 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 	if q.HasOHLC() {
 		top, bar, bottom := render.OHLCBar(q.Open, q.DayHigh, q.DayLow, q.Last, q.PrevClose, ohlcWidth, formatPrice)
 		if bar != "" {
-			// Trailing ZWSP row gives the OHLC block breathing room
-			// before whatever comes next (TW enrichment block, or the
-			// bottom of the figure for non-TW visitors). A literal
-			// empty row would be trimmed by pylon; ZWSP holds the line.
-			bs.ohlc = []string{top, bar, bottom, blankRow}
+			// Leading + trailing ZWSP rows give the OHLC block breathing
+			// room from the price/caption banner above and from whatever
+			// follows below (TW enrichment, or bottom of the figure for
+			// non-TW visitors). A literal empty row would be trimmed by
+			// pylon; ZWSP holds the line.
+			bs.ohlc = []string{blankRow, top, bar, bottom, blankRow}
 		}
 	}
 
