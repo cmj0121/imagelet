@@ -126,6 +126,8 @@ func freshQuote() quote.Quote {
 // TW-enrichment tests.
 func newRouter(p quote.Provider) *gin.Engine {
 	r := gin.New()
+	r.Use(middleware.TimezoneDetector())
+	r.Use(middleware.DateOverrideDetector())
 	r.Use(middleware.RegionDetector())
 	r.Use(middleware.ClientDetector())
 	stock.Register(r, p, stock.NoopTWSE())
@@ -136,6 +138,8 @@ func newRouter(p quote.Provider) *gin.Engine {
 // provider. Used by TW-path tests.
 func newRouterWithTWSE(p quote.Provider, tw twse.Provider) *gin.Engine {
 	r := gin.New()
+	r.Use(middleware.TimezoneDetector())
+	r.Use(middleware.DateOverrideDetector())
 	r.Use(middleware.RegionDetector())
 	r.Use(middleware.ClientDetector())
 	stock.Register(r, p, tw)
@@ -217,6 +221,184 @@ func TestServeStaleAfterUpstreamFails(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "STALE ·") {
 		t.Errorf("body missing STALE prefix\n--- body ---\n%s", rec.Body.String())
+	}
+}
+
+// histProvider satisfies both quote.Provider and quote.HistoricalProvider
+// so the /stock handler picks the GetAt path under ?date= override.
+type histProvider struct {
+	live quote.Quote
+	hist quote.Quote
+	err  error
+
+	mu        sync.Mutex
+	asOfSeen  time.Time
+	getAtCall int
+}
+
+func (p *histProvider) Get(_ context.Context, _ string) (quote.Quote, error) {
+	return p.live, p.err
+}
+
+func (p *histProvider) GetAt(_ context.Context, _ string, asOf time.Time) (quote.Quote, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.asOfSeen = asOf
+	p.getAtCall++
+	return p.hist, p.err
+}
+
+// histTWSE satisfies twse.Provider + twse.HistoricalProvider +
+// twse.LiveBreadthProvider so the handler can route across all three
+// branches deterministically.
+type histTWSE struct {
+	mu        sync.Mutex
+	live      twse.LiveBreadth
+	dataLive  twse.MarketData
+	dataHist  twse.MarketData
+	getAtCall int
+	liveCall  int
+	getCall   int
+}
+
+func (p *histTWSE) Get(_ context.Context) (twse.MarketData, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.getCall++
+	return p.dataLive, nil
+}
+
+func (p *histTWSE) GetAt(_ context.Context, _ time.Time) (twse.MarketData, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.getAtCall++
+	return p.dataHist, nil
+}
+
+func (p *histTWSE) FetchLiveBreadth(_ context.Context) (twse.LiveBreadth, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.liveCall++
+	return p.live, nil
+}
+
+// TestServeDateOverrideUsesGetAt pins the contract that ?date=YYYY-MM-DD
+// routes the handler through the HistoricalProvider path with the parsed
+// date as asOf — and that the historical Quote (not the live one) lands
+// in the rendered output.
+func TestServeDateOverrideUsesGetAt(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	live := freshQuote()
+	live.Last = 9999.99
+	hist := freshQuote()
+	hist.Last = 1300.42
+	hist.AsOf = time.Date(2012, 2, 2, 16, 0, 0, 0, time.UTC)
+	hist.IsClosed = true
+
+	p := &histProvider{live: live, hist: hist}
+	r := newRouter(p)
+
+	req := httptest.NewRequest(http.MethodGet, "/stock?date=2012-02-02", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if p.getAtCall != 1 {
+		t.Errorf("GetAt called %d times, want 1", p.getAtCall)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "1,300.42") {
+		t.Errorf("body missing historical Last 1,300.42\n--- body ---\n%s", body)
+	}
+	if strings.Contains(body, "9,999.99") {
+		t.Errorf("body contains live Last 9,999.99 — historical override not honored\n--- body ---\n%s", body)
+	}
+	if !strings.Contains(body, "2012-02-02") {
+		t.Errorf("body missing historical AsOf 2012-02-02\n--- body ---\n%s", body)
+	}
+	// asOf passed to GetAt must reflect the parsed date.
+	if y := p.asOfSeen.Year(); y != 2012 {
+		t.Errorf("asOf seen = %v, want year=2012", p.asOfSeen)
+	}
+}
+
+// TestServeDateOverrideTWPath pins that on the TW path with override:
+// (a) twse.GetAt is hit, (b) twse.Get and FetchLiveBreadth are NOT,
+// (c) the rendered body shows historical TW enrichment rows.
+func TestServeDateOverrideTWPath(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	live := freshQuote()
+	live.IsClosed = false // open market by default
+	hist := freshQuote()
+	hist.IsClosed = true
+	hist.AsOf = time.Date(2024, 1, 10, 16, 0, 0, 0, time.UTC)
+	hist.Symbol = "^TWII"
+	hist.Currency = "TWD"
+
+	p := &histProvider{live: live, hist: hist}
+	tw := &histTWSE{
+		dataLive: freshTW(),
+		dataHist: freshTW(),
+		live: twse.LiveBreadth{
+			TSEAdvance: 1, TSEDecline: 2, TSEUnchanged: 3,
+			OTCAdvance: 4, OTCDecline: 5, OTCUnchanged: 6,
+		},
+	}
+	r := newRouterWithTWSE(p, tw)
+
+	req := httptest.NewRequest(http.MethodGet, "/stock?date=2024-01-10", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if tw.getAtCall != 1 {
+		t.Errorf("twse.GetAt calls = %d, want 1", tw.getAtCall)
+	}
+	if tw.getCall != 0 {
+		t.Errorf("twse.Get calls = %d, want 0 (override should bypass live Get)", tw.getCall)
+	}
+	if tw.liveCall != 0 {
+		t.Errorf("twse.FetchLiveBreadth calls = %d, want 0 (live breadth must be skipped on historical lookup)", tw.liveCall)
+	}
+	body := rec.Body.String()
+	// Historical render uses the closed-market enrichment block, so
+	// 漲跌家數 (closed breadth label) appears, and 上市/上櫃 (live labels)
+	// do not.
+	if !strings.Contains(body, "漲跌家數") {
+		t.Errorf("body missing closed-market 漲跌家數 row\n--- body ---\n%s", body)
+	}
+	if strings.Contains(body, "上市") || strings.Contains(body, "上櫃") {
+		t.Errorf("body has live-breadth labels on historical lookup\n--- body ---\n%s", body)
+	}
+}
+
+// TestServeDateOverrideInvalidFallsThrough pins that an unparseable
+// ?date= silently falls through to the live path — no 4xx.
+func TestServeDateOverrideInvalidFallsThrough(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	live := freshQuote()
+	hist := freshQuote()
+	hist.Last = 11.22
+	p := &histProvider{live: live, hist: hist}
+	r := newRouter(p)
+
+	req := httptest.NewRequest(http.MethodGet, "/stock?date=garbage", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if p.getAtCall != 0 {
+		t.Errorf("GetAt called %d times, want 0 on invalid date", p.getAtCall)
 	}
 }
 

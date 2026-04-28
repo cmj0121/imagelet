@@ -48,6 +48,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
@@ -119,6 +120,22 @@ type handler struct {
 	twse     twse.Provider // optional; nil disables TW enrichment block
 }
 
+// fetchQuote picks the right provider entry point for the request: live
+// Get when no ?date= override is set, GetAt (via HistoricalProvider)
+// when one is. Falls back to ErrUnavailable if the wired provider does
+// not implement HistoricalProvider — the caller then surfaces a clean
+// 503 rather than silently returning today's quote on a historical URL.
+func (h *handler) fetchQuote(ctx context.Context, symbol string, asOf time.Time, override bool) (quote.Quote, error) {
+	if !override {
+		return h.provider.Get(ctx, symbol)
+	}
+	hp, ok := h.provider.(quote.HistoricalProvider)
+	if !ok {
+		return quote.Quote{}, quote.ErrUnavailable
+	}
+	return hp.GetAt(ctx, symbol, asOf)
+}
+
 // serve resolves the country, looks up the symbol, fetches a Quote (and
 // TW market data when applicable), and renders the result. See package
 // doc for the negotiation rules.
@@ -126,7 +143,9 @@ func (h *handler) serve(c *gin.Context) {
 	country := resolveCountry(c)
 	symbol := symbolFor(country)
 
-	q, err := h.provider.Get(c.Request.Context(), symbol)
+	asOf, dateOverride := middleware.GetDate(c)
+
+	q, err := h.fetchQuote(c.Request.Context(), symbol, asOf, dateOverride)
 	stale := err != nil && q.Symbol != ""
 	fresh := err == nil
 
@@ -144,33 +163,47 @@ func (h *handler) serve(c *gin.Context) {
 	// the rendered response. We log and proceed with empty MarketData,
 	// which causes the TW block to be omitted gracefully.
 	//
-	// Two paths into the same MarketData carrier:
-	//  - Closed market: Provider.Get fetches the daily afterTrading
-	//    triple (BFI82U positioning, MI_MARGN credit, MI_INDEX breadth)
-	//    and the renderer surfaces all three sections.
-	//  - Open market: positioning + credit are stale (TWSE freezes them
-	//    until ~16:00) so we skip Provider.Get; instead, if the wired
-	//    provider also implements twse.LiveBreadthProvider, we fetch
-	//    the live intra-day breadth snapshot (computed by polling MIS
-	//    across the listed-equity universe) and stamp just the breadth
-	//    fields onto MarketData. The renderer then shows the breadth
-	//    row alone, gated as before.
+	// Three paths into the same MarketData carrier:
+	//  - Date override: hist GetAt fetches the daily afterTrading triple
+	//    pinned to the requested historical date. Live breadth is skipped
+	//    (intra-day metric, meaningless for a past date).
+	//  - Closed market (no override): Provider.Get fetches the daily
+	//    afterTrading triple (BFI82U positioning, MI_MARGN credit,
+	//    MI_INDEX breadth) and the renderer surfaces all three sections.
+	//  - Open market (no override): positioning + credit are stale (TWSE
+	//    freezes them until ~16:00) so we skip Provider.Get; instead, if
+	//    the wired provider also implements twse.LiveBreadthProvider, we
+	//    fetch the live intra-day breadth snapshot (computed by polling
+	//    MIS across the listed-equity universe) and stamp just the
+	//    breadth fields onto MarketData. The renderer then shows the
+	//    breadth row alone, gated as before.
 	var tw twse.MarketData
 	var live twse.LiveBreadth
 	if country == "TW" && h.twse != nil {
 		ctx := c.Request.Context()
-		if q.IsClosed {
+		switch {
+		case dateOverride:
+			if hp, ok := h.twse.(twse.HistoricalProvider); ok {
+				tw, err = hp.GetAt(ctx, asOf)
+				if err != nil {
+					log.Warn().Err(err).Time("asOf", asOf).Msg("twse historical fetch failed; omitting TW enrichment block")
+					tw = twse.MarketData{}
+				}
+			}
+		case q.IsClosed:
 			tw, err = h.twse.Get(ctx)
 			if err != nil {
 				log.Warn().Err(err).Msg("twse upstream failed; omitting TW enrichment block")
 				tw = twse.MarketData{}
 			}
-		} else if lbp, ok := h.twse.(twse.LiveBreadthProvider); ok {
-			b, lerr := lbp.FetchLiveBreadth(ctx)
-			if lerr != nil {
-				log.Warn().Err(lerr).Msg("twse live breadth failed; omitting breadth row")
-			} else {
-				live = b
+		default:
+			if lbp, ok := h.twse.(twse.LiveBreadthProvider); ok {
+				b, lerr := lbp.FetchLiveBreadth(ctx)
+				if lerr != nil {
+					log.Warn().Err(lerr).Msg("twse live breadth failed; omitting breadth row")
+				} else {
+					live = b
+				}
 			}
 		}
 	}
