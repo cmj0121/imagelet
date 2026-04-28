@@ -29,6 +29,20 @@ func (f fakeTWSE) Get(_ context.Context) (twse.MarketData, error) {
 	return f.d, f.err
 }
 
+// fakeLiveTWSE extends fakeTWSE with a canned LiveBreadth so the
+// handler's open-market path can be exercised. The live counts are
+// independent of fakeTWSE.d so tests can assert that the breadth row
+// reflects the live snapshot, not the daily MI_INDEX numbers.
+type fakeLiveTWSE struct {
+	fakeTWSE
+	live    twse.LiveBreadth
+	liveErr error
+}
+
+func (f fakeLiveTWSE) FetchLiveBreadth(_ context.Context) (twse.LiveBreadth, error) {
+	return f.live, f.liveErr
+}
+
 // freshTW returns a deterministic TWSE MarketData with non-zero
 // institutional + margin so HasInstitutional and HasMargin are true.
 func freshTW() twse.MarketData {
@@ -624,6 +638,53 @@ func TestServeTWPathOpenMarketHidesEndOfDay(t *testing.T) {
 	for _, label := range banned {
 		if strings.Contains(body, label) {
 			t.Errorf("open-market body should not contain end-of-day label %q\n--- body ---\n%s", label, body)
+		}
+	}
+}
+
+// TestServeTWPathOpenMarketRendersLiveBreadth pins the LiveBreadthProvider
+// path: when the wired TWSE provider implements LiveBreadthProvider and
+// the market is open, the breadth row IS rendered with live counts —
+// not yesterday's MI_INDEX numbers. Positioning + credit stay hidden
+// (still end-of-day). The OHLC bar above also stays.
+func TestServeTWPathOpenMarketRendersLiveBreadth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "^TWII"
+	q.Currency = "TWD"
+	q.IsClosed = false
+	tw := fakeLiveTWSE{
+		fakeTWSE: fakeTWSE{d: freshTW()}, // d is irrelevant during open
+		live: twse.LiveBreadth{
+			AdvanceCount:   444,
+			DeclineCount:   555,
+			UnchangedCount: 22,
+			AsOf:           time.Date(2026, 4, 28, 10, 30, 0, 0, time.UTC),
+		},
+	}
+	r := newRouterWithTWSE(fakeProvider{q: q}, tw)
+
+	req := httptest.NewRequest(http.MethodGet, "/stock", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	// Breadth row IS present, with the live counts (not freshTW's 312/691/63).
+	for _, want := range []string{"漲跌家數", "漲 444", "跌 555", "平 22"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("open-market body missing live-breadth token %q\n--- body ---\n%s", want, body)
+		}
+	}
+	// Positioning + credit still hidden.
+	for _, banned := range []string{"外資籌碼", "信用餘額"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("open-market body should not contain end-of-day label %q\n--- body ---\n%s", banned, body)
 		}
 	}
 }

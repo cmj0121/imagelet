@@ -143,12 +143,37 @@ func (h *handler) serve(c *gin.Context) {
 	// TW-specific enrichment is best-effort: failure here MUST NOT block
 	// the rendered response. We log and proceed with empty MarketData,
 	// which causes the TW block to be omitted gracefully.
+	//
+	// Two paths into the same MarketData carrier:
+	//  - Closed market: Provider.Get fetches the daily afterTrading
+	//    triple (BFI82U positioning, MI_MARGN credit, MI_INDEX breadth)
+	//    and the renderer surfaces all three sections.
+	//  - Open market: positioning + credit are stale (TWSE freezes them
+	//    until ~16:00) so we skip Provider.Get; instead, if the wired
+	//    provider also implements twse.LiveBreadthProvider, we fetch
+	//    the live intra-day breadth snapshot (computed by polling MIS
+	//    across the listed-equity universe) and stamp just the breadth
+	//    fields onto MarketData. The renderer then shows the breadth
+	//    row alone, gated as before.
 	var tw twse.MarketData
 	if country == "TW" && h.twse != nil {
-		tw, err = h.twse.Get(c.Request.Context())
-		if err != nil {
-			log.Warn().Err(err).Msg("twse upstream failed; omitting TW enrichment block")
-			tw = twse.MarketData{}
+		ctx := c.Request.Context()
+		if q.IsClosed {
+			tw, err = h.twse.Get(ctx)
+			if err != nil {
+				log.Warn().Err(err).Msg("twse upstream failed; omitting TW enrichment block")
+				tw = twse.MarketData{}
+			}
+		} else if lbp, ok := h.twse.(twse.LiveBreadthProvider); ok {
+			live, lerr := lbp.FetchLiveBreadth(ctx)
+			if lerr != nil {
+				log.Warn().Err(lerr).Msg("twse live breadth failed; omitting breadth row")
+			} else {
+				tw.AdvanceCount = live.AdvanceCount
+				tw.DeclineCount = live.DeclineCount
+				tw.UnchangedCount = live.UnchangedCount
+				tw.AsOf = live.AsOf
+			}
 		}
 	}
 
@@ -284,27 +309,28 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, stale, useEng
 		}
 	}
 
-	// Market-state gating: every TW enrichment row sources from a TWSE
-	// `afterTrading/` endpoint that publishes once-per-day after close —
-	// MI_INDEX (breadth) included, despite the row reading like an
-	// intra-day metric. During open hours the provider's lookback walks
-	// back to yesterday's published file, so the row would carry the
-	// previous session's counts labelled the same as today's price.
-	// Drop all three TW sections while q.IsClosed is false; the open-
-	// market render relies on the OHLC bar above for real-time signal.
-	// (Future: switch breadth to a true intra-day endpoint — see e.g.
-	// MIS getStatis at mis.twse.com.tw — and reinstate during open.)
+	// Market-state gating: 籌碼面 (positioning) and 信用餘額 (credit)
+	// source from TWSE `afterTrading/` endpoints that publish once-per-
+	// day after close — during open hours the provider's lookback walks
+	// back to yesterday's file, so those rows would carry the previous
+	// session's numbers labelled the same as today's price. Gate them
+	// on q.IsClosed so they only render when the data is actually
+	// today's.
+	//
+	// Breadth is source-agnostic: the handler populates MarketData's
+	// breadth fields from MI_INDEX afterTrading when closed, or from
+	// the live breadth pipeline (per-stock MIS aggregation) when open.
+	// HasBreadth() captures both — if tw carries non-zero counts, the
+	// row renders.
 	var groups [][]string
-	if q.IsClosed {
-		if tw.HasInstitutional() {
-			groups = append(groups, positioningRows(tw, useEnglish))
-		}
-		if tw.HasBreadth() {
-			groups = append(groups, technicalRows(tw, useEnglish))
-		}
-		if tw.HasMargin() {
-			groups = append(groups, creditRows(tw, useEnglish))
-		}
+	if q.IsClosed && tw.HasInstitutional() {
+		groups = append(groups, positioningRows(tw, useEnglish))
+	}
+	if tw.HasBreadth() {
+		groups = append(groups, technicalRows(tw, useEnglish))
+	}
+	if q.IsClosed && tw.HasMargin() {
+		groups = append(groups, creditRows(tw, useEnglish))
 	}
 	for i, g := range groups {
 		if i > 0 {
