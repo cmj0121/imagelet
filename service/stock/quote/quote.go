@@ -21,8 +21,18 @@ import (
 // supply them (typically thinly-traded symbols). The renderer treats
 // HasDayRange() / Has52WeekRange() as the signal to omit the corresponding
 // progress-bar row gracefully — no error, just no bar.
+//
+// Name / LongName carry Yahoo's shortName / longName. ShortName is
+// localized (e.g. CN for TW listings) and renders nicely on CJK-capable
+// surfaces; LongName is typically Latin (e.g. "Taiwan Semiconductor
+// Manufacturing Company Limited") and is the safe fallback for the PNG
+// render path which uses an EN-only basicfont. Both are empty when
+// upstream did not supply them; the renderer falls back to the symbol
+// alone in that case.
 type Quote struct {
 	Symbol     string    // canonical symbol, e.g. "^GSPC"
+	Name       string    // shortName from upstream (often CN for TW listings)
+	LongName   string    // longName from upstream (Latin form for most)
 	Last       float64   // last trade / current price (also OHLC's Close)
 	Open       float64   // session open; 0 when missing
 	PrevClose  float64   // previous trading day's close (for change %)
@@ -33,6 +43,7 @@ type Quote struct {
 	DayLow     float64   // intraday session low; 0 when missing
 	Week52High float64   // trailing 52-week high; 0 when missing
 	Week52Low  float64   // trailing 52-week low; 0 when missing
+	Volume     int64     // session traded shares; 0 when missing
 }
 
 // HasDayRange reports whether DayHigh and DayLow are both populated and

@@ -71,18 +71,6 @@ var symbolByCountry = map[string]string{
 	"DE": "^GDAXI",
 }
 
-// indexNameBySymbol maps a Yahoo symbol to a human-readable
-// `Index Name · Region` header line shown above the data caption in V1
-// layout.
-var indexNameBySymbol = map[string]string{
-	"^TWII":  "TAIEX · Taiwan",
-	"^GSPC":  "S&P 500 · United States",
-	"^N225":  "Nikkei 225 · Japan",
-	"^HSI":   "Hang Seng · Hong Kong",
-	"^FTSE":  "FTSE 100 · United Kingdom",
-	"^GDAXI": "DAX · Germany",
-}
-
 // defaultSymbol is returned by symbolFor when the country isn't in the
 // map. S&P 500 is the de-facto global benchmark and matches the
 // middleware's "US" default country.
@@ -96,22 +84,49 @@ const defaultSymbol = "^GSPC"
 // box parens and padding).
 const ohlcWidth = 65
 
-// indexNameFor returns the human-readable header line for symbol, or
-// empty string if symbol isn't in indexNameBySymbol. Callers MUST handle
-// the empty case (omit the header row) so unknown symbols still render.
-func indexNameFor(symbol string) string {
-	return indexNameBySymbol[symbol]
+// titleFor builds the title row shown above the price box —
+// `<symbol> · <name>` when Yahoo supplies a name, bare `<symbol>`
+// otherwise. ShortName is preferred on CJK-capable surfaces (often
+// localized e.g. "台積電"); LongName is used on the PNG path where
+// pylon's basicfont has zero CJK coverage and would render Chinese as
+// tofu — Yahoo's longName is conventionally Latin (e.g. "Taiwan
+// Semiconductor Manufacturing Company Limited"). Falls back to the
+// other field when the preferred one is empty.
+func titleFor(symbol string, q quote.Quote, useEnglish bool) string {
+	name := q.Name
+	if useEnglish {
+		name = q.LongName
+		if name == "" {
+			name = q.Name
+		}
+	} else if name == "" {
+		name = q.LongName
+	}
+	if name == "" {
+		return symbol
+	}
+	return symbol + " · " + name
 }
 
-// Register mounts GET /stock on r. r is typed as gin.IRouter so the
-// service can be installed on either a *gin.Engine or a route group.
-// p is the quote provider -- typically a cached.Provider wrapping
-// yahoo.Provider in production. tw is the TW-specific market-data
-// provider; pass nil to disable the TW enrichment block (the renderer
-// gracefully omits it).
+// Register mounts GET /stock and GET /stock/:symbol on r. r is typed
+// as gin.IRouter so the service can be installed on either a
+// *gin.Engine or a route group. p is the quote provider -- typically
+// a cached.Provider wrapping yahoo.Provider in production. tw is the
+// TW-specific market-data provider; pass nil to disable the TW
+// enrichment block (the renderer gracefully omits it).
+//
+// Route shape:
+//
+//   - GET /stock              → region-routed (CF-IPCountry) → symbol map.
+//   - GET /stock/:symbol      → caller-specified Yahoo symbol. The
+//     `^` index prefix must be percent-encoded as %5E by clients that
+//     don't auto-encode it (curl encodes; some shells don't). TW
+//     enrichment activates by symbol suffix (.TW / .TWO) or the
+//     ^TWII index, independent of the visitor's country.
 func Register(r gin.IRouter, p quote.Provider, tw twse.Provider) {
 	h := &handler{provider: p, twse: tw}
 	r.GET("/stock", h.serve)
+	r.GET("/stock/:symbol", h.serveSymbol)
 }
 
 // handler holds the dependencies for the /stock endpoint.
@@ -136,13 +151,35 @@ func (h *handler) fetchQuote(ctx context.Context, symbol string, asOf time.Time,
 	return hp.GetAt(ctx, symbol, asOf)
 }
 
-// serve resolves the country, looks up the symbol, fetches a Quote (and
-// TW market data when applicable), and renders the result. See package
-// doc for the negotiation rules.
+// serve handles GET /stock — the region-routed entry point. It maps
+// the caller's country (from CF-IPCountry, or ?region= override) to
+// a symbol via the symbolByCountry table and dispatches to renderSymbol.
 func (h *handler) serve(c *gin.Context) {
 	country := resolveCountry(c)
 	symbol := symbolFor(country)
+	h.renderSymbol(c, symbol, isTWSymbol(symbol))
+}
 
+// serveSymbol handles GET /stock/:symbol — the caller-specified entry
+// point. The path segment is normalized (uppercased + trimmed) and
+// validated against an allowlist before reaching upstream. TW
+// enrichment activates by symbol suffix (.TW / .TWO) or the ^TWII
+// index, independent of the visitor's region.
+func (h *handler) serveSymbol(c *gin.Context) {
+	symbol := strings.ToUpper(strings.TrimSpace(c.Param("symbol")))
+	if !validSymbol(symbol) {
+		c.Header("Cache-Control", "no-store")
+		c.String(http.StatusNotFound, "invalid symbol\n")
+		return
+	}
+	h.renderSymbol(c, symbol, isTWSymbol(symbol))
+}
+
+// renderSymbol fetches a Quote (and TW market data when enrichTW is
+// true), then content-negotiates and writes the response. Shared body
+// for both /stock and /stock/:symbol — the only difference between the
+// two routes is how the symbol and the enrichTW gate are derived.
+func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	asOf, dateOverride := middleware.GetDate(c)
 
 	q, err := h.fetchQuote(c.Request.Context(), symbol, asOf, dateOverride)
@@ -178,8 +215,9 @@ func (h *handler) serve(c *gin.Context) {
 	//    breadth fields onto MarketData. The renderer then shows the
 	//    breadth row alone, gated as before.
 	var tw twse.MarketData
+	var perStock twse.StockData
 	var live twse.LiveBreadth
-	if country == "TW" && h.twse != nil {
+	if enrichTW && h.twse != nil {
 		ctx := c.Request.Context()
 		switch {
 		case dateOverride:
@@ -206,6 +244,28 @@ func (h *handler) serve(c *gin.Context) {
 				}
 			}
 		}
+
+		// Per-stock T86 lookup overlays the market-wide BFI82U positioning
+		// rows when the symbol carries a TWSE numeric stock id (e.g.
+		// 2330.TW → "2330"). T86 only covers TWSE 上市; .TWO (TPEx 上櫃)
+		// returns no row and falls back to market-wide positioning. Open
+		// market: T86 is afterTrading, so the per-stock fetch is gated on
+		// q.IsClosed or dateOverride to avoid showing stale positioning
+		// labelled as today's price.
+		if stockID := twStockID(symbol); stockID != "" && (q.IsClosed || dateOverride) {
+			if psp, ok := h.twse.(twse.PerStockProvider); ok {
+				asOfQuery := asOf
+				if !dateOverride {
+					asOfQuery = time.Now()
+				}
+				ps, perr := psp.GetForStock(ctx, stockID, asOfQuery)
+				if perr != nil {
+					log.Warn().Err(perr).Str("stock", stockID).Msg("twse per-stock fetch failed; falling back to market-wide positioning")
+				} else {
+					perStock = ps
+				}
+			}
+		}
 	}
 
 	headline := strconv.FormatFloat(q.Last, 'f', 2, 64)
@@ -217,7 +277,7 @@ func (h *handler) serve(c *gin.Context) {
 	// labels via the ASCII path; honors both Accept: text/pylon and
 	// ?format=pylon for header/query parity.
 	if middleware.WantsPylonSource(c) {
-		bs := buildBlocks(symbol, q, tw, live, stale, false)
+		bs := buildBlocks(symbol, q, tw, perStock, live, stale, false)
 		c.Data(http.StatusOK, "text/pylon",
 			[]byte(render.BannerSourceBoxes(headline, bs.captions, bs.boxes())))
 		return
@@ -231,7 +291,7 @@ func (h *handler) serve(c *gin.Context) {
 	// PNG is the only EN holdout — pylon's PNG uses basicfont.Face7x13
 	// which has zero CJK coverage; CN there would render as tofu.
 	useEnglish := mode == render.ModePNG
-	bs := buildBlocks(symbol, q, tw, live, stale, useEnglish)
+	bs := buildBlocks(symbol, q, tw, perStock, live, stale, useEnglish)
 
 	renderAt := func(m render.Mode) ([]byte, error) {
 		return render.BannerBoxes(headline, bs.captions, bs.boxes(), m)
@@ -300,16 +360,17 @@ const blankRow = "​"
 // English labels for the TW block on the PNG path only — pylon's PNG
 // font (basicfont.Face7x13) has zero CJK coverage so Chinese would
 // render as tofu. Every other surface (ASCII, text/pylon, SVG, HTML)
-// uses the Chinese label set.
-func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, live twse.LiveBreadth, stale, useEnglish bool) stockBlocks {
-	bs := stockBlocks{captions: make([]string, 0, 2)}
+// uses the Chinese label set. perStock takes precedence over tw for
+// the 三大法人 group: when the symbol carries a TWSE stock id and
+// T86 returned a row, we render PER-STOCK flow with shares; otherwise
+// fall back to the market-wide BFI82U numbers in NTD.
+func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse.StockData, live twse.LiveBreadth, stale, useEnglish bool) stockBlocks {
+	bs := stockBlocks{captions: make([]string, 0, 3)}
 
-	// Index name comes from a static map but contains "S&P 500" — `&P`
-	// would otherwise parse as a pylon Ref node and shred the line, so
-	// the strip is load-bearing here.
-	if name := indexNameFor(symbol); name != "" {
-		bs.captions = append(bs.captions, render.StripPylonSyntax(name))
-	}
+	// Title: `<symbol> · <name>`. The symbol/name pair contains "S&P 500"
+	// in some cases — `&P` would otherwise parse as a pylon Ref node and
+	// shred the line, so the strip is load-bearing here.
+	bs.captions = append(bs.captions, render.StripPylonSyntax(titleFor(symbol, q, useEnglish)))
 
 	prefix := ""
 	switch {
@@ -322,17 +383,28 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, live twse.Liv
 	if q.ChangePercent() < 0 {
 		arrow = "▼"
 	}
+
+	// Primary caption: prefix + change% + price + currency + date.
 	// Currency comes from upstream Yahoo and could in theory carry junk;
 	// keep the strip on the symbol caption.
 	bs.captions = append(bs.captions, render.StripPylonSyntax(fmt.Sprintf(
-		"%s%s  %s %+.2f%%  %s %s  %s",
-		prefix, symbol, arrow, q.ChangePercent(),
+		"%s%s %+.2f%%  %s %s  %s",
+		prefix, arrow, q.ChangePercent(),
 		formatPrice(q.Last), q.Currency,
 		q.AsOf.Format("2006-01-02"),
 	)))
 
+	// Volume caption (optional): `Vol 50.3M · 12.6B USD` when the
+	// upstream supplied a volume. Dollar-volume is an approximation —
+	// shares × last-price — since Yahoo's chart endpoint doesn't carry
+	// the true session-VWAP. Close enough at the glance-resolution this
+	// surface targets.
+	if q.Volume > 0 {
+		bs.captions = append(bs.captions, render.StripPylonSyntax(formatVolumeRow(q)))
+	}
+
 	if q.HasOHLC() {
-		top, bar, bottom := render.OHLCBar(q.Open, q.DayHigh, q.DayLow, q.Last, ohlcWidth, formatPrice)
+		top, bar, bottom := render.OHLCBar(q.Open, q.DayHigh, q.DayLow, q.Last, q.PrevClose, ohlcWidth, formatPrice)
 		if bar != "" {
 			// Trailing ZWSP row gives the OHLC block breathing room
 			// before whatever comes next (TW enrichment block, or the
@@ -356,7 +428,10 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, live twse.Liv
 	// 上櫃) computed by polling MIS across both universes, and we render
 	// one row per exchange.
 	var groups [][]string
-	if q.IsClosed && tw.HasInstitutional() {
+	switch {
+	case q.IsClosed && perStock.HasFlow():
+		groups = append(groups, perStockPositioningRows(perStock, q, useEnglish))
+	case q.IsClosed && tw.HasInstitutional():
 		groups = append(groups, positioningRows(tw, useEnglish))
 	}
 	if rows := breadthRows(tw, live, q.IsClosed, useEnglish); len(rows) > 0 {
@@ -488,6 +563,64 @@ func positioningRows(tw twse.MarketData, useEnglish bool) []string {
 	return out
 }
 
+// perStockPositioningRows formats the 三大法人 section for a single
+// stock: 外資籌碼 / 投信籌碼 / 自營籌碼 / 合計籌碼, each with a
+// center-split SignedBar on a shared scale. The upstream T86 carries
+// SHARES (not NTD), so amounts are converted to NTD via shares ×
+// q.Last for visual consistency with the market-wide block. Same
+// row shape as positioningRows so a TW symbol seamlessly switches
+// between per-stock and market-wide presentations.
+func perStockPositioningRows(d twse.StockData, q quote.Quote, useEnglish bool) []string {
+	const halfWidth = 10
+	maxF := float64(absMaxInt64(d.ForeignNet, d.TrustNet, d.DealerNet, d.Net))
+	price := q.Last
+
+	type entry struct {
+		labelEN, labelCN string
+		shares           int64
+	}
+	rows := []entry{
+		{"foreign", "外資籌碼", d.ForeignNet},
+		{"trust  ", "投信籌碼", d.TrustNet},
+		{"dealer ", "自營籌碼", d.DealerNet},
+		{"total  ", "合計籌碼", d.Net},
+	}
+
+	out := make([]string, 0, len(rows))
+	for i, r := range rows {
+		bar := render.SignedBar(float64(r.shares), maxF, halfWidth)
+		amount := formatNTDFromShares(r.shares, price)
+		var line string
+		if useEnglish {
+			line = fmt.Sprintf("%s  %s  %s", r.labelEN, bar, amount)
+		} else {
+			line = fmt.Sprintf("%s  %s  %s", r.labelCN, bar, amount)
+		}
+		if i == len(rows)-1 {
+			arrowChar := "▲"
+			if r.shares < 0 {
+				arrowChar = "▼"
+			}
+			line += "  " + arrowChar
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+// formatNTDFromShares converts a share count + per-share price into a
+// signed `±XX.XB` NTD string. Shares can be negative (net sell), so
+// the sign is preserved through the multiplication. When price is 0
+// (rare — would require q.Last unavailable), falls back to the share
+// count alone with a "shares" suffix to keep the row informative.
+func formatNTDFromShares(shares int64, price float64) string {
+	if price <= 0 {
+		return fmt.Sprintf("%+d shares", shares)
+	}
+	ntd := float64(shares) * price
+	return fmt.Sprintf("%+.1fB", ntd/1e9)
+}
+
 // absMaxInt64 returns the largest absolute value among the inputs.
 // Returns 0 when all inputs are 0 so callers can divide-guard upstream.
 func absMaxInt64(vs ...int64) int64 {
@@ -517,6 +650,19 @@ func creditRows(tw twse.MarketData, useEnglish bool) []string {
 	}
 	return []string{fmt.Sprintf("信用餘額  融資 %s   融券 %s",
 		formatTWDInYi(tw.MarginLongTWD), formatLotsInWan(tw.MarginShortLots))}
+}
+
+// formatVolumeRow returns the volume caption row: `Vol <shares> ·
+// <dollar-volume> <currency>`. Both halves are compacted via
+// formatLargeNumber so a typical 1M-1B shares input reads at a glance
+// without overflowing the figure width.
+func formatVolumeRow(q quote.Quote) string {
+	shares := formatLargeNumber(q.Volume)
+	dollar := formatLargeNumber(int64(q.Last * float64(q.Volume)))
+	if q.Currency == "" {
+		return fmt.Sprintf("Vol %s · %s", shares, dollar)
+	}
+	return fmt.Sprintf("Vol %s · %s %s", shares, dollar, q.Currency)
 }
 
 // formatNTDBillions converts raw NTD into a `±XX.XB` string. e.g.
@@ -606,6 +752,77 @@ func symbolFor(country string) string {
 		return s
 	}
 	return defaultSymbol
+}
+
+// isTWSymbol reports whether symbol describes a Taiwan listing — TWSE
+// 上市 (`.TW` suffix), TPEx 上櫃 (`.TWO` suffix), or the TAIEX index
+// itself (`^TWII`). The /stock handler uses this to decide whether to
+// request the TW market-wide enrichment block (institutional flow,
+// breadth, margin balance), which is relevant for ANY TW listing
+// because those aggregates describe market context, not the
+// individual stock.
+//
+// Symbol is expected uppercased (the caller-symbol path normalizes
+// via strings.ToUpper); region-routed callers feed the symbolByCountry
+// table which is uppercase by construction.
+func isTWSymbol(symbol string) bool {
+	if symbol == "^TWII" {
+		return true
+	}
+	return strings.HasSuffix(symbol, ".TW") || strings.HasSuffix(symbol, ".TWO")
+}
+
+// twStockID extracts the numeric TWSE stock id from `<digits>.TW` /
+// `<digits>.TWO` symbols (e.g. "2330.TW" → "2330"). Returns empty for
+// the ^TWII index, non-TW symbols, or non-numeric prefixes — those
+// have no T86 row to fetch. T86 only publishes for TWSE 上市
+// listings, so .TWO callers will get an upstream miss; the handler
+// surfaces that as a graceful fallback to market-wide positioning.
+func twStockID(symbol string) string {
+	dot := strings.IndexByte(symbol, '.')
+	if dot <= 0 {
+		return ""
+	}
+	suffix := symbol[dot:]
+	if suffix != ".TW" && suffix != ".TWO" {
+		return ""
+	}
+	prefix := symbol[:dot]
+	for _, r := range prefix {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return prefix
+}
+
+// symbolMaxLen caps the path-symbol length. Real Yahoo symbols are
+// well under this — `BRK-B`, `2330.TW`, `EURUSD=X`, `^GSPC` — so 16
+// is comfortably above the longest reasonable input while bounding
+// upstream URL length.
+const symbolMaxLen = 16
+
+// validSymbol applies a strict allowlist to the path-supplied symbol
+// before it reaches upstream. Permitted: A-Z, 0-9, `.` (exchange
+// suffix), `-` (e.g. BRK-B), `^` (index prefix), `=` (FX/futures).
+// Anything else is rejected with 404 — the handler doesn't 4xx on
+// unknown-but-shaped symbols (Yahoo's no-data response surfaces as
+// 503 already), so 404 here is reserved for "couldn't even ATTEMPT
+// the upstream call" and keeps the contract clean.
+func validSymbol(symbol string) bool {
+	if symbol == "" || len(symbol) > symbolMaxLen {
+		return false
+	}
+	for _, r := range symbol {
+		switch {
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '.', r == '-', r == '^', r == '=':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // formatPrice formats v as a non-negative decimal with two decimal places

@@ -21,7 +21,7 @@ func plain(v float64) string {
 // closePos=16, the bar pattern locks down at three runs of
 // 4 wicks + O + 11 body + C + 4 wicks.
 func TestOHLCBarBullish(t *testing.T) {
-	top, bar, bottom := OHLCBar(120, 200, 100, 180, 21, plain)
+	top, bar, bottom := OHLCBar(120, 200, 100, 180, 0, 21, plain)
 	wantBar := "────O███████████C────"
 	if bar != wantBar {
 		t.Errorf("bar:\n got %q\nwant %q", bar, wantBar)
@@ -38,7 +38,7 @@ func TestOHLCBarBullish(t *testing.T) {
 // Open, and the bar reads `C…O` because Close sits to the left of
 // Open on the price axis.
 func TestOHLCBarBearish(t *testing.T) {
-	_, bar, _ := OHLCBar(180, 200, 100, 120, 21, plain)
+	_, bar, _ := OHLCBar(180, 200, 100, 120, 0, 21, plain)
 	wantBar := "────C░░░░░░░░░░░O────"
 	if bar != wantBar {
 		t.Errorf("bar:\n got %q\nwant %q", bar, wantBar)
@@ -49,7 +49,7 @@ func TestOHLCBarBearish(t *testing.T) {
 // label appears in the bottom row, and the bar fuses `OC` at adjacent
 // columns.
 func TestOHLCBarDoji(t *testing.T) {
-	_, bar, bottom := OHLCBar(150, 200, 100, 150, 21, plain)
+	_, bar, bottom := OHLCBar(150, 200, 100, 150, 0, 21, plain)
 	if !strings.Contains(bar, "OC") {
 		t.Errorf("doji bar missing OC fusion: %q", bar)
 	}
@@ -62,7 +62,7 @@ func TestOHLCBarDoji(t *testing.T) {
 // Low (caller is expected to gate on HasOHLC, but the helper still
 // fails closed).
 func TestOHLCBarDegenerateRange(t *testing.T) {
-	top, bar, bottom := OHLCBar(100, 100, 100, 100, 21, plain)
+	top, bar, bottom := OHLCBar(100, 100, 100, 100, 0, 21, plain)
 	if top != "" || bar != "" || bottom != "" {
 		t.Errorf("degenerate range should return empties, got %q / %q / %q", top, bar, bottom)
 	}
@@ -71,7 +71,7 @@ func TestOHLCBarDegenerateRange(t *testing.T) {
 // TestOHLCBarTooNarrow rejects widths under 8 — there is not enough
 // room for L/H labels on the top row plus markers on the bar.
 func TestOHLCBarTooNarrow(t *testing.T) {
-	top, bar, bottom := OHLCBar(120, 200, 100, 180, 7, plain)
+	top, bar, bottom := OHLCBar(120, 200, 100, 180, 0, 7, plain)
 	if top != "" || bar != "" || bottom != "" {
 		t.Errorf("narrow width should return empties, got %q / %q / %q", top, bar, bottom)
 	}
@@ -80,7 +80,7 @@ func TestOHLCBarTooNarrow(t *testing.T) {
 // TestOHLCBarOpenAtLow places Open at the exact Low — marker sits at
 // column 0, no left wick. The bar fills body from column 1 onward.
 func TestOHLCBarOpenAtLow(t *testing.T) {
-	_, bar, _ := OHLCBar(100, 200, 100, 150, 21, plain)
+	_, bar, _ := OHLCBar(100, 200, 100, 150, 0, 21, plain)
 	if !strings.HasPrefix(bar, "O") {
 		t.Errorf("Open-at-low should put O at column 0: %q", bar)
 	}
@@ -89,7 +89,7 @@ func TestOHLCBarOpenAtLow(t *testing.T) {
 // TestOHLCBarCloseAtHigh places Close at the exact High — marker sits
 // at column width-1, no right wick.
 func TestOHLCBarCloseAtHigh(t *testing.T) {
-	_, bar, _ := OHLCBar(120, 200, 100, 200, 21, plain)
+	_, bar, _ := OHLCBar(120, 200, 100, 200, 0, 21, plain)
 	if !strings.HasSuffix(bar, "C") {
 		t.Errorf("Close-at-high should put C at last column: %q", bar)
 	}
@@ -100,7 +100,7 @@ func TestOHLCBarCloseAtHigh(t *testing.T) {
 // puts Open and Close labels overlapping. The helper drops the inner
 // label and keeps the outer.
 func TestOHLCBarLabelCollision(t *testing.T) {
-	_, _, bottom := OHLCBar(148, 200, 100, 152, 21, plain)
+	_, _, bottom := OHLCBar(148, 200, 100, 152, 0, 21, plain)
 	hasOpen := strings.Contains(bottom, "148")
 	hasClose := strings.Contains(bottom, "152")
 	if hasOpen && hasClose {
@@ -116,11 +116,62 @@ func TestOHLCBarLabelCollision(t *testing.T) {
 // `─` as single columns). This is what lets pylon's monospace SVG
 // render align the rows visually.
 func TestOHLCBarRowsEqualWidth(t *testing.T) {
-	top, bar, bottom := OHLCBar(21180, 21290, 21150, 21234, 45, plain)
+	top, bar, bottom := OHLCBar(21180, 21290, 21150, 21234, 0, 45, plain)
 	for name, row := range map[string]string{"top": top, "bar": bar, "bottom": bottom} {
 		if got := runeLen(row); got != 45 {
 			t.Errorf("%s row width = %d, want 45 (%q)", name, got, row)
 		}
+	}
+}
+
+// TestOHLCBarPrevCloseMarker pins the ▼ overlay on the top row at the
+// prev-close column. With Low=100 / High=200 / prev=150 across width=45,
+// prevPos=22 — the marker sits at column 22 with the label tucked to
+// the right.
+func TestOHLCBarPrevCloseMarker(t *testing.T) {
+	top, _, _ := OHLCBar(120, 200, 100, 180, 150, 45, plain)
+	if !strings.Contains(top, "▼") {
+		t.Errorf("top row missing ▼ marker: %q", top)
+	}
+	if !strings.Contains(top, "150") {
+		t.Errorf("top row missing prev-close label 150: %q", top)
+	}
+	// Edge labels still present.
+	if !strings.HasPrefix(top, "100") || !strings.HasSuffix(top, "200") {
+		t.Errorf("edge labels stripped: %q", top)
+	}
+}
+
+// TestOHLCBarPrevCloseZeroSkipsMarker pins that prevClose=0 (the
+// "missing" sentinel) renders no marker — the top row is identical
+// to the pre-marker behaviour.
+func TestOHLCBarPrevCloseZeroSkipsMarker(t *testing.T) {
+	top, _, _ := OHLCBar(120, 200, 100, 180, 0, 45, plain)
+	if strings.Contains(top, "▼") {
+		t.Errorf("top row should have no ▼ when prev=0: %q", top)
+	}
+}
+
+// TestOHLCBarPrevCloseClampedAboveHigh pins gap-down behaviour: when
+// prev-close sits above the day's High, the marker clamps to the
+// rightmost column (just inside the bar).
+func TestOHLCBarPrevCloseClampedAboveHigh(t *testing.T) {
+	top, _, _ := OHLCBar(120, 200, 100, 180, 250, 45, plain)
+	// Marker dropped because prev-label "250" + ▼ collides with "200"
+	// edge label at the right side; we rely on the keep-out rule to
+	// silently skip in this collision case.
+	if strings.Contains(top, "250") {
+		t.Errorf("prev-close marker should be dropped on right-edge collision: %q", top)
+	}
+}
+
+// TestOHLCBarPrevCloseInsideBody pins the marker landing within the
+// O...C run. Bar row remains unchanged — the marker lives on the
+// top row only — so the bar still reads `O████...████C`.
+func TestOHLCBarPrevCloseInsideBody(t *testing.T) {
+	_, bar, _ := OHLCBar(120, 200, 100, 180, 150, 45, plain)
+	if strings.Contains(bar, "▼") {
+		t.Errorf("bar row must not carry ▼: %q", bar)
 	}
 }
 

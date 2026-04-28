@@ -35,6 +35,8 @@ func fixtureServer(t *testing.T, sleep time.Duration) *httptest.Server {
 			name = "mi_margn_open.json"
 		case strings.Contains(r.URL.Path, "MIINDEX"):
 			name = "mi_index_open.json"
+		case strings.Contains(r.URL.Path, "T86"):
+			name = "t86_open.json"
 		default:
 			http.NotFound(w, r)
 			return
@@ -52,12 +54,14 @@ func fixtureServer(t *testing.T, sleep time.Duration) *httptest.Server {
 }
 
 func newProvider(srv *httptest.Server) *twse.HTTPProvider {
-	return twse.NewWithEndpoints(
+	p := twse.NewWithEndpoints(
 		srv.URL+"/BFI82U?d=%s",
 		srv.URL+"/MIMARGN?d=%s",
 		srv.URL+"/MIINDEX?d=%s",
 		srv.Client(),
 	)
+	p.SetT86Endpoint(srv.URL + "/T86?d=%s")
+	return p
 }
 
 func TestGetMergesBothEndpoints(t *testing.T) {
@@ -265,6 +269,8 @@ func TestGetAtWalksBackFromAsOf(t *testing.T) {
 			name = "mi_margn_open.json"
 		case strings.Contains(r.URL.Path, "MIINDEX"):
 			name = "mi_index_open.json"
+		case strings.Contains(r.URL.Path, "T86"):
+			name = "t86_open.json"
 		default:
 			http.NotFound(w, r)
 			return
@@ -306,6 +312,8 @@ func TestGetAtFutureClampedToToday(t *testing.T) {
 			name = "mi_margn_open.json"
 		case strings.Contains(r.URL.Path, "MIINDEX"):
 			name = "mi_index_open.json"
+		case strings.Contains(r.URL.Path, "T86"):
+			name = "t86_open.json"
 		default:
 			http.NotFound(w, r)
 			return
@@ -330,6 +338,77 @@ func TestGetAtFutureClampedToToday(t *testing.T) {
 	// Allow ±1 day to handle test running at midnight boundary.
 	if !strings.HasPrefix(seenDates[0], twNow[:6]) {
 		t.Errorf("first probe %q does not look clamped to today (~%s)", seenDates[0], twNow)
+	}
+}
+
+// TestGetForStockReturnsRow pins that GetForStock parses the T86
+// fixture and returns the requested stock's row with foreign net summed
+// across the two foreign sub-categories. Fixture has 2330 with foreign
+// net = 5,000,000 (外陸資) + 100,000 (外資自營商) = 5,100,000.
+func TestGetForStockReturnsRow(t *testing.T) {
+	srv := fixtureServer(t, 0)
+	defer srv.Close()
+	p := newProvider(srv)
+
+	loc, _ := time.LoadLocation("Asia/Taipei")
+	asOf := time.Date(2025, 4, 25, 12, 0, 0, 0, loc) // Friday — no weekend skip
+	d, err := p.GetForStock(context.Background(), "2330", asOf)
+	if err != nil {
+		t.Fatalf("GetForStock: %v", err)
+	}
+	if d.StockID != "2330" {
+		t.Errorf("StockID = %q, want 2330", d.StockID)
+	}
+	if d.Name != "台積電" {
+		t.Errorf("Name = %q, want 台積電", d.Name)
+	}
+	if d.ForeignNet != 5_100_000 {
+		t.Errorf("ForeignNet = %d, want 5,100,000 (外陸資 + 外資自營商)", d.ForeignNet)
+	}
+	if d.TrustNet != 1_000_000 {
+		t.Errorf("TrustNet = %d, want 1,000,000", d.TrustNet)
+	}
+	if d.DealerNet != 300_000 {
+		t.Errorf("DealerNet = %d, want 300,000", d.DealerNet)
+	}
+	if d.Net != 6_400_000 {
+		t.Errorf("Net = %d, want 6,400,000", d.Net)
+	}
+	if !d.HasFlow() {
+		t.Errorf("HasFlow = false, want true")
+	}
+	if d.AsOf.IsZero() {
+		t.Errorf("AsOf is zero — date parsing failed")
+	}
+}
+
+// TestGetForStockMissingReturnsErrUnavailable confirms that a stock id
+// not present in the response surfaces ErrUnavailable cleanly (not a
+// silent zero-row).
+func TestGetForStockMissingReturnsErrUnavailable(t *testing.T) {
+	srv := fixtureServer(t, 0)
+	defer srv.Close()
+	p := newProvider(srv)
+
+	loc, _ := time.LoadLocation("Asia/Taipei")
+	asOf := time.Date(2025, 4, 25, 12, 0, 0, 0, loc)
+	_, err := p.GetForStock(context.Background(), "9999", asOf)
+	if !errors.Is(err, twse.ErrUnavailable) {
+		t.Errorf("err = %v, want ErrUnavailable", err)
+	}
+}
+
+// TestGetForStockEmptyEndpointDisables pins the contract that an
+// HTTPProvider built without a T86 endpoint surfaces ErrUnavailable
+// for GetForStock — keeps the tests using NewWithEndpoints (which
+// leaves t86 empty) safe by default.
+func TestGetForStockEmptyEndpointDisables(t *testing.T) {
+	srv := fixtureServer(t, 0)
+	defer srv.Close()
+	p := twse.NewWithEndpoints(srv.URL+"/X?d=%s", srv.URL+"/X?d=%s", srv.URL+"/X?d=%s", srv.Client())
+	_, err := p.GetForStock(context.Background(), "2330", time.Now())
+	if !errors.Is(err, twse.ErrUnavailable) {
+		t.Errorf("err = %v, want ErrUnavailable when t86 endpoint unset", err)
 	}
 }
 

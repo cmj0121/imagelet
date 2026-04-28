@@ -57,6 +57,16 @@ const (
 	// type=ALLBUT0999 returns the all-securities-but-warrants summary
 	// which is the conventional source for headline breadth metrics.
 	defaultMIINDEXEndpoint = "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?date=%s&type=ALLBUT0999&response=json"
+
+	// defaultT86Endpoint returns the per-stock 三大法人買賣超 (institutional
+	// flow per individual stock) for one trading day — counts in SHARES
+	// (not NTD, unlike the market-wide BFI82U). %s = YYYYMMDD CE date.
+	// Each row carries one stock's buy / sell / net broken out across
+	// the four institutional categories (外陸資 + 外資自營商 → foreign,
+	// 投信 → trust, 自營商 → dealer, 合計 → total). selectType=ALLBUT0999
+	// returns all listed equities except warrants — the canonical view
+	// matching MI_INDEX.
+	defaultT86Endpoint = "https://www.twse.com.tw/rwd/zh/fund/T86?date=%s&selectType=ALLBUT0999&response=json"
 )
 
 // MarketData captures the TW-specific daily aggregates the /stock TW
@@ -170,6 +180,47 @@ type HistoricalProvider interface {
 	GetAt(ctx context.Context, asOf time.Time) (MarketData, error)
 }
 
+// StockData captures the per-stock 三大法人 net flow (in SHARES) for
+// one trading day. Distinct from MarketData (market-wide aggregates in
+// NTD) because:
+//
+//   - the source endpoint is different (T86 vs BFI82U),
+//   - the units are different (shares per-stock vs NTD market-wide),
+//   - the renderer presents them as alternate, not overlapping,
+//     groups under the price box.
+//
+// Foreign sums two upstream columns: 外陸資 (excluding 外資自營商) +
+// 外資自營商 — the renderer wants foreign flow holistically, not
+// split by sub-category. Dealer sums 自營商(自行買賣) + 自營商(避險)
+// via T86's pre-summed 自營商買賣超股數 column.
+type StockData struct {
+	StockID    string    // 證券代號 (e.g. "2330")
+	Name       string    // 證券名稱 (Chinese name from upstream, trimmed)
+	ForeignNet int64     // 外陸資 + 外資自營商 buy-sell delta, in shares
+	TrustNet   int64     // 投信 buy-sell delta, in shares
+	DealerNet  int64     // 自營商 buy-sell delta (self-trade + hedge), in shares
+	Net        int64     // 三大法人 total buy-sell delta, in shares
+	AsOf       time.Time // trading date the upstream supplied
+}
+
+// HasFlow reports whether the T86 fetch produced any non-zero
+// per-stock institutional flow. Renderer gate.
+func (d StockData) HasFlow() bool {
+	return d.ForeignNet != 0 || d.TrustNet != 0 || d.DealerNet != 0 || d.Net != 0
+}
+
+// PerStockProvider is an optional extension for fetching per-stock
+// 三大法人 flow keyed by TWSE stock ID (e.g. "2330"). GetForStock
+// walks back from asOf the same way Get does, returning the latest
+// published trading day with data for the requested stock. Returns
+// ErrUnavailable when the lookback exhausts or the stock id is not
+// found in any of the probed days. Stock IDs not listed on TWSE 上市
+// (e.g. 上櫃 OTC) are not covered by T86 and surface ErrUnavailable
+// — the handler renders without per-stock enrichment in that case.
+type PerStockProvider interface {
+	GetForStock(ctx context.Context, stockID string, asOf time.Time) (StockData, error)
+}
+
 // LiveBreadth is the intra-day breadth snapshot computed by polling
 // MIS's per-stock real-time API and aggregating across the listed
 // equity universes — split per exchange because TWSE 上市 (TSE main)
@@ -233,6 +284,7 @@ type HTTPProvider struct {
 	bfi82u  string
 	miMargn string
 	miIndex string
+	t86     string // T86 per-stock 三大法人 endpoint (production-only; empty disables GetForStock)
 	client  *http.Client
 
 	// Live breadth state — separate plane from the daily Get() pipeline.
@@ -258,7 +310,8 @@ type HTTPProvider struct {
 }
 
 // New returns an HTTPProvider with a 5s per-request timeout against the
-// production endpoints, including the live breadth pipeline.
+// production endpoints, including the live breadth pipeline and the
+// T86 per-stock 三大法人 endpoint.
 func New() *HTTPProvider {
 	p := NewWithEndpoints(
 		defaultBFI82UEndpoint,
@@ -269,6 +322,7 @@ func New() *HTTPProvider {
 	p.universeEndpoint = defaultStockUniverseEndpoint
 	p.otcUniverseEndpoint = defaultOTCUniverseEndpoint
 	p.misInfoEndpoint = defaultMISInfoEndpoint
+	p.t86 = defaultT86Endpoint
 	return p
 }
 
@@ -278,6 +332,14 @@ func New() *HTTPProvider {
 // to enable that pipeline against a separate fixture server.
 func NewWithEndpoints(bfi82u, miMargn, miIndex string, client *http.Client) *HTTPProvider {
 	return &HTTPProvider{bfi82u: bfi82u, miMargn: miMargn, miIndex: miIndex, client: client}
+}
+
+// SetT86Endpoint overrides the upstream URL used by GetForStock, so
+// tests can route to a fixture httptest.Server. Production callers
+// should rely on New() which wires defaultT86Endpoint automatically.
+// Empty disables GetForStock (returns ErrUnavailable).
+func (p *HTTPProvider) SetT86Endpoint(endpoint string) {
+	p.t86 = endpoint
 }
 
 // SetLiveBreadthEndpoints overrides the upstream URLs used by
@@ -533,6 +595,102 @@ func (p *HTTPProvider) fetchMIIndex(ctx context.Context, date string) (MarketDat
 	return out, nil
 }
 
+// GetForStock walks back from asOf for the most recent T86 publication
+// containing the requested stock id. Same lookback semantics as Get —
+// weekends skipped, ErrUnavailable propagates up to maxLookbackDays —
+// but every probe filters down to the single requested stock and
+// surfaces ErrUnavailable when the stock id is not present in the
+// response (e.g. delisted, OTC-only, or warrant). Future-dated asOf
+// is clamped to today.
+func (p *HTTPProvider) GetForStock(ctx context.Context, stockID string, asOf time.Time) (StockData, error) {
+	if p.t86 == "" {
+		return StockData{}, ErrUnavailable
+	}
+	now := time.Now().In(twLoc)
+	if asOf.IsZero() || asOf.After(now) {
+		asOf = now
+	}
+	asOf = asOf.In(twLoc)
+
+	for daysBack := 0; daysBack < maxLookbackDays; daysBack++ {
+		probe := asOf.AddDate(0, 0, -daysBack)
+		switch probe.Weekday() {
+		case time.Saturday, time.Sunday:
+			continue
+		}
+		d, err := p.fetchT86(ctx, stockID, probe.Format("20060102"))
+		if err == nil {
+			return d, nil
+		}
+		if !errors.Is(err, ErrUnavailable) {
+			return StockData{}, err
+		}
+	}
+	return StockData{}, ErrUnavailable
+}
+
+// fetchT86 retrieves the T86 daily snapshot, walks the rows for the
+// requested stock id, and returns its parsed StockData. T86 has no
+// per-stock endpoint — the response carries every listed equity for
+// the day, so we filter client-side. ErrUnavailable when stat != "OK"
+// or the stock id is not present (handles delisted / pre-listing /
+// non-TSE securities the same way).
+//
+// Column index map (T86 ALLBUT0999 schema, validated 2026):
+//
+//	 0 證券代號                   1 證券名稱
+//	 2 外陸資買進  3 外陸資賣出   4 外陸資買賣超
+//	 5 外資自營商買進  6 外資自營商賣出  7 外資自營商買賣超
+//	 8 投信買進    9 投信賣出    10 投信買賣超
+//	11 自營商買賣超(合計)
+//	12 自營商(自行買賣)買進  13 ..賣出  14 ..買賣超
+//	15 自營商(避險)買進  16 ..賣出  17 ..買賣超
+//	18 三大法人買賣超
+//
+// Foreign net is sum(col 4, col 7) — TWSE separates 外陸資 from 外資
+// 自營商 in T86 but the renderer wants foreign flow holistically.
+func (p *HTTPProvider) fetchT86(ctx context.Context, stockID, date string) (StockData, error) {
+	url := fmt.Sprintf(p.t86, date)
+	body, err := p.fetch(ctx, url)
+	if err != nil {
+		return StockData{}, err
+	}
+	var raw t86Response
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return StockData{}, err
+	}
+	if raw.Stat != "OK" || len(raw.Data) == 0 {
+		return StockData{}, ErrUnavailable
+	}
+	for _, row := range raw.Data {
+		if len(row) < 19 {
+			continue
+		}
+		if strings.TrimSpace(row[0]) != stockID {
+			continue
+		}
+		return StockData{
+			StockID:    stockID,
+			Name:       strings.TrimSpace(row[1]),
+			ForeignNet: parseTWSENumber(row[4]) + parseTWSENumber(row[7]),
+			TrustNet:   parseTWSENumber(row[10]),
+			DealerNet:  parseTWSENumber(row[11]),
+			Net:        parseTWSENumber(row[18]),
+			AsOf:       parseTWSEDate(raw.Date),
+		}, nil
+	}
+	return StockData{}, ErrUnavailable
+}
+
+// t86Response mirrors the relevant subset of TWSE's T86 JSON. Same
+// shape as BFI82U at the top level but the data rows have a different
+// column count + meaning.
+type t86Response struct {
+	Stat string     `json:"stat"`
+	Date string     `json:"date"`
+	Data [][]string `json:"data"`
+}
+
 // stripLimitSubcount drops the parenthesized limit-up/limit-down count
 // from a TWSE breadth cell. Input examples: `312(24)` -> `312`,
 // `673` -> `673`. Whitespace tolerated.
@@ -741,4 +899,19 @@ func (c *Cached) GetAt(ctx context.Context, asOf time.Time) (MarketData, error) 
 		return MarketData{}, ErrUnavailable
 	}
 	return hp.GetAt(ctx, asOf)
+}
+
+// GetForStock delegates to the inner provider when it implements
+// PerStockProvider. Per-stock lookups bypass the cache for the same
+// reason GetAt does — the single-entry cache is keyed by nothing,
+// so a per-stock response would pollute the market-wide path. The
+// inner HTTPProvider has no its own per-stock cache yet either; if
+// repeat-stock traffic shows up in production we can add one
+// (date+stockID keyed) without changing this contract.
+func (c *Cached) GetForStock(ctx context.Context, stockID string, asOf time.Time) (StockData, error) {
+	psp, ok := c.inner.(PerStockProvider)
+	if !ok {
+		return StockData{}, ErrUnavailable
+	}
+	return psp.GetForStock(ctx, stockID, asOf)
 }

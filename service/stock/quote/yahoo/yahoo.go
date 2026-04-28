@@ -111,6 +111,8 @@ func (p *Provider) Get(ctx context.Context, symbol string) (quote.Quote, error) 
 
 	return quote.Quote{
 		Symbol:     m.Symbol,
+		Name:       m.ShortName,
+		LongName:   m.LongName,
 		Last:       m.RegularMarketPrice,
 		Open:       latestOpen(result.Indicators),
 		PrevClose:  m.ChartPreviousClose,
@@ -121,6 +123,7 @@ func (p *Provider) Get(ctx context.Context, symbol string) (quote.Quote, error) 
 		DayLow:     m.RegularMarketDayLow,
 		Week52High: m.FiftyTwoWeekHigh,
 		Week52Low:  m.FiftyTwoWeekLow,
+		Volume:     m.RegularMarketVolume,
 	}, nil
 }
 
@@ -213,6 +216,8 @@ func (p *Provider) GetAt(ctx context.Context, symbol string, asOf time.Time) (qu
 
 	q := quote.Quote{
 		Symbol:    result.Meta.Symbol,
+		Name:      result.Meta.ShortName,
+		LongName:  result.Meta.LongName,
 		Last:      ind.Close[pickIdx],
 		Open:      safeAt(ind.Open, pickIdx),
 		PrevClose: prevClose,
@@ -221,11 +226,27 @@ func (p *Provider) GetAt(ctx context.Context, symbol string, asOf time.Time) (qu
 		IsClosed:  true,
 		DayHigh:   safeAt(ind.High, pickIdx),
 		DayLow:    safeAt(ind.Low, pickIdx),
+		Volume:    safeAtInt(ind.Volume, pickIdx),
 	}
 	if q.Symbol == "" {
 		q.Symbol = symbol
 	}
 	return q, nil
+}
+
+// safeAtInt is the int64 sibling of safeAt — Yahoo encodes missing
+// volume slots as null which decode to 0 in our slice; the bound
+// check + non-negative gate keeps a zero out of the rendered output
+// so the caption row gracefully omits the volume token rather than
+// reading "0 shares".
+func safeAtInt(arr []int64, i int) int64 {
+	if i < 0 || i >= len(arr) {
+		return 0
+	}
+	if arr[i] < 0 {
+		return 0
+	}
+	return arr[i]
 }
 
 // safeAt returns arr[i] when in-range and positive, else 0. Yahoo
@@ -296,25 +317,29 @@ type chartResponse struct {
 // provider; chart endpoints only ever fill one), the inner arrays are
 // per-bar OHLCV indexed by the sibling timestamp[] array on Result.
 // The live Get path uses only open[] (chart-meta surfaces Last / DayHigh
-// / DayLow), but the historical GetAt path needs the full quartet to
-// reconstruct a bar, so all four fields are decoded.
+// / DayLow), but the historical GetAt path needs the full quartet plus
+// volume to reconstruct a bar, so all five fields are decoded.
 type chartIndicators struct {
 	Quote []struct {
-		Open  []float64 `json:"open"`
-		High  []float64 `json:"high"`
-		Low   []float64 `json:"low"`
-		Close []float64 `json:"close"`
+		Open   []float64 `json:"open"`
+		High   []float64 `json:"high"`
+		Low    []float64 `json:"low"`
+		Close  []float64 `json:"close"`
+		Volume []int64   `json:"volume"`
 	} `json:"quote"`
 }
 
 type chartMeta struct {
 	Symbol               string  `json:"symbol"`
+	ShortName            string  `json:"shortName"`
+	LongName             string  `json:"longName"`
 	Currency             string  `json:"currency"`
 	RegularMarketPrice   float64 `json:"regularMarketPrice"`
 	ChartPreviousClose   float64 `json:"chartPreviousClose"`
 	RegularMarketTime    int64   `json:"regularMarketTime"`
 	RegularMarketDayHigh float64 `json:"regularMarketDayHigh"`
 	RegularMarketDayLow  float64 `json:"regularMarketDayLow"`
+	RegularMarketVolume  int64   `json:"regularMarketVolume"`
 	FiftyTwoWeekHigh     float64 `json:"fiftyTwoWeekHigh"`
 	FiftyTwoWeekLow      float64 `json:"fiftyTwoWeekLow"`
 	CurrentTradingPeriod struct {
