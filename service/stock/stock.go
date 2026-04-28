@@ -238,22 +238,24 @@ type stockBlocks struct {
 	body     []string
 }
 
-// boxes assembles the stacked AlignLeft sections under the banner +
-// captions: an OHLC range bar (3 rows: Low/High edge labels, bar with
-// O/C markers, Open/Close labels under the markers) for any visitor
-// whose quote carries the full OHLC quartet, followed by the TW
-// enrichment data block (positioning / breadth / credit) for TW
-// visitors. Both share AlignLeft so monospace columns line up flush-
-// left across rows. Either or both may be absent.
+// boxes assembles the data section under the banner + captions as a
+// single AlignLeft borderless box: the OHLC range bar (3 rows + ZWSP
+// breath) stacks above the TW enrichment rows (positioning / breadth
+// / credit). Folding both into one box (rather than two) shares the
+// alignment context — pylon's AlignLeft only flush-lefts rows WITHIN
+// a box, and adjacent boxes are independently centered in the figure;
+// a narrower row (e.g. breadth alone during open) would otherwise
+// sit centered while the wider OHLC bar stays left-aligned in its
+// own box. Returns nil when both halves are empty so non-TW visitors
+// without OHLC render as banner+captions only.
 func (bs stockBlocks) boxes() []render.BoxBlock {
-	var out []render.BoxBlock
-	if len(bs.ohlc) > 0 {
-		out = append(out, render.BoxBlock{Rows: bs.ohlc, Align: render.AlignLeft})
+	rows := make([]string, 0, len(bs.ohlc)+len(bs.body))
+	rows = append(rows, bs.ohlc...)
+	rows = append(rows, bs.body...)
+	if len(rows) == 0 {
+		return nil
 	}
-	if len(bs.body) > 0 {
-		out = append(out, render.BoxBlock{Rows: bs.body, Align: render.AlignLeft})
-	}
-	return out
+	return []render.BoxBlock{{Rows: rows, Align: render.AlignLeft}}
 }
 
 // blankRow is the U+200B (zero-width space) separator row that creates
