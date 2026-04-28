@@ -77,7 +77,8 @@ func Register(r gin.IRouter, version string) {
 			og := render.OGMeta{
 				Title:       "imagelet",
 				Description: DefaultTagline,
-				ImageURL:    middleware.AbsoluteURL(c, "format=svg"),
+				ImageURL:    middleware.AbsoluteURL(c, "format=png"),
+				ImageType:   "image/png",
 				PageURL:     middleware.AbsoluteURL(c, ""),
 			}
 			c.Data(http.StatusOK, "text/html; charset=utf-8", render.InjectOGMeta(htmlBody, og))
