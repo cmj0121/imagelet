@@ -217,6 +217,11 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	var tw twse.MarketData
 	var perStock twse.StockData
 	var live twse.LiveBreadth
+	var retail twse.RetailFutures
+	var lending twse.SecuritiesLending
+	var margin twse.StockMargin
+	var pcr twse.OptionsPCR
+	var vix twse.VIX
 	if enrichTW && h.twse != nil {
 		ctx := c.Request.Context()
 		switch {
@@ -292,6 +297,65 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 				}
 			}
 		}
+
+		// Retail futures positioning (小台 / 微台) is a market-wide
+		// signal, not per-symbol — sourced from TAIFEX 三大法人區分
+		// 各期貨契約 OI with retail derived as -(institutional net OI).
+		// Gated on q.IsClosed || dateOverride for the same reason as
+		// the BFI82U positioning rows: the TAIFEX upstream is daily
+		// afterTrading and would otherwise show yesterday's numbers
+		// alongside today's price during the live session. Failures
+		// are best-effort: log and zero out so the renderer skips the
+		// 散戶 group gracefully.
+		if (q.IsClosed || dateOverride) && (h.twse != nil) {
+			ctx := c.Request.Context()
+			asOfQuery := asOf
+			if !dateOverride {
+				asOfQuery = time.Now()
+			}
+
+			if stockID != "" {
+				// Per-stock view: only the per-symbol signals apply.
+				// Retail futures, PCR, and VIX are market-wide and
+				// would just be noise alongside a single ticker.
+				if slp, ok := h.twse.(twse.SecuritiesLendingProvider); ok {
+					if l, lerr := slp.GetSecuritiesLending(ctx, stockID, asOfQuery); lerr == nil {
+						lending = l
+					} else if lerr != twse.ErrUnavailable {
+						log.Warn().Err(lerr).Str("stock", stockID).Msg("twse securities-lending fetch failed; omitting 借券 row")
+					}
+				}
+				if smp, ok := h.twse.(twse.StockMarginProvider); ok {
+					if m, merr := smp.GetStockMargin(ctx, stockID, asOfQuery); merr == nil {
+						margin = m
+					} else if merr != twse.ErrUnavailable {
+						log.Warn().Err(merr).Str("stock", stockID).Msg("twse stock-margin fetch failed; omitting 融資/融券 row")
+					}
+				}
+			} else {
+				if rfp, ok := h.twse.(twse.RetailFuturesProvider); ok {
+					if r, rerr := rfp.GetRetailFutures(ctx, asOfQuery); rerr == nil {
+						retail = r
+					} else if rerr != twse.ErrUnavailable {
+						log.Warn().Err(rerr).Msg("taifex retail futures fetch failed; omitting 散戶 group")
+					}
+				}
+				if op, ok := h.twse.(twse.OptionsPCRProvider); ok {
+					if v, perr := op.GetOptionsPCR(ctx, asOfQuery); perr == nil {
+						pcr = v
+					} else if perr != twse.ErrUnavailable {
+						log.Warn().Err(perr).Msg("taifex pcr fetch failed; omitting PCR row")
+					}
+				}
+				if vp, ok := h.twse.(twse.VIXProvider); ok {
+					if v, verr := vp.GetVIX(ctx, asOfQuery); verr == nil {
+						vix = v
+					} else if verr != twse.ErrUnavailable {
+						log.Warn().Err(verr).Msg("taifex vix fetch failed; omitting VIX row")
+					}
+				}
+			}
+		}
 	}
 
 	headline := strconv.FormatFloat(q.Last, 'f', 2, 64)
@@ -303,7 +367,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	// labels via the ASCII path; honors both Accept: text/pylon and
 	// ?format=pylon for header/query parity.
 	if middleware.WantsPylonSource(c) {
-		bs := buildBlocks(symbol, q, tw, perStock, live, stale, false)
+		bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, stale, false)
 		c.Data(http.StatusOK, "text/pylon",
 			[]byte(render.BannerSourceBoxes(headline, "", bs.captions, bs.boxes())))
 		return
@@ -317,7 +381,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	// PNG is the only EN holdout — pylon's PNG uses basicfont.Face7x13
 	// which has zero CJK coverage; CN there would render as tofu.
 	useEnglish := mode == render.ModePNG
-	bs := buildBlocks(symbol, q, tw, perStock, live, stale, useEnglish)
+	bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, stale, useEnglish)
 
 	renderAt := func(m render.Mode) ([]byte, error) {
 		return render.BannerBoxes(headline, "", bs.captions, bs.boxes(), m)
@@ -409,7 +473,7 @@ const blankRow = "​"
 // the 三大法人 group: when the symbol carries a TWSE stock id and
 // T86 returned a row, we render PER-STOCK flow with shares; otherwise
 // fall back to the market-wide BFI82U numbers in NTD.
-func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse.StockData, live twse.LiveBreadth, stale, useEnglish bool) stockBlocks {
+func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse.StockData, live twse.LiveBreadth, retail twse.RetailFutures, lending twse.SecuritiesLending, margin twse.StockMargin, pcr twse.OptionsPCR, vix twse.VIX, stale, useEnglish bool) stockBlocks {
 	bs := stockBlocks{captions: make([]string, 0, 3)}
 
 	// Title row: `<symbol> · <name>`. The symbol/name pair contains
@@ -473,6 +537,9 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 	// 漲跌家數 row; when open, live carries per-exchange counts (上市 +
 	// 上櫃) computed by polling MIS across both universes, and we render
 	// one row per exchange.
+	// 漲跌家數 is a market-wide count; hide it on per-stock views so
+	// the panel only carries rows about the queried ticker.
+	isPerStock := twStockID(symbol) != ""
 	var groups [][]string
 	switch {
 	case q.IsClosed && perStock.HasFlow():
@@ -480,11 +547,22 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 	case q.IsClosed && tw.HasInstitutional():
 		groups = append(groups, positioningRows(tw, useEnglish))
 	}
-	if rows := breadthRows(tw, live, q.IsClosed, useEnglish); len(rows) > 0 {
-		groups = append(groups, rows)
+	if !isPerStock {
+		if rows := breadthRows(tw, live, q.IsClosed, useEnglish); len(rows) > 0 {
+			groups = append(groups, rows)
+		}
 	}
 	if q.IsClosed && tw.HasMargin() {
 		groups = append(groups, creditRows(tw, useEnglish))
+	}
+	if q.IsClosed && (margin.Has() || lending.Has()) {
+		groups = append(groups, perStockCreditRows(margin, lending, useEnglish))
+	}
+	if q.IsClosed && (pcr.Has() || vix.Has()) {
+		groups = append(groups, []string{marketSentimentRow(pcr, vix, useEnglish)})
+	}
+	if q.IsClosed && retail.HasAny() {
+		groups = append(groups, retailFuturesRows(retail, useEnglish))
 	}
 	for i, g := range groups {
 		if i > 0 {
@@ -681,6 +759,130 @@ func absMaxInt64(vs ...int64) int64 {
 		}
 	}
 	return m
+}
+
+// perStockCreditRows formats the per-stock credit-trading group:
+// 融資餘額 (margin balance — long-leverage standing position),
+// 融券餘額 (formal short standing balance), and 借券賣出當日餘額
+// (institutional/SBL short standing balance). All values are
+// surfaced in lots (1 張 = 1000 shares). Each input may be empty;
+// callers gate on (margin.Has() || lending.Has()) and the helper
+// drops absent rows so the group collapses to whichever signals
+// the upstream produced.
+//
+// 融資 and 融券 form the canonical retail credit pair (the 券資比
+// is the read at a glance); 借券賣出 sits on the same sheet because
+// it's the institutional-facing short balance — together they
+// describe the full standing-short picture for the listing.
+func perStockCreditRows(m twse.StockMargin, l twse.SecuritiesLending, useEnglish bool) []string {
+	var rows []string
+	if m.Has() {
+		// MI_MARGN reports 融資/融券 in 張 directly (per-stock 交易單位),
+		// unlike TWT93U which reports 借券 in shares — no /1000 here.
+		if useEnglish {
+			rows = append(rows, fmt.Sprintf("margin-bal  %s lots", formatThousands(m.MarginBalance)))
+			rows = append(rows, fmt.Sprintf("short-bal   %s lots", formatThousands(m.ShortBalance)))
+		} else {
+			rows = append(rows, fmt.Sprintf("融資餘額  %s 張", formatThousands(m.MarginBalance)))
+			rows = append(rows, fmt.Sprintf("融券餘額  %s 張", formatThousands(m.ShortBalance)))
+		}
+	}
+	if l.Has() {
+		lots := l.Balance / 1000
+		if useEnglish {
+			rows = append(rows, fmt.Sprintf("sbl-bal     %s lots", formatThousands(lots)))
+		} else {
+			rows = append(rows, fmt.Sprintf("借券賣出  %s 張", formatThousands(lots)))
+		}
+	}
+	return rows
+}
+
+// marketSentimentRow combines the 台指選擇權 Put/Call ratio and the
+// Taiwan VIX onto a single line: PCR carries a ▲ / ▼ glyph (PCR > 100
+// = puts dominate, drawn ▼; otherwise ▲), VIX is the close-of-session
+// value to two decimals. Either half may be empty when its upstream
+// fetcher is unavailable; in that case the row collapses to whichever
+// signal is present. Callers gate on (pcr.Has() || vix.Has()).
+func marketSentimentRow(p twse.OptionsPCR, v twse.VIX, useEnglish bool) string {
+	var parts []string
+	if p.Has() {
+		arrow := "▲"
+		if p.OIRatio > 100 {
+			arrow = "▼"
+		}
+		if useEnglish {
+			parts = append(parts, fmt.Sprintf("opt-pcr  %.1f%%%s", p.OIRatio, arrow))
+		} else {
+			parts = append(parts, fmt.Sprintf("台指選擇  PCR %.1f%%%s", p.OIRatio, arrow))
+		}
+	}
+	if v.Has() {
+		if useEnglish {
+			parts = append(parts, fmt.Sprintf("vix  %.2f", v.Value))
+		} else {
+			parts = append(parts, fmt.Sprintf("波動指數  %.2f", v.Value))
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
+// retailFuturesRows formats the 散戶 section: 小台散戶 / 微台散戶
+// each with a center-split SignedBar. Values are retail net OI in
+// lots (positive = retail net long, negative = retail net short),
+// derived upstream from -(institutional net OI). The shared bar
+// scale is the larger absolute value across the two contracts so
+// the more concentrated row uses full bar width and the less
+// concentrated row reads as a proportion of it.
+//
+// Rows where the upstream had no data (HasMXF / HasTMF false) are
+// silently skipped; the handler caller has already gated on
+// retail.HasAny() so this never returns an empty slice.
+func retailFuturesRows(r twse.RetailFutures, useEnglish bool) []string {
+	const halfWidth = 10
+	scale := absMaxInt64(r.MXFNet, r.TMFNet)
+	if scale == 0 {
+		return nil
+	}
+	out := make([]string, 0, 2)
+	if r.HasMXF() {
+		out = append(out, retailFuturesRow(mxfLabel(useEnglish), r.MXFNet, scale, halfWidth))
+	}
+	if r.HasTMF() {
+		out = append(out, retailFuturesRow(tmfLabel(useEnglish), r.TMFNet, scale, halfWidth))
+	}
+	return out
+}
+
+// retailFuturesRow formats one row: label + SignedBar + signed lot count.
+// The lot count carries a thousands separator so a typical 4–5 digit
+// reading scans cleanly.
+func retailFuturesRow(label string, net, scale int64, halfWidth int) string {
+	bar := render.SignedBar(float64(net), float64(scale), halfWidth)
+	return fmt.Sprintf("%s  %s  %s 口", label, bar, formatSignedLots(net))
+}
+
+func mxfLabel(en bool) string {
+	if en {
+		return "mxf-retail"
+	}
+	return "小台散戶"
+}
+
+func tmfLabel(en bool) string {
+	if en {
+		return "tmf-retail"
+	}
+	return "微台散戶"
+}
+
+// formatSignedLots returns the lot count with a leading sign and
+// thousands separator: 1234 → "+1,234"; -56789 → "-56,789".
+func formatSignedLots(v int64) string {
+	if v >= 0 {
+		return "+" + formatThousands(v)
+	}
+	return formatThousands(v) // negative numbers carry their own minus
 }
 
 // creditRows formats the credit section: a single 信用餘額 row carrying
