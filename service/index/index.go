@@ -74,7 +74,13 @@ func Register(r gin.IRouter, version string) {
 			return
 		}
 		if mode == render.ModeHTML {
-			c.Data(http.StatusOK, "text/html; charset=utf-8", htmlBody)
+			og := render.OGMeta{
+				Title:       "imagelet",
+				Description: DefaultTagline,
+				ImageURL:    middleware.AbsoluteURL(c, "format=svg"),
+				PageURL:     middleware.AbsoluteURL(c, ""),
+			}
+			c.Data(http.StatusOK, "text/html; charset=utf-8", render.InjectOGMeta(htmlBody, og))
 			return
 		}
 		c.Data(http.StatusOK, "text/plain; charset=utf-8", asciiBody)
