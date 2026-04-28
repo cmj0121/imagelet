@@ -19,7 +19,7 @@ import (
 // `/getStockInfo.jsp` parses ex_ch and replies with one entry per
 // requested symbol from the canned quotes map.
 type liveQuote struct {
-	z, pz, y string
+	z, pz, o, y string
 }
 
 type liveBreadthServer struct {
@@ -53,7 +53,7 @@ func newLiveBreadthServer(t *testing.T, universe []string, quotes map[string]liv
 					continue
 				}
 				msg = append(msg, map[string]string{
-					"c": code, "y": q.y, "z": q.z, "pz": q.pz,
+					"c": code, "y": q.y, "z": q.z, "pz": q.pz, "o": q.o,
 					"d": "20260428", "t": "10:30:00",
 				})
 			}
@@ -145,7 +145,7 @@ func TestFetchLiveBreadthFiltersUniverseToFourDigit(t *testing.T) {
 func TestFetchLiveBreadthFallsBackToPZ(t *testing.T) {
 	universe := []string{"2330"}
 	quotes := map[string]liveQuote{
-		"2330": {z: "-", pz: "650.0", y: "640.0"}, // pz used → up
+		"2330": {z: "-", pz: "650.0", o: "645.0", y: "640.0"}, // pz used → up
 	}
 	srv := newLiveBreadthServer(t, universe, quotes)
 	p := newProviderWithLive(srv)
@@ -159,14 +159,39 @@ func TestFetchLiveBreadthFallsBackToPZ(t *testing.T) {
 	}
 }
 
-// TestFetchLiveBreadthSkipsUntraded pins the dual-"-" case: when both
-// z and pz are missing, the stock has no observable tick and MUST NOT
-// land in any bucket — silently dropped from the count.
+// TestFetchLiveBreadthFallsBackToOpen pins the z → pz → o fallback:
+// when both z and pz are "-" (the common case for any stock without
+// a tick in the current snapshot window) the session open price
+// keeps the stock counted instead of silently dropping it. Without
+// this fallback the breadth count under-reports by ~85% mid-session.
+func TestFetchLiveBreadthFallsBackToOpen(t *testing.T) {
+	universe := []string{"2330", "2317"}
+	quotes := map[string]liveQuote{
+		"2330": {z: "-", pz: "-", o: "650.0", y: "640.0"}, // o used → up
+		"2317": {z: "-", pz: "-", o: "95.0", y: "100.0"},  // o used → down
+	}
+	srv := newLiveBreadthServer(t, universe, quotes)
+	p := newProviderWithLive(srv)
+
+	got, err := p.FetchLiveBreadth(context.Background())
+	if err != nil {
+		t.Fatalf("FetchLiveBreadth: %v", err)
+	}
+	if got.AdvanceCount != 1 || got.DeclineCount != 1 {
+		t.Errorf("counts = up:%d down:%d, want 1/1 (o fallback should classify both)",
+			got.AdvanceCount, got.DeclineCount)
+	}
+}
+
+// TestFetchLiveBreadthSkipsUntraded pins the all-"-" case: when z, pz,
+// AND o are all missing, the stock has no observable session price
+// (halt or new listing) and MUST NOT land in any bucket — silently
+// dropped from the count.
 func TestFetchLiveBreadthSkipsUntraded(t *testing.T) {
 	universe := []string{"2330", "2317"}
 	quotes := map[string]liveQuote{
-		"2330": {z: "650.0", pz: "650.0", y: "640.0"}, // up
-		"2317": {z: "-", pz: "-", y: "100.0"},         // untraded
+		"2330": {z: "650.0", pz: "650.0", o: "640.0", y: "640.0"}, // up
+		"2317": {z: "-", pz: "-", o: "-", y: "100.0"},             // untraded
 	}
 	srv := newLiveBreadthServer(t, universe, quotes)
 	p := newProviderWithLive(srv)

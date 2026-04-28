@@ -296,15 +296,17 @@ const (
 // classifyTick decides which breadth bucket a stock falls into and
 // returns the trade-time of the observed tick (used to track
 // LiveBreadth.AsOf as the latest tick across the batch). Falls back
-// from `z` (last trade) to `pz` (previous trade) when MIS returns "-"
-// for the latest field — that's a transient between-tick state, not
-// "untraded".
+// from `z` (latest trade) to `pz` (previous trade) and finally to
+// `o` (session open) — MIS resets z/pz to "-" between snapshot
+// windows, which can be most stocks at any given second; the open
+// price is a stable per-day reference that keeps lightly-traded
+// stocks in the count instead of silently dropping them.
 func classifyTick(q misStockInfo) (direction, time.Time) {
 	prevClose, err := strconv.ParseFloat(q.Y, 64)
 	if err != nil || prevClose <= 0 {
 		return dirUntraded, time.Time{}
 	}
-	current, ok := pickPrice(q.Z, q.PZ)
+	current, ok := pickPrice(q.Z, q.PZ, q.O)
 	if !ok {
 		return dirUntraded, time.Time{}
 	}
@@ -319,11 +321,14 @@ func classifyTick(q misStockInfo) (direction, time.Time) {
 	}
 }
 
-// pickPrice walks the z → pz fallback chain. MIS uses "-" as the
-// "no value yet" sentinel; both fields can be "-" simultaneously
-// (stock untraded today) which we surface to the caller via ok=false.
-func pickPrice(z, pz string) (float64, bool) {
-	for _, candidate := range []string{z, pz} {
+// pickPrice walks the z → pz → o fallback chain. MIS uses "-" as the
+// "no value yet" sentinel; z and pz reset between snapshot windows
+// even for actively-trading stocks, so without the o fallback the
+// breadth count drops the bulk of the universe at any given moment.
+// All three "-" simultaneously means the stock genuinely has no
+// session price (halt, new listing) — caller treats as untraded.
+func pickPrice(z, pz, o string) (float64, bool) {
+	for _, candidate := range []string{z, pz, o} {
 		if candidate == "" || candidate == "-" {
 			continue
 		}
@@ -351,12 +356,14 @@ func parseMISTime(d, t string) time.Time {
 
 // misStockInfo mirrors the per-symbol payload returned by MIS
 // getStockInfo. We pull only the fields needed for breadth: code,
-// previous close, latest trade, previous trade, plus tick time.
+// previous close, latest trade, previous trade, session open, plus
+// tick time.
 type misStockInfo struct {
 	Code string `json:"c"`  // stock code, e.g. "2330"
 	Y    string `json:"y"`  // previous-day close
-	Z    string `json:"z"`  // latest trade price ("-" when no tick yet)
+	Z    string `json:"z"`  // latest trade price ("-" when no recent tick)
 	PZ   string `json:"pz"` // previous trade price (fallback for Z)
+	O    string `json:"o"`  // session open price (final fallback)
 	D    string `json:"d"`  // tick date YYYYMMDD
 	T    string `json:"t"`  // tick time HH:MM:SS
 }
