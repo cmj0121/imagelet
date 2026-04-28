@@ -38,7 +38,12 @@ func Banner(headline, subtitle string, mode Mode) ([]byte, error) {
 func renderAST(ast pylon.AST, mode Mode) ([]byte, error) {
 	switch mode {
 	case ModePNG:
-		return pylon.RenderPNG(ast)
+		// Rasterize pylon's SVG output instead of going through
+		// pylon.RenderPNG. Pylon's PNG renderer embeds a Latin-only
+		// font (JetBrains Mono); rasterizing the SVG gives us a
+		// single CJK-capable surface that matches the SVG view
+		// byte-for-byte in content.
+		return RasterizeSVG(PaintSVG([]byte(pylon.RenderSVG(ast))))
 	case ModeSVG:
 		return PaintSVG([]byte(pylon.RenderSVG(ast))), nil
 	case ModeHTML:

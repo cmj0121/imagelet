@@ -36,8 +36,12 @@ const (
 	// ModeASCII renders to plain text using pylon's `ascii` theme (+ - | glyphs)
 	// and appends a trailing newline so the response plays well with shells.
 	ModeASCII Mode = iota
-	// ModePNG renders to a PNG raster (binary). Pylon embeds JetBrains Mono
-	// for glyph metrics, so the output is self-contained.
+	// ModePNG renders to a PNG raster (binary). The render package
+	// rasterizes pylon's SVG output through an embedded Sarasa Mono SC
+	// TTF (CJK + Latin coverage) — see render/png.go — so the PNG
+	// mirrors the SVG view rather than going through pylon's own
+	// RenderPNG, which embeds a Latin-only font and would render CJK
+	// content as tofu.
 	ModePNG
 	// ModeSVG renders to a self-contained SVG document. Pylon emits xmlns,
 	// explicit width/height/viewBox, inline <style>, and uses textLength +

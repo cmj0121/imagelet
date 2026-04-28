@@ -397,12 +397,13 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	mode := middleware.ResolveMode(c)
 
 	// CN labels appear on every surface that can render CJK glyphs:
-	// ASCII (terminal-side fonts), text/pylon (consumer-side render),
-	// SVG and HTML (Cascadia/Menlo with browser-provided CJK fallback).
-	// PNG is the only EN holdout — pylon's PNG uses basicfont.Face7x13
-	// which has zero CJK coverage; CN there would render as tofu.
-	useEnglish := mode == render.ModePNG
-	bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, stale, useEnglish)
+	// All four rendered surfaces — ASCII, SVG, HTML, PNG — now run on
+	// CN labels: ASCII / pylon-source via terminal fonts, SVG / HTML
+	// via browser fallback, PNG via the embedded Sarasa Mono SC font
+	// in render/png.go. The EN fallback path is preserved as the
+	// useEnglish=true branch in case a future surface lands without
+	// CJK coverage.
+	bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, stale, false)
 
 	renderAt := func(m render.Mode) ([]byte, error) {
 		return render.BannerBoxes(headline, "", bs.captions, bs.boxes(), m)
