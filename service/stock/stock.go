@@ -279,7 +279,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	if middleware.WantsPylonSource(c) {
 		bs := buildBlocks(symbol, q, tw, perStock, live, stale, false)
 		c.Data(http.StatusOK, "text/pylon",
-			[]byte(render.BannerSourceBoxes(headline, bs.captions, bs.boxes())))
+			[]byte(render.BannerSourceBoxes(headline, bs.bannerTitle, bs.captions, bs.boxes())))
 		return
 	}
 
@@ -294,7 +294,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	bs := buildBlocks(symbol, q, tw, perStock, live, stale, useEnglish)
 
 	renderAt := func(m render.Mode) ([]byte, error) {
-		return render.BannerBoxes(headline, bs.captions, bs.boxes(), m)
+		return render.BannerBoxes(headline, bs.bannerTitle, bs.captions, bs.boxes(), m)
 	}
 	body, rerr := renderAt(mode)
 	if rerr != nil {
@@ -337,15 +337,18 @@ func ogDescription(q quote.Quote) string {
 }
 
 // stockBlocks is the per-surface render content for render.BannerSourceBoxes.
-// captions are the borderless header rows (index name + symbol/percent/
-// price/date) that sit directly under the banner; body is the flat
-// data-row list that fills the single AlignLeft borderless block
+// bannerTitle is the row that sits INSIDE the bordered banner box above
+// the price banner — typically `<symbol> · <name>`. captions are the
+// borderless header rows that sit directly under the banner box (the
+// price/percent/date caption row + optional volume row). body is the
+// flat data-row list that fills the single AlignLeft borderless block
 // underneath, with U+200B (zero-width space) separator rows marking
 // group boundaries.
 type stockBlocks struct {
-	captions []string
-	ohlc     []string
-	body     []string
+	bannerTitle string
+	captions    []string
+	ohlc        []string
+	body        []string
 }
 
 // boxes assembles the data section under the banner + captions as a
@@ -384,12 +387,13 @@ const blankRow = "​"
 // T86 returned a row, we render PER-STOCK flow with shares; otherwise
 // fall back to the market-wide BFI82U numbers in NTD.
 func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse.StockData, live twse.LiveBreadth, stale, useEnglish bool) stockBlocks {
-	bs := stockBlocks{captions: make([]string, 0, 3)}
+	bs := stockBlocks{captions: make([]string, 0, 2)}
 
-	// Title: `<symbol> · <name>`. The symbol/name pair contains "S&P 500"
-	// in some cases — `&P` would otherwise parse as a pylon Ref node and
-	// shred the line, so the strip is load-bearing here.
-	bs.captions = append(bs.captions, render.StripPylonSyntax(titleFor(symbol, q, useEnglish)))
+	// Title row sits INSIDE the bordered banner box, above the price
+	// banner. The symbol/name pair contains "S&P 500" in some cases —
+	// `&P` would otherwise parse as a pylon Ref node and shred the
+	// line, so the strip is load-bearing here.
+	bs.bannerTitle = render.StripPylonSyntax(titleFor(symbol, q, useEnglish))
 
 	prefix := ""
 	switch {

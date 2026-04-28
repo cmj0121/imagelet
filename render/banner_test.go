@@ -301,11 +301,12 @@ func TestBannerMultiEmptyHeadline(t *testing.T) {
 
 func TestBannerSourceBoxes(t *testing.T) {
 	cases := []struct {
-		name     string
-		headline string
-		captions []string
-		boxes    []render.BoxBlock
-		want     string
+		name        string
+		headline    string
+		bannerTitle string
+		captions    []string
+		boxes       []render.BoxBlock
+		want        string
 	}{
 		{
 			name:     "no_boxes_collapses_to_multi",
@@ -334,8 +335,8 @@ func TestBannerSourceBoxes(t *testing.T) {
 			headline: "hi",
 			boxes: []render.BoxBlock{
 				{Rows: []string{"a1"}},
-				{},                              // empty rows, skipped
-				{Rows: []string{"   ", "\t"}},   // all-whitespace rows, skipped
+				{},                            // empty rows, skipped
+				{Rows: []string{"   ", "\t"}}, // all-whitespace rows, skipped
 				{Rows: []string{"c1"}},
 			},
 			want: "[ hi | banner ]\n( a1 )\n( c1 )",
@@ -357,10 +358,31 @@ func TestBannerSourceBoxes(t *testing.T) {
 			// trailing `-` and switches the box to left alignment.
 			want: "[ hi | banner ]\n( r1\nr2 -)",
 		},
+		{
+			name:        "banner_title_emits_titled_outer_box",
+			headline:    "hi",
+			bannerTitle: "2330.TW    台積電",
+			captions:    []string{"cap"},
+			want:        "[\n2330.TW    台積電\n( hi | banner )\n]\n( cap )",
+		},
+		{
+			name:        "banner_title_with_box_section",
+			headline:    "hi",
+			bannerTitle: "TITLE",
+			boxes:       []render.BoxBlock{{Rows: []string{"r1"}}},
+			want:        "[\nTITLE\n( hi | banner )\n]\n( r1 )",
+		},
+		{
+			name:        "blank_banner_title_falls_back_to_legacy",
+			headline:    "hi",
+			bannerTitle: "   ",
+			captions:    []string{"cap"},
+			want:        "[ hi | banner ]\n( cap )",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := render.BannerSourceBoxes(tc.headline, tc.captions, tc.boxes)
+			got := render.BannerSourceBoxes(tc.headline, tc.bannerTitle, tc.captions, tc.boxes)
 			if got != tc.want {
 				t.Errorf("BannerSourceBoxes mismatch\n got: %q\nwant: %q", got, tc.want)
 			}
@@ -369,7 +391,7 @@ func TestBannerSourceBoxes(t *testing.T) {
 }
 
 func TestBannerBoxesASCIIRendersBorderlessRows(t *testing.T) {
-	body, err := render.BannerBoxes("hi", []string{"cap"},
+	body, err := render.BannerBoxes("hi", "", []string{"cap"},
 		[]render.BoxBlock{
 			{Rows: []string{"row-alpha", "row-beta"}, Align: render.AlignLeft},
 		},
@@ -397,7 +419,7 @@ func TestBannerBoxesCollapsesWhenAllBlocksEmpty(t *testing.T) {
 	// Empty boxes slice must produce the same output as BannerMulti so
 	// non-TW /stock visitors get a banner+captions surface with no
 	// trailing dead space or stray divider lines.
-	boxes, err := render.BannerBoxes("hi", []string{"cap"}, nil, render.ModeASCII)
+	boxes, err := render.BannerBoxes("hi", "", []string{"cap"}, nil, render.ModeASCII)
 	if err != nil {
 		t.Fatalf("BannerBoxes err: %v", err)
 	}

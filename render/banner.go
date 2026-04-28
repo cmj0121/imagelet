@@ -140,23 +140,50 @@ func (b BoxBlock) present() bool {
 //	( boxes[1].Rows[0]\n... )
 //	...
 //
+// When bannerTitle is non-empty, the banner box is widened into a
+// bordered multi-row container that holds the title row above the
+// banner-rendered headline:
+//
+//	[
+//	<bannerTitle>
+//	( headline | banner )
+//	]
+//	( cap1 )
+//	...
+//
+// The borderless `( ... | banner )` inside the outer `[ ]` keeps the
+// banner glyphs frame-free so only the outer frame shows — pylon
+// v0.5 renders this layout cleanly with CJK content where a fully
+// nested `[ X | banner ]` inside `[ ]` would emit a double frame.
+// Empty bannerTitle falls back to the single-line `[ headline |
+// banner ]` source so /now and other callers keep their look.
+//
 // Empty (zero-value) sections are skipped; an all-absent slice
-// collapses to BannerSourceMulti's banner+captions output. Sections
-// stack with no visible separator line — callers that want a visual
-// gap between groups can fold them into one BoxBlock with a blank /
-// ZWSP-only row at each group boundary; the AlignLeft trailing-dash
-// trick keeps every row in the merged block aligned to the same
-// column. Caller is responsible for keeping content pylon-safe —
-// literal `[`, `]`, `(`, `)`, and `|` are parsed as syntax. /stock
-// pre-strips caller-supplied content via render.StripPylonSyntax.
+// collapses to the banner+captions output. Sections stack with no
+// visible separator line — callers that want a visual gap between
+// groups can fold them into one BoxBlock with a blank / ZWSP-only
+// row at each group boundary; the AlignLeft trailing-dash trick
+// keeps every row in the merged block aligned to the same column.
+// Caller is responsible for keeping content pylon-safe — literal
+// `[`, `]`, `(`, `)`, and `|` are parsed as syntax. /stock pre-
+// strips caller-supplied content via render.StripPylonSyntax.
 //
 // Bordered `[...]` sections and the `[A] <-> [B]` side-by-side Row
 // were earlier designs but pylon v0.5 mis-renders both around CJK
 // content in SVG mode; borderless multi-row sections are the safe
 // fallback until pylon ships fixes.
-func BannerSourceBoxes(headline string, captions []string, boxes []BoxBlock) string {
+func BannerSourceBoxes(headline, bannerTitle string, captions []string, boxes []BoxBlock) string {
 	var b strings.Builder
-	b.WriteString(BannerSourceMulti(headline, captions))
+	if strings.TrimSpace(bannerTitle) == "" {
+		b.WriteString(BannerSourceMulti(headline, captions))
+	} else {
+		writeTitledBannerBox(&b, headline, bannerTitle)
+		for _, line := range captions {
+			b.WriteString("\n( ")
+			b.WriteString(line)
+			b.WriteString(" )")
+		}
+	}
 	for _, box := range boxes {
 		if !box.present() {
 			continue
@@ -165,6 +192,22 @@ func BannerSourceBoxes(headline string, captions []string, boxes []BoxBlock) str
 		writeBoxInline(&b, box)
 	}
 	return b.String()
+}
+
+// writeTitledBannerBox emits a bordered box containing the bannerTitle
+// row above a borderless `( <headline> | banner )` directive. The
+// borderless inner box keeps the banner glyphs frame-free so only the
+// outer frame shows. Empty headline normalizes to the shared `?`
+// placeholder, mirroring BannerSource.
+func writeTitledBannerBox(b *strings.Builder, headline, bannerTitle string) {
+	if strings.TrimSpace(headline) == "" {
+		headline = emptyPlaceholder
+	}
+	b.WriteString("[\n")
+	b.WriteString(bannerTitle)
+	b.WriteString("\n( ")
+	b.WriteString(headline)
+	b.WriteString(" | banner )\n]")
 }
 
 // writeBoxInline emits `( Row1\nRow2\n... )` to b — a borderless
@@ -189,8 +232,10 @@ func writeBoxInline(b *strings.Builder, blk BoxBlock) {
 
 // BannerBoxes renders BannerSourceBoxes through pylon. Same per-mode
 // behavior as BannerMulti (PaintSVG on SVG/HTML, ASCII trailing newline).
-func BannerBoxes(headline string, captions []string, boxes []BoxBlock, mode Mode) ([]byte, error) {
-	ast := pylon.Parse(BannerSourceBoxes(headline, captions, boxes))
+// bannerTitle is the optional row that sits inside the banner box above
+// the headline; pass "" for the legacy single-line banner source.
+func BannerBoxes(headline, bannerTitle string, captions []string, boxes []BoxBlock, mode Mode) ([]byte, error) {
+	ast := pylon.Parse(BannerSourceBoxes(headline, bannerTitle, captions, boxes))
 	if mode == ModePNG {
 		return pylon.RenderPNG(ast)
 	}
