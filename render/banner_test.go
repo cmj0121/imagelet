@@ -299,6 +299,117 @@ func TestBannerMultiEmptyHeadline(t *testing.T) {
 	}
 }
 
+func TestBannerSourceBoxes(t *testing.T) {
+	cases := []struct {
+		name     string
+		headline string
+		captions []string
+		boxes    []render.BoxBlock
+		want     string
+	}{
+		{
+			name:     "no_boxes_collapses_to_multi",
+			headline: "hi",
+			captions: []string{"cap"},
+			want:     "[ hi | banner ]\n( cap )",
+		},
+		{
+			name:     "single_box_appends_after_captions",
+			headline: "hi",
+			captions: []string{"cap"},
+			boxes:    []render.BoxBlock{{Rows: []string{"r1", "r2"}}},
+			want:     "[ hi | banner ]\n( cap )\n( r1\nr2 )",
+		},
+		{
+			name:     "two_boxes_stack_with_no_divider",
+			headline: "hi",
+			boxes: []render.BoxBlock{
+				{Rows: []string{"a1", "a2"}},
+				{Rows: []string{"b1"}},
+			},
+			want: "[ hi | banner ]\n( a1\na2 )\n( b1 )",
+		},
+		{
+			name:     "absent_boxes_skipped",
+			headline: "hi",
+			boxes: []render.BoxBlock{
+				{Rows: []string{"a1"}},
+				{},                              // empty rows, skipped
+				{Rows: []string{"   ", "\t"}},   // all-whitespace rows, skipped
+				{Rows: []string{"c1"}},
+			},
+			want: "[ hi | banner ]\n( a1 )\n( c1 )",
+		},
+		{
+			name:     "all_boxes_absent_collapses_to_multi",
+			headline: "hi",
+			captions: []string{"cap"},
+			boxes:    []render.BoxBlock{{}, {Rows: []string{" "}}, {}},
+			want:     "[ hi | banner ]\n( cap )",
+		},
+		{
+			name:     "align_left_emits_trailing_dash",
+			headline: "hi",
+			boxes: []render.BoxBlock{
+				{Rows: []string{"r1", "r2"}, Align: render.AlignLeft},
+			},
+			// Pylon's `\s+-$` regex on box inner content picks up the
+			// trailing `-` and switches the box to left alignment.
+			want: "[ hi | banner ]\n( r1\nr2 -)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := render.BannerSourceBoxes(tc.headline, tc.captions, tc.boxes)
+			if got != tc.want {
+				t.Errorf("BannerSourceBoxes mismatch\n got: %q\nwant: %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBannerBoxesASCIIRendersBorderlessRows(t *testing.T) {
+	body, err := render.BannerBoxes("hi", []string{"cap"},
+		[]render.BoxBlock{
+			{Rows: []string{"row-alpha", "row-beta"}, Align: render.AlignLeft},
+		},
+		render.ModeASCII)
+	if err != nil {
+		t.Fatalf("BannerBoxes err: %v", err)
+	}
+	got := string(body)
+	for _, sub := range []string{"row-alpha", "row-beta"} {
+		if !strings.Contains(got, sub) {
+			t.Errorf("ASCII output missing %q\n--- output ---\n%s", sub, got)
+		}
+	}
+	// No `<->` edge glyphs and no dashed-divider line — the new design
+	// stacks borderless rows directly without any visible separator
+	// (callers compose blank rows into the body when they want gaps).
+	for _, sub := range []string{"◀", "▶", "------"} {
+		if strings.Contains(got, sub) {
+			t.Errorf("ASCII output contains forbidden marker %q\n--- output ---\n%s", sub, got)
+		}
+	}
+}
+
+func TestBannerBoxesCollapsesWhenAllBlocksEmpty(t *testing.T) {
+	// Empty boxes slice must produce the same output as BannerMulti so
+	// non-TW /stock visitors get a banner+captions surface with no
+	// trailing dead space or stray divider lines.
+	boxes, err := render.BannerBoxes("hi", []string{"cap"}, nil, render.ModeASCII)
+	if err != nil {
+		t.Fatalf("BannerBoxes err: %v", err)
+	}
+	multi, err := render.BannerMulti("hi", []string{"cap"}, render.ModeASCII)
+	if err != nil {
+		t.Fatalf("BannerMulti err: %v", err)
+	}
+	if !bytes.Equal(boxes, multi) {
+		t.Errorf("BannerBoxes(nil) != BannerMulti\n--- boxes ---\n%s\n--- multi ---\n%s", boxes, multi)
+	}
+}
+
 // TestBannerSVGEscapesXML pins that pylon (or imagelet) escapes XML special
 // chars in text content. /404 injects the requested path into the response;
 // `/<script>` reaching an SVG `<text>` element unescaped would be a stored

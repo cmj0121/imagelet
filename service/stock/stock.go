@@ -16,13 +16,30 @@
 // the S&P 500 (^GSPC). Cache-Control: public, max-age=60 is set on every
 // rendered response so a CDN can absorb traffic spikes.
 //
-// Layout: the price banner sits above borderless caption rows holding the
-// index-name header and the symbol/percent/price/date caption. On the TW
-// path a `─ ─ ─ ─` divider follows, then 三大法人 + 融資/融券 aggregates
-// fetched from TWSE. The TW block uses Chinese labels on every surface
-// that can render CJK glyphs (ASCII / text/pylon / SVG / HTML). PNG is
-// the lone English holdout — pylon's PNG uses basicfont.Face7x13 which
-// has zero CJK coverage and would render Chinese as tofu.
+// Layout: the price banner sits above two borderless caption rows
+// (index-name header + symbol/percent/price/date caption). On the TW
+// path a single borderless multi-row block follows, AlignLeft, with
+// every data row carrying a compound label so no separate section
+// title is needed:
+//
+//	外資籌碼  bar  +43.9B
+//	投信籌碼  bar  +2.2B
+//	自營籌碼  bar  +8.9B
+//	合計籌碼  bar  +55.0B  ▲
+//	(blank)
+//	漲跌家數  bar  漲 312 跌 691 平 63
+//	(blank)
+//	信用餘額  融資 N億   融券 N萬張
+//	散戶多空  bar  +N%
+//
+// Blank rows between groups are zero-width space (U+200B) — a literal
+// blank string would be trimmed away by pylon's row parser. Bordered
+// boxes and `[A] <-> [B]` side-by-side rows were earlier designs but
+// pylon v0.5 mis-renders both around CJK content in SVG mode. The TW block uses Chinese labels on every
+// surface that can render CJK glyphs (ASCII / text/pylon / SVG / HTML);
+// PNG is the lone English holdout because pylon's PNG uses
+// basicfont.Face7x13 which has zero CJK coverage and would render
+// Chinese as tofu.
 package stock
 
 import (
@@ -69,13 +86,6 @@ var indexNameBySymbol = map[string]string{
 // map. S&P 500 is the de-facto global benchmark and matches the
 // middleware's "US" default country.
 const defaultSymbol = "^GSPC"
-
-// vDivider is the section break between the common data block and the
-// TW-only enrichment block. Alternating `─` + space reads as a thin
-// divider in both ASCII and PNG surfaces -- a true blank line via ZWSP
-// causes a PNG width-measurement artifact, so we use a visible separator
-// instead.
-const vDivider = "─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─"
 
 // indexNameFor returns the human-readable header line for symbol, or
 // empty string if symbol isn't in indexNameBySymbol. Callers MUST handle
@@ -143,8 +153,9 @@ func (h *handler) serve(c *gin.Context) {
 	// labels via the ASCII path; honors both Accept: text/pylon and
 	// ?format=pylon for header/query parity.
 	if middleware.WantsPylonSource(c) {
-		asciiLines := buildLines(symbol, q, tw, stale, false)
-		c.Data(http.StatusOK, "text/pylon", []byte(render.BannerSourceMulti(headline, asciiLines)))
+		bs := buildBlocks(symbol, q, tw, stale, false)
+		c.Data(http.StatusOK, "text/pylon",
+			[]byte(render.BannerSourceBoxes(headline, bs.captions, bs.boxes())))
 		return
 	}
 
@@ -156,12 +167,15 @@ func (h *handler) serve(c *gin.Context) {
 	// PNG is the only EN holdout — pylon's PNG uses basicfont.Face7x13
 	// which has zero CJK coverage; CN there would render as tofu.
 	useEnglish := mode == render.ModePNG
-	lines := buildLines(symbol, q, tw, stale, useEnglish)
+	bs := buildBlocks(symbol, q, tw, stale, useEnglish)
 
-	body, rerr := render.BannerMulti(headline, lines, mode)
+	renderAt := func(m render.Mode) ([]byte, error) {
+		return render.BannerBoxes(headline, bs.captions, bs.boxes(), m)
+	}
+	body, rerr := renderAt(mode)
 	if rerr != nil {
-		log.Error().Err(rerr).Stringer("mode", mode).Msg("render banner multi")
-		body, _ = render.BannerMulti(headline, lines, render.ModeASCII)
+		log.Error().Err(rerr).Stringer("mode", mode).Msg("render banner box")
+		body, _ = renderAt(render.ModeASCII)
 		mode = render.ModeASCII
 	}
 	if mode == render.ModePNG {
@@ -179,21 +193,48 @@ func (h *handler) serve(c *gin.Context) {
 	c.Data(http.StatusOK, "text/plain; charset=utf-8", body)
 }
 
-// buildLines assembles the borderless caption rows shown under the price
-// banner. Line order:
-//
-//  1. Index header (e.g. "TAIEX · Taiwan") -- omitted for unknown symbol
-//  2. Symbol caption: STALE/CLOSED prefix + symbol + arrow + change% + price + currency + date
-//  3. Divider + TW enrichment block (omitted unless tw.HasInstitutional() || tw.HasMargin())
-//
-// useEnglish=true picks the English labels for the TW block (PNG only,
-// since pylon's PNG font has no CJK glyphs); useEnglish=false picks
-// Chinese labels for every other surface.
-func buildLines(symbol string, q quote.Quote, tw twse.MarketData, stale, useEnglish bool) []string {
-	lines := make([]string, 0, 10)
+// stockBlocks is the per-surface render content for render.BannerSourceBoxes.
+// captions are the borderless header rows (index name + symbol/percent/
+// price/date) that sit directly under the banner; body is the flat
+// data-row list that fills the single AlignLeft borderless block
+// underneath, with U+200B (zero-width space) separator rows marking
+// group boundaries.
+type stockBlocks struct {
+	captions []string
+	body     []string
+}
 
+// boxes wraps the body rows in a single AlignLeft BoxBlock so all rows
+// share one alignment context (no inter-group stagger from independent
+// per-block centering). Returns nil when body is empty so non-TW
+// visitors render as banner+captions only.
+func (bs stockBlocks) boxes() []render.BoxBlock {
+	if len(bs.body) == 0 {
+		return nil
+	}
+	return []render.BoxBlock{{Rows: bs.body, Align: render.AlignLeft}}
+}
+
+// blankRow is the U+200B (zero-width space) separator row that creates
+// a visible gap between groups inside the AlignLeft body block. A
+// literal empty / whitespace-only row would be trimmed by pylon and
+// disappear from the rendered output; ZWSP is invisible but takes a
+// row, so the gap survives.
+const blankRow = "​"
+
+// buildBlocks assembles the per-surface content. useEnglish=true picks
+// English labels for the TW block on the PNG path only — pylon's PNG
+// font (basicfont.Face7x13) has zero CJK coverage so Chinese would
+// render as tofu. Every other surface (ASCII, text/pylon, SVG, HTML)
+// uses the Chinese label set.
+func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, stale, useEnglish bool) stockBlocks {
+	bs := stockBlocks{captions: make([]string, 0, 2)}
+
+	// Index name comes from a static map but contains "S&P 500" — `&P`
+	// would otherwise parse as a pylon Ref node and shred the line, so
+	// the strip is load-bearing here.
 	if name := indexNameFor(symbol); name != "" {
-		lines = append(lines, render.StripPylonSyntax(name))
+		bs.captions = append(bs.captions, render.StripPylonSyntax(name))
 	}
 
 	prefix := ""
@@ -207,85 +248,90 @@ func buildLines(symbol string, q quote.Quote, tw twse.MarketData, stale, useEngl
 	if q.ChangePercent() < 0 {
 		arrow = "▼"
 	}
-	caption := render.StripPylonSyntax(fmt.Sprintf(
+	// Currency comes from upstream Yahoo and could in theory carry junk;
+	// keep the strip on the symbol caption.
+	bs.captions = append(bs.captions, render.StripPylonSyntax(fmt.Sprintf(
 		"%s%s  %s %+.2f%%  %s %s  %s",
 		prefix, symbol, arrow, q.ChangePercent(),
 		formatPrice(q.Last), q.Currency,
 		q.AsOf.Format("2006-01-02"),
-	))
-	lines = append(lines, caption)
+	)))
 
-	if tw.HasInstitutional() || tw.HasMargin() {
-		lines = append(lines, vDivider)
-		if tw.HasInstitutional() {
-			lines = append(lines, institutionalLines(tw, useEnglish)...)
-		}
-		if tw.HasMargin() {
-			lines = append(lines, formatMargin(tw, useEnglish))
-		}
+	var groups [][]string
+	if tw.HasInstitutional() {
+		groups = append(groups, positioningRows(tw, useEnglish))
 	}
-	return lines
+	if tw.HasBreadth() {
+		groups = append(groups, technicalRows(tw, useEnglish))
+	}
+	if tw.HasMargin() {
+		groups = append(groups, creditRows(tw, useEnglish))
+	}
+	for i, g := range groups {
+		if i > 0 {
+			bs.body = append(bs.body, blankRow)
+		}
+		bs.body = append(bs.body, g...)
+	}
+	return bs
 }
 
-// institutionalLines formats the BFI82U row as a five-line table: a
-// header followed by foreign / trust / dealer / net rows, each with a
-// center-split magnitude bar (negatives grow leftward from the center,
-// positives grow rightward). The four rows share a common scale set by
-// the largest absolute value across them, so a glance reveals which
-// participant dominated the day. The net row carries a `▲`/`▼` arrow
-// matching its sign.
-//
-// CN headers / labels: `三大法人`, `外資`, `投信`, `自營`, `合計`.
-// EN equivalents: `institutional`, `foreign`, `trust`, `dealer`, `net`.
-//
-// Numbers are NTD billions with one decimal (formatNTDBillions).
-func institutionalLines(tw twse.MarketData, useEnglish bool) []string {
+// technicalRows formats the breadth section as a single 漲跌家數 row
+// carrying the SignedBar (driven by BreadthScore, which excludes 持平)
+// followed by raw advance / decline / unchanged counts. One row keeps
+// the section compact next to the four-row positioning block.
+func technicalRows(tw twse.MarketData, useEnglish bool) []string {
 	const halfWidth = 10
-	max := absMaxInt64(tw.ForeignNet, tw.TrustNet, tw.DealerNet, tw.Net)
-	maxF := float64(max)
-
-	type row struct {
-		labelEN string
-		labelCN string
-		value   int64
-	}
-	rows := []row{
-		{"foreign", "外資", tw.ForeignNet},
-		{"trust", "投信", tw.TrustNet},
-		{"dealer", "自營", tw.DealerNet},
-		{"net", "合計", tw.Net},
-	}
-
-	out := make([]string, 0, 5)
+	bar := render.SignedBar(tw.BreadthScore(), 1.0, halfWidth)
 	if useEnglish {
-		out = append(out, "institutional")
-	} else {
-		out = append(out, "三大法人")
+		return []string{fmt.Sprintf("breadth  %s  up %d  down %d  even %d",
+			bar, tw.AdvanceCount, tw.DeclineCount, tw.UnchangedCount)}
 	}
+	return []string{fmt.Sprintf("漲跌家數  %s  漲 %d 跌 %d 平 %d",
+		bar, tw.AdvanceCount, tw.DeclineCount, tw.UnchangedCount)}
+}
+
+// positioningRows formats the 三大法人 section: 外資籌碼 / 投信籌碼 /
+// 自營籌碼 / 合計籌碼, each with a center-split SignedBar on a shared
+// scale (the largest absolute value across the four), so a glance
+// reveals which participant dominated the day. The 合計 row carries a
+// ▲/▼ arrow matching its sign as the summary cue.
+func positioningRows(tw twse.MarketData, useEnglish bool) []string {
+	const halfWidth = 10
+	maxF := float64(absMaxInt64(tw.ForeignNet, tw.TrustNet, tw.DealerNet, tw.Net))
+
+	type entry struct{ labelEN, labelCN string; value int64 }
+	rows := []entry{
+		{"foreign", "外資籌碼", tw.ForeignNet},
+		{"trust  ", "投信籌碼", tw.TrustNet},
+		{"dealer ", "自營籌碼", tw.DealerNet},
+		{"total  ", "合計籌碼", tw.Net},
+	}
+
+	out := make([]string, 0, len(rows))
 	for i, r := range rows {
 		bar := render.SignedBar(float64(r.value), maxF, halfWidth)
 		amount := formatNTDBillions(r.value)
 		var line string
 		if useEnglish {
-			line = fmt.Sprintf("  %-8s %s  %s", r.labelEN, bar, amount)
+			line = fmt.Sprintf("%s  %s  %s", r.labelEN, bar, amount)
 		} else {
-			line = fmt.Sprintf("  %s  %s  %s", r.labelCN, bar, amount)
+			line = fmt.Sprintf("%s  %s  %s", r.labelCN, bar, amount)
 		}
-		// Net row carries an up/down arrow on the trailing amount.
 		if i == len(rows)-1 {
-			arrow := "▲"
+			arrowChar := "▲"
 			if r.value < 0 {
-				arrow = "▼"
+				arrowChar = "▼"
 			}
-			line += "  " + arrow
+			line += "  " + arrowChar
 		}
-		out = append(out, render.StripPylonSyntax(line))
+		out = append(out, line)
 	}
 	return out
 }
 
 // absMaxInt64 returns the largest absolute value among the inputs.
-// Returns 0 if all inputs are 0 (so callers can divide-guard upstream).
+// Returns 0 when all inputs are 0 so callers can divide-guard upstream.
 func absMaxInt64(vs ...int64) int64 {
 	var m int64
 	for _, v := range vs {
@@ -300,24 +346,19 @@ func absMaxInt64(vs ...int64) int64 {
 	return m
 }
 
-// formatMargin formats the MI_MARGN row. CN: `融資餘額 4,409億 TWD  融券餘額 19萬張`.
-// EN: `margin long 4.4T TWD  margin short 190.8K lots`.
-//
-// CN uses native Taiwanese unit conventions (億 = 100M, 萬 = 10K, 張 =
-// lot of typically 1000 shares). EN converts to international units.
-func formatMargin(tw twse.MarketData, useEnglish bool) string {
+// creditRows formats the credit section: a single 信用餘額 row carrying
+// the 融資 / 融券 totals. CN units (億 / 萬張) on CJK-capable surfaces,
+// K/M/B/T in EN. The retail bull/bear row was dropped — its score sits
+// near +1 most days because TW retail margin is structurally long-biased,
+// so the signal reads as drift-from-baseline rather than absolute
+// sentiment and was not adding glance-value.
+func creditRows(tw twse.MarketData, useEnglish bool) []string {
 	if useEnglish {
-		return render.StripPylonSyntax(fmt.Sprintf(
-			"margin long %s TWD  margin short %s lots",
-			formatLargeNumber(tw.MarginLongTWD),
-			formatLargeNumber(tw.MarginShortLots),
-		))
+		return []string{fmt.Sprintf("balance   long %s   short %s",
+			formatLargeNumber(tw.MarginLongTWD), formatLargeNumber(tw.MarginShortLots))}
 	}
-	return render.StripPylonSyntax(fmt.Sprintf(
-		"融資餘額 %s  融券餘額 %s",
-		formatTWDInYi(tw.MarginLongTWD),
-		formatLotsInWan(tw.MarginShortLots),
-	))
+	return []string{fmt.Sprintf("信用餘額  融資 %s   融券 %s",
+		formatTWDInYi(tw.MarginLongTWD), formatLotsInWan(tw.MarginShortLots))}
 }
 
 // formatNTDBillions converts raw NTD into a `±XX.XB` string. e.g.

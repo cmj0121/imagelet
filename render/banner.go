@@ -101,3 +101,104 @@ func BannerSourceMulti(headline string, lines []string) string {
 	}
 	return b.String()
 }
+
+// AlignLeft requests left alignment on a BoxBlock. Empty Align (the
+// zero value) keeps pylon's default center alignment. Pylon's grammar
+// uses a trailing `-` inside the parentheses to flag left alignment;
+// the constant lets callers reach for a name instead of the marker.
+const AlignLeft = "left"
+
+// BoxBlock is a borderless multi-row section: a list of body rows that
+// renders as a single multi-line pylon box. An empty Rows slice (or
+// one containing only blank rows) marks the block as absent so callers
+// can pass a zero-value BoxBlock to skip it. Align controls the
+// section-wide alignment (currently AlignLeft is supported; empty
+// defaults to pylon's center). /stock packs all of its TW data rows
+// into a single BoxBlock with ZWSP-only separator rows for visual
+// grouping and hands it to BannerSourceBoxes / BannerBoxes.
+type BoxBlock struct {
+	Rows  []string
+	Align string
+}
+
+func (b BoxBlock) present() bool {
+	for _, r := range b.Rows {
+		if strings.TrimSpace(r) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// BannerSourceBoxes extends BannerSourceMulti with N stacked borderless
+// sections after the borderless captions:
+//
+//	[ headline | banner ]
+//	( cap1 )
+//	( capN )
+//	( boxes[0].Rows[0]\n... )
+//	( boxes[1].Rows[0]\n... )
+//	...
+//
+// Empty (zero-value) sections are skipped; an all-absent slice
+// collapses to BannerSourceMulti's banner+captions output. Sections
+// stack with no visible separator line — callers that want a visual
+// gap between groups can fold them into one BoxBlock with a blank /
+// ZWSP-only row at each group boundary; the AlignLeft trailing-dash
+// trick keeps every row in the merged block aligned to the same
+// column. Caller is responsible for keeping content pylon-safe —
+// literal `[`, `]`, `(`, `)`, and `|` are parsed as syntax. /stock
+// pre-strips caller-supplied content via render.StripPylonSyntax.
+//
+// Bordered `[...]` sections and the `[A] <-> [B]` side-by-side Row
+// were earlier designs but pylon v0.5 mis-renders both around CJK
+// content in SVG mode; borderless multi-row sections are the safe
+// fallback until pylon ships fixes.
+func BannerSourceBoxes(headline string, captions []string, boxes []BoxBlock) string {
+	var b strings.Builder
+	b.WriteString(BannerSourceMulti(headline, captions))
+	for _, box := range boxes {
+		if !box.present() {
+			continue
+		}
+		b.WriteByte('\n')
+		writeBoxInline(&b, box)
+	}
+	return b.String()
+}
+
+// writeBoxInline emits `( Row1\nRow2\n... )` to b — a borderless
+// pylon box. AlignLeft is signalled via a trailing `-` inside the
+// parentheses (`( ... -)`) which pylon's `\s+-$` parser regex picks
+// up; that shifts every row in the section flush-left so labels and
+// bars across rows line up vertically.
+func writeBoxInline(b *strings.Builder, blk BoxBlock) {
+	b.WriteString("( ")
+	for i, row := range blk.Rows {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(row)
+	}
+	if blk.Align == AlignLeft {
+		b.WriteString(" -)")
+	} else {
+		b.WriteString(" )")
+	}
+}
+
+// BannerBoxes renders BannerSourceBoxes through pylon. Same per-mode
+// behavior as BannerMulti (PaintSVG on SVG/HTML, ASCII trailing newline).
+func BannerBoxes(headline string, captions []string, boxes []BoxBlock, mode Mode) ([]byte, error) {
+	ast := pylon.Parse(BannerSourceBoxes(headline, captions, boxes))
+	if mode == ModePNG {
+		return pylon.RenderPNG(ast)
+	}
+	if mode == ModeSVG {
+		return PaintSVG([]byte(pylon.RenderSVG(ast))), nil
+	}
+	if mode == ModeHTML {
+		return WrapHTML(PaintSVG([]byte(pylon.RenderSVG(ast)))), nil
+	}
+	return []byte(pylon.RenderASCII(ast) + "\n"), nil
+}
