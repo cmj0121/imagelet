@@ -219,6 +219,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	var live twse.LiveBreadth
 	var retail twse.RetailFutures
 	var lending twse.SecuritiesLending
+	var margin twse.StockMargin
 	var pcr twse.OptionsPCR
 	var vix twse.VIX
 	if enrichTW && h.twse != nil {
@@ -314,7 +315,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 			}
 
 			if stockID != "" {
-				// Per-stock view: only the per-symbol signal applies.
+				// Per-stock view: only the per-symbol signals apply.
 				// Retail futures, PCR, and VIX are market-wide and
 				// would just be noise alongside a single ticker.
 				if slp, ok := h.twse.(twse.SecuritiesLendingProvider); ok {
@@ -322,6 +323,13 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 						lending = l
 					} else if lerr != twse.ErrUnavailable {
 						log.Warn().Err(lerr).Str("stock", stockID).Msg("twse securities-lending fetch failed; omitting 借券 row")
+					}
+				}
+				if smp, ok := h.twse.(twse.StockMarginProvider); ok {
+					if m, merr := smp.GetStockMargin(ctx, stockID, asOfQuery); merr == nil {
+						margin = m
+					} else if merr != twse.ErrUnavailable {
+						log.Warn().Err(merr).Str("stock", stockID).Msg("twse stock-margin fetch failed; omitting 融資/融券 row")
 					}
 				}
 			} else {
@@ -359,7 +367,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	// labels via the ASCII path; honors both Accept: text/pylon and
 	// ?format=pylon for header/query parity.
 	if middleware.WantsPylonSource(c) {
-		bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, pcr, vix, stale, false)
+		bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, stale, false)
 		c.Data(http.StatusOK, "text/pylon",
 			[]byte(render.BannerSourceBoxes(headline, "", bs.captions, bs.boxes())))
 		return
@@ -373,7 +381,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	// PNG is the only EN holdout — pylon's PNG uses basicfont.Face7x13
 	// which has zero CJK coverage; CN there would render as tofu.
 	useEnglish := mode == render.ModePNG
-	bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, pcr, vix, stale, useEnglish)
+	bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, stale, useEnglish)
 
 	renderAt := func(m render.Mode) ([]byte, error) {
 		return render.BannerBoxes(headline, "", bs.captions, bs.boxes(), m)
@@ -465,7 +473,7 @@ const blankRow = "​"
 // the 三大法人 group: when the symbol carries a TWSE stock id and
 // T86 returned a row, we render PER-STOCK flow with shares; otherwise
 // fall back to the market-wide BFI82U numbers in NTD.
-func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse.StockData, live twse.LiveBreadth, retail twse.RetailFutures, lending twse.SecuritiesLending, pcr twse.OptionsPCR, vix twse.VIX, stale, useEnglish bool) stockBlocks {
+func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse.StockData, live twse.LiveBreadth, retail twse.RetailFutures, lending twse.SecuritiesLending, margin twse.StockMargin, pcr twse.OptionsPCR, vix twse.VIX, stale, useEnglish bool) stockBlocks {
 	bs := stockBlocks{captions: make([]string, 0, 3)}
 
 	// Title row: `<symbol> · <name>`. The symbol/name pair contains
@@ -547,8 +555,8 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 	if q.IsClosed && tw.HasMargin() {
 		groups = append(groups, creditRows(tw, useEnglish))
 	}
-	if q.IsClosed && lending.Has() {
-		groups = append(groups, []string{lendingRow(lending, useEnglish)})
+	if q.IsClosed && (margin.Has() || lending.Has()) {
+		groups = append(groups, perStockCreditRows(margin, lending, useEnglish))
 	}
 	if q.IsClosed && (pcr.Has() || vix.Has()) {
 		groups = append(groups, []string{marketSentimentRow(pcr, vix, useEnglish)})
@@ -753,18 +761,41 @@ func absMaxInt64(vs ...int64) int64 {
 	return m
 }
 
-// lendingRow formats the 借券賣出 row: standing securities-lending
-// short balance in lots (1 張 = 1000 shares). The headline metric is
-// the standing balance, not per-day flow — high values flag
-// significant outstanding short pressure on the listing. Single row,
-// no SignedBar (the value is unsigned and a bar without a comparator
-// adds noise rather than information).
-func lendingRow(d twse.SecuritiesLending, useEnglish bool) string {
-	lots := d.Balance / 1000 // shares → 張
-	if useEnglish {
-		return fmt.Sprintf("sbl-bal     %s lots", formatThousands(lots))
+// perStockCreditRows formats the per-stock credit-trading group:
+// 融資餘額 (margin balance — long-leverage standing position),
+// 融券餘額 (formal short standing balance), and 借券賣出當日餘額
+// (institutional/SBL short standing balance). All values are
+// surfaced in lots (1 張 = 1000 shares). Each input may be empty;
+// callers gate on (margin.Has() || lending.Has()) and the helper
+// drops absent rows so the group collapses to whichever signals
+// the upstream produced.
+//
+// 融資 and 融券 form the canonical retail credit pair (the 券資比
+// is the read at a glance); 借券賣出 sits on the same sheet because
+// it's the institutional-facing short balance — together they
+// describe the full standing-short picture for the listing.
+func perStockCreditRows(m twse.StockMargin, l twse.SecuritiesLending, useEnglish bool) []string {
+	var rows []string
+	if m.Has() {
+		// MI_MARGN reports 融資/融券 in 張 directly (per-stock 交易單位),
+		// unlike TWT93U which reports 借券 in shares — no /1000 here.
+		if useEnglish {
+			rows = append(rows, fmt.Sprintf("margin-bal  %s lots", formatThousands(m.MarginBalance)))
+			rows = append(rows, fmt.Sprintf("short-bal   %s lots", formatThousands(m.ShortBalance)))
+		} else {
+			rows = append(rows, fmt.Sprintf("融資餘額  %s 張", formatThousands(m.MarginBalance)))
+			rows = append(rows, fmt.Sprintf("融券餘額  %s 張", formatThousands(m.ShortBalance)))
+		}
 	}
-	return fmt.Sprintf("借券賣出  %s 張", formatThousands(lots))
+	if l.Has() {
+		lots := l.Balance / 1000
+		if useEnglish {
+			rows = append(rows, fmt.Sprintf("sbl-bal     %s lots", formatThousands(lots)))
+		} else {
+			rows = append(rows, fmt.Sprintf("借券賣出  %s 張", formatThousands(lots)))
+		}
+	}
+	return rows
 }
 
 // marketSentimentRow combines the 台指選擇權 Put/Call ratio and the
