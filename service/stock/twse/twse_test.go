@@ -20,6 +20,7 @@ import (
 //
 //	/BFI82U → testdata/bfi82u_open.json
 //	/MIMARGN → testdata/mi_margn_open.json
+//	/MIINDEX → testdata/mi_index_open.json
 //
 // Sleep introduces an artificial delay so concurrent-Get tests can
 // exercise singleflight.
@@ -32,6 +33,8 @@ func fixtureServer(t *testing.T, sleep time.Duration) *httptest.Server {
 			name = "bfi82u_open.json"
 		case strings.Contains(r.URL.Path, "MIMARGN"):
 			name = "mi_margn_open.json"
+		case strings.Contains(r.URL.Path, "MIINDEX"):
+			name = "mi_index_open.json"
 		default:
 			http.NotFound(w, r)
 			return
@@ -52,6 +55,7 @@ func newProvider(srv *httptest.Server) *twse.HTTPProvider {
 	return twse.NewWithEndpoints(
 		srv.URL+"/BFI82U?d=%s",
 		srv.URL+"/MIMARGN?d=%s",
+		srv.URL+"/MIINDEX?d=%s",
 		srv.Client(),
 	)
 }
@@ -85,9 +89,42 @@ func TestGetMergesBothEndpoints(t *testing.T) {
 	if d.MarginLongTWD != 440907083000 {
 		t.Errorf("MarginLongTWD = %d, want 440907083000", d.MarginLongTWD)
 	}
+	// Fixture: 融券金額 今日餘額 = 12,345,678 千元 → 12,345,678,000 NTD.
+	if d.MarginShortTWD != 12345678000 {
+		t.Errorf("MarginShortTWD = %d, want 12345678000", d.MarginShortTWD)
+	}
+	// Fixture: 融資(交易單位) 今日餘額 = 8,566,954 張.
+	if d.MarginLongLots != 8566954 {
+		t.Errorf("MarginLongLots = %d, want 8566954", d.MarginLongLots)
+	}
 	// Fixture: 融券(交易單位) 今日餘額 = 190,811 張.
 	if d.MarginShortLots != 190811 {
 		t.Errorf("MarginShortLots = %d, want 190811", d.MarginShortLots)
+	}
+	// RetailBullBearScore: (8566954 - 190811) / (8566954 + 190811)
+	// ≈ +0.9564, well above zero — TW retail margin is structurally
+	// long-biased, score reading is meaningful as drift-from-baseline.
+	if score := d.RetailBullBearScore(); score < 0.95 || score > 0.96 {
+		t.Errorf("RetailBullBearScore = %.4f, want ≈0.9564", score)
+	}
+	// MI_INDEX 漲跌證券數合計 (股票 column): 上漲 312, 下跌 691, 持平 63.
+	// Limit-up/down sub-counts inside `(...)` are stripped during parsing.
+	if !d.HasBreadth() {
+		t.Errorf("HasBreadth = false, want true (fixture has MI_INDEX data)")
+	}
+	if d.AdvanceCount != 312 {
+		t.Errorf("AdvanceCount = %d, want 312", d.AdvanceCount)
+	}
+	if d.DeclineCount != 691 {
+		t.Errorf("DeclineCount = %d, want 691", d.DeclineCount)
+	}
+	if d.UnchangedCount != 63 {
+		t.Errorf("UnchangedCount = %d, want 63", d.UnchangedCount)
+	}
+	// BreadthScore = (312 - 691) / (312 + 691) ≈ -0.378.
+	// Negative reading: more decliners than advancers — bearish day.
+	if score := d.BreadthScore(); score > -0.37 || score < -0.39 {
+		t.Errorf("BreadthScore = %.3f, want ≈-0.378", score)
 	}
 }
 
