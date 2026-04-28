@@ -1241,3 +1241,66 @@ func TestServeSymbolUpstream503Surfaces(t *testing.T) {
 		t.Errorf("Retry-After = %q, want 60", got)
 	}
 }
+
+// TestServeCacheControlVariesByMarketState pins the per-context
+// Cache-Control TTL ladder consumed by the htmlcache middleware:
+// live=60s, closed=300s, historical=86400s. The handler is the
+// authoritative source for these values; htmlcache reads them
+// off the response, so a regression here silently changes the
+// in-process cache TTL too.
+func TestServeCacheControlVariesByMarketState(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	live := freshQuote()
+	hist := freshQuote()
+	hist.Last = 1300.42
+	hist.AsOf = time.Date(2012, 2, 2, 16, 0, 0, 0, time.UTC)
+	hist.IsClosed = true
+
+	cases := []struct {
+		name    string
+		setup   func() (quote.Provider, string)
+		wantCC  string
+	}{
+		{
+			name: "live",
+			setup: func() (quote.Provider, string) {
+				return fakeProvider{q: live}, "/stock"
+			},
+			wantCC: "public, max-age=60",
+		},
+		{
+			name: "closed",
+			setup: func() (quote.Provider, string) {
+				closed := freshQuote()
+				closed.IsClosed = true
+				return fakeProvider{q: closed}, "/stock"
+			},
+			wantCC: "public, max-age=300",
+		},
+		{
+			name: "historical",
+			setup: func() (quote.Provider, string) {
+				return &histProvider{live: live, hist: hist}, "/stock?date=2012-02-02"
+			},
+			wantCC: "public, max-age=86400",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, url := tc.setup()
+			r := newRouter(p)
+			req := httptest.NewRequest(http.MethodGet, url, nil)
+			req.Header.Set("User-Agent", "curl/8.4.0")
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			if got := rec.Header().Get("Cache-Control"); got != tc.wantCC {
+				t.Errorf("Cache-Control = %q, want %q", got, tc.wantCC)
+			}
+		})
+	}
+}

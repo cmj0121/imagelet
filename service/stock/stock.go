@@ -360,7 +360,28 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 
 	headline := strconv.FormatFloat(q.Last, 'f', 2, 64)
 
-	c.Header("Cache-Control", "public, max-age=60")
+	// Cache-Control TTL varies by what the response represents:
+	//
+	//   - ?date=YYYY-MM-DD: a historical snapshot, immutable upstream.
+	//     1 day TTL — past trading days don't change.
+	//   - q.IsClosed (today's close): daily totals are settled and
+	//     won't churn until the next open. 5 min TTL — long enough to
+	//     absorb burst traffic, short enough that a deploy or upstream
+	//     correction surfaces within a coffee.
+	//   - live market: prices tick. 1 min TTL — matches the underlying
+	//     quote.cached.Provider's success TTL so the displayed price
+	//     can't lead the upstream cache.
+	//
+	// The htmlcache middleware reads these directly off the response
+	// header; no per-route TTL plumbing.
+	maxAge := 60
+	switch {
+	case dateOverride:
+		maxAge = 86400
+	case q.IsClosed:
+		maxAge = 300
+	}
+	c.Header("Cache-Control", fmt.Sprintf("public, max-age=%d", maxAge))
 
 	// Pylon-source short-circuit: bare source, ASCII label set. text/pylon
 	// clients are typically renderer-shaped (terminal-y), so they get CN
