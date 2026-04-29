@@ -61,7 +61,12 @@ const (
 //
 // `prevClose` is the previous trading day's close. Pass 0 to omit
 // the ▼ overlay.
-func MAPositionBar(ma10, ma5, price, prevClose float64, width int, format func(float64) string) (top, bar, caption string) {
+//
+// `band` is the half-width pct window of the price axis (e.g. 0.03
+// = ±3%). When stacking the MA bar under an OHLCBar pass the same
+// band to both so the columns align. Non-positive band falls back
+// to priceBandScale.
+func MAPositionBar(ma10, ma5, price, prevClose float64, width int, band float64, format func(float64) string) (top, bar, caption string) {
 	if ma10 <= 0 || ma5 <= 0 || price <= 0 {
 		return "", "", ""
 	}
@@ -73,8 +78,8 @@ func MAPositionBar(ma10, ma5, price, prevClose float64, width int, format func(f
 	}
 
 	centerCol := width / 2
-	ma10Col, ma10ClipL, ma10ClipR := priceOffsetCol(ma10, price, width)
-	ma5Col, ma5ClipL, ma5ClipR := priceOffsetCol(ma5, price, width)
+	ma10Col, ma10ClipL, ma10ClipR := priceOffsetCol(ma10, price, width, band)
+	ma5Col, ma5ClipL, ma5ClipR := priceOffsetCol(ma5, price, width, band)
 
 	// --- Bar row ---
 	barRunes := make([]rune, width)
@@ -108,7 +113,7 @@ func MAPositionBar(ma10, ma5, price, prevClose float64, width int, format func(f
 	// --- Top row: optional ▼ glyph (position only). ---
 	top = strings.Repeat(" ", width)
 	if prevClose > 0 {
-		prevCol, _, _ := priceOffsetCol(prevClose, price, width)
+		prevCol, _, _ := priceOffsetCol(prevClose, price, width, band)
 		top = overlayPrevGlyph(top, prevCol, width)
 	}
 

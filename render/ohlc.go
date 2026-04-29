@@ -44,11 +44,22 @@ const (
 	ohlcMarkerLow  = 'L'
 	ohlcMarkerHigh = 'H'
 
-	// priceBandScale is the half-width of the price-relative bar window:
-	// ±3% around the current price covers the typical daily move on
-	// equity indices and individual TW stocks. Markers outside this
-	// band clip to the edge with ▶ / ◀ saturation sentinels.
+	// priceBandScale is a conservative default half-width (±3%) for
+	// callers that don't compute an adaptive band via PriceBandFor.
+	// Production callers (service/stock) pass an adaptive band fitted
+	// to the actual marker values so quiet days fill the bar; this
+	// constant remains the fallback for tests and ad-hoc invocations.
 	priceBandScale = 0.03
+
+	// minPriceBand floors the adaptive band so a degenerate input
+	// (all markers equal to price) still yields a usable bar instead
+	// of dividing by zero.
+	minPriceBand = 0.005
+	// maxPriceBand caps the adaptive band so a single far-off marker
+	// (typically MA10 in a strongly trending stock) doesn't widen the
+	// scale enough to cluster every other marker at the center.
+	// Markers beyond ±5% clip to the edge with ▶ / ◀ sentinels.
+	maxPriceBand = 0.05
 )
 
 // OHLCBar renders a price-relative range bar as four equal-width
@@ -87,19 +98,25 @@ const (
 // the ▼ marker AND the `P:` field on the OCP row.
 // `high` / `low` (when both > 0 with low <= high) drive the bracket
 // markers and the HL data row. Pass 0 for either to omit.
-func OHLCBar(open, high, low, last, prevClose float64, width int, format func(float64) string) (top, bar, ocp, hl string) {
+//
+// `band` is the half-width pct window of the bar's price axis (e.g.
+// 0.03 = ±3%). Pass priceBandScale for the legacy fixed window;
+// production callers compute an adaptive band via PriceBandFor so
+// markers fill the bar on quiet days. Non-positive band falls back
+// to priceBandScale.
+func OHLCBar(open, high, low, last, prevClose float64, width int, band float64, format func(float64) string) (top, bar, ocp, hl string) {
 	if last <= 0 || width < 8 {
 		return "", "", "", ""
 	}
 	centerCol := width / 2
-	openCol, openClipL, openClipR := priceOffsetCol(open, last, width)
+	openCol, openClipL, openClipR := priceOffsetCol(open, last, width, band)
 
 	hasRange := high > 0 && low > 0 && low <= high
 	var lowCol, highCol int
 	var lowClipL, highClipR bool
 	if hasRange {
-		lowCol, lowClipL, _ = priceOffsetCol(low, last, width)
-		highCol, _, highClipR = priceOffsetCol(high, last, width)
+		lowCol, lowClipL, _ = priceOffsetCol(low, last, width, band)
+		highCol, _, highClipR = priceOffsetCol(high, last, width, band)
 	}
 
 	bar = ohlcBarRow(openCol, centerCol, lowCol, highCol, hasRange,
@@ -107,7 +124,7 @@ func OHLCBar(open, high, low, last, prevClose float64, width int, format func(fl
 
 	top = strings.Repeat(" ", width)
 	if prevClose > 0 {
-		prevCol, _, _ := priceOffsetCol(prevClose, last, width)
+		prevCol, _, _ := priceOffsetCol(prevClose, last, width, band)
 		top = overlayPrevGlyph(top, prevCol, width)
 	}
 
@@ -131,22 +148,26 @@ func formatOCPRow(open, last, prevClose float64, format func(float64) string) st
 }
 
 // priceOffsetCol maps `value` onto a width-cell bar centered on
-// `price` at column `width/2`, with the bar spanning ±priceBandScale
-// (3% by default) around price. Returns the column index plus
-// clip-left / clip-right flags when the offset exceeds the band so
-// the caller can swap in a ▶ / ◀ saturation sentinel at the edge.
+// `price` at column `width/2`, with the bar spanning ±band around
+// price. Returns the column index plus clip-left / clip-right flags
+// when the offset exceeds the band so the caller can swap in a ▶ /
+// ◀ saturation sentinel at the edge.
 //
-// When `price` is non-positive the function returns the center
-// column with no clipping — the caller is expected to gate on
-// `price > 0` before drawing, but this conservative fallback keeps
-// the helper from dividing by zero on a degenerate input.
-func priceOffsetCol(value, price float64, width int) (col int, clipLeft, clipRight bool) {
+// Non-positive `price` returns the center column with no clipping —
+// the caller is expected to gate on `price > 0` before drawing, but
+// this conservative fallback keeps the helper from dividing by zero
+// on a degenerate input. Non-positive `band` falls back to the
+// priceBandScale default.
+func priceOffsetCol(value, price float64, width int, band float64) (col int, clipLeft, clipRight bool) {
 	centerCol := width / 2
 	if price <= 0 {
 		return centerCol, false, false
 	}
+	if band <= 0 {
+		band = priceBandScale
+	}
 	pctOffset := (value - price) / price
-	raw := float64(centerCol) + pctOffset/priceBandScale*float64(centerCol)
+	raw := float64(centerCol) + pctOffset/band*float64(centerCol)
 	col = int(math.Round(raw))
 	if col < 0 {
 		return 0, true, false
@@ -155,6 +176,42 @@ func priceOffsetCol(value, price float64, width int) (col int, clipLeft, clipRig
 		return width - 1, false, true
 	}
 	return col, false, false
+}
+
+// PriceBandFor returns an adaptive half-width pct band fitted to
+// `values` relative to `price`: the largest absolute pct offset
+// across the non-zero values, plus a 10% padding margin so the
+// widest marker doesn't sit at the very edge. Floored at minPriceBand
+// (so degenerate all-equal-to-price inputs still yield a usable bar)
+// and capped at maxPriceBand (so a single far-off MA doesn't widen
+// the scale enough to cluster every other marker at center; values
+// beyond the cap clip to the edge with ▶ / ◀).
+//
+// Pass the values that should drive the spread — typically the
+// union of OHLC + prev-close + MA markers when sharing the band
+// across stacked bars so they decode column-by-column.
+func PriceBandFor(price float64, values ...float64) float64 {
+	if price <= 0 {
+		return priceBandScale
+	}
+	var maxAbs float64
+	for _, v := range values {
+		if v <= 0 {
+			continue
+		}
+		abs := math.Abs((v - price) / price)
+		if abs > maxAbs {
+			maxAbs = abs
+		}
+	}
+	band := maxAbs * 1.10
+	if band < minPriceBand {
+		return minPriceBand
+	}
+	if band > maxPriceBand {
+		return maxPriceBand
+	}
+	return band
 }
 
 // overlayPrevGlyph writes `▼` over `top` at column `prevCol`. The
@@ -180,7 +237,7 @@ func overlayPrevGlyph(top string, prevCol, width int) string {
 // On doji (openCol == centerCol) the row shows a single `C` glyph —
 // O and C coincide; the OCP data row still carries both identities.
 //
-// Saturation: when an offset exceeds ±priceBandScale, the marker bumps
+// Saturation: when an offset exceeds ±band, the marker bumps
 // one column inward and the edge column carries `◀` / `▶` so the
 // reader sees both the marker AND the off-screen indicator. Marker
 // priority on shared columns: `O` / `C` win over `L` / `H` — open and

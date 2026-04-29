@@ -59,12 +59,15 @@ an MA position bar showing where the current price sits relative to
 the 5- and 10-day moving averages, and the four institutional rows
 (when applicable).
 
-Both bars share a common axis: the bar is centered on the current
-price (`C` glyph at the center column = the value the headline
-caption is reporting) with a ±3% band on either side. Markers
-outside the band clip to the edge with `▶` / `◀` saturation
-sentinels. The shared axis means the OHLC bar and the MA bar stack
-directly under each other and decode column-by-column:
+Both bars are centered on the current price (`C` glyph at the
+center column = the value the headline caption is reporting), with
+each bar's half-width pct band fitted to its own markers — so quiet
+days fill the bar instead of clustering near center. The OHLC bar's
+band tracks open / high / low / prev-close; the MA bar's band
+tracks MA5 / MA10 / prev-close. Bands are floored at ±0.5% (so a
+degenerate all-equal-to-price input still draws a usable bar) and
+capped at ±5% (anything past that clips to the edge with the
+`▶` / `◀` saturation sentinels):
 
 ```text
                                 ▼

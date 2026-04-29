@@ -551,8 +551,22 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 		bs.captions = append(bs.captions, render.StripPylonSyntax(formatVolumeRow(q)))
 	}
 
+	// Each bar gets its own adaptive band fitted to its own primary
+	// markers so each fills the width on quiet days. They no longer
+	// decode column-by-column under each other (a shared band would
+	// cluster OHLC markers when MA values trend far from price), but
+	// each bar reads independently and the price-centered C glyph
+	// anchors the eye on both.
+	//
+	// PrevClose intentionally drops out of the band fit — it's a
+	// secondary reference (▼ on the top row, value in the OCP / HL
+	// data rows), and a far-trended prev would otherwise widen the
+	// band and squash the primary OHLC markers near center. When
+	// prev sits past the band it clips inward to the saturation
+	// sentinel like any other out-of-range marker.
 	if q.HasOHLC() {
-		top, bar, ocp, hl := render.OHLCBar(q.Open, q.DayHigh, q.DayLow, q.Last, q.PrevClose, ohlcWidth, formatPrice)
+		ohlcBand := render.PriceBandFor(q.Last, q.Open, q.DayHigh, q.DayLow)
+		top, bar, ocp, hl := render.OHLCBar(q.Open, q.DayHigh, q.DayLow, q.Last, q.PrevClose, ohlcWidth, ohlcBand, formatPrice)
 		if bar != "" {
 			// Leading + trailing ZWSP rows give the OHLC block breathing
 			// room from the price/caption banner above and from whatever
@@ -584,7 +598,8 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 	// caption banner above; when OHLC IS present its trailing ZWSP serves
 	// as the divider so we skip emitting another one.
 	if q.MA5 > 0 && q.MA10 > 0 {
-		top, bar, caption := render.MAPositionBar(q.MA10, q.MA5, q.Last, q.PrevClose, ohlcWidth, formatPrice)
+		maBand := render.PriceBandFor(q.Last, q.MA5, q.MA10)
+		top, bar, caption := render.MAPositionBar(q.MA10, q.MA5, q.Last, q.PrevClose, ohlcWidth, maBand, formatPrice)
 		if bar != "" {
 			if len(bs.ohlc) == 0 {
 				bs.ohlc = append(bs.ohlc, blankRow)
