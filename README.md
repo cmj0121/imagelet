@@ -46,7 +46,9 @@ to pin the response to a historical date. `/now?date=2012-02-02` keeps
 the wall-clock HH:MM but shifts the calendar / weekday / year-progress
 caption onto the requested day. `/stock?date=2012-02-02` loads the
 latest stock data on or before that date (closest completed trading
-session). Invalid dates fall through silently to the live path.
+session). Invalid dates — including values outside the
+[now − 15y, now + 1d] clamp window — fall through silently to the
+live path.
 
 `/stock/:symbol` accepts any Yahoo symbol (e.g. `2330.TW`, `AAPL`,
 `BRK-B`, `EURUSD=X`). Index symbols starting with `^` must be
@@ -165,13 +167,74 @@ Each file carries a schema-version header — a future cached-value
 field addition invalidates stale snapshots gracefully (the wrapper
 logs and deletes the file so the next save writes a current-schema
 replacement). Atomic writes (tempfile + rename) prevent partial
-flushes on crash. Disk persistence is best-effort: SIGKILL / OOM /
-panic skip the save, so the restored cache may lag the in-memory
-state by a few requests.
+flushes on crash; the temp file is opened with `O_NOFOLLOW` /
+`O_EXCL` and the rename target is rejected if it points at a
+symlink, so a hostile cache directory can't be tricked into
+overwriting an unrelated file. Disk persistence is best-effort:
+SIGKILL / OOM / panic skip the save, so the restored cache may lag
+the in-memory state by a few requests.
+
+The cache directory is created `0o700` and snapshot files are
+written `0o600` — owned and readable only by the imagelet UID.
+**Operators sharing the cache directory between UIDs (backup
+sidecar, log shipper, etc.) must run those companions as the same
+user** or copy the snapshots out-of-band; the previous world-
+readable layout is gone. The `--cache-dir` argument is resolved via
+`filepath.Abs` at startup so a relative path keeps pointing at the
+same place after a `chdir`.
 
 Yahoo quote, live breadth, name lookup, and HTML response caches stay
 in-memory only — their TTLs are short enough that snapshotting them
 adds little value.
+
+### Security & limits
+
+Imagelet runs assuming a TLS-terminating reverse proxy or CDN sits in
+front of it. The defaults below cap the obvious abuse vectors; tune
+them in code if your deployment topology disagrees.
+
+**Request size caps.** The router rejects oversized request lines
+before the handler sees them:
+
+| Limit        | Cap    | Response                |
+| ------------ | ------ | ----------------------- |
+| URL path     | 1 KiB  | `414 URI Too Long`      |
+| Query string | 4 KiB  | `414 URI Too Long`      |
+| Request body | 64 KiB | `413 Payload Too Large` |
+
+The body cap is defense-in-depth — no current route reads a body —
+and exists so a future POST handler doesn't accidentally inherit an
+unbounded reader.
+
+**`?date=` clamp.** The `date=YYYY-MM-DD` override is clamped to
+`[now - 15y, now + 1d]`. Values outside the window fall through to
+the live path, same as a malformed date. The 1-day future tolerance
+absorbs caller / server clock skew across timezones.
+
+**`X-Forwarded-Proto` allowlist.** When the request carries
+`X-Forwarded-Proto`, the value is honored only when it is exactly
+`http` or `https`. Anything else (including empty, `HTTPS`, or
+attacker-supplied junk) is ignored and the connection's own scheme
+is used. Configure your proxy to set the header to a lowercase
+literal.
+
+**Snapshot decode cap.** Cache snapshot files are decoded with a
+hard ceiling of `MaxSnapshotBytes = 64 MiB` per file. A snapshot
+that exceeds the cap returns `ErrSnapshotTooLarge`; the wrapper
+logs, leaves the on-disk file in place (so an operator can inspect
+it), and starts with an empty in-memory cache. Subsequent saves
+overwrite the bloated file with a current-size snapshot.
+
+**Outbound SSRF guards.** The Yahoo / TWSE / TAIFEX HTTP clients
+go through `internal/safehttp`, which:
+
+- refuses redirects whose resolved IP is private, loopback,
+  link-local, unspecified, or multicast;
+- allows cross-host redirects only within the same eTLD+1 (so
+  Yahoo's `query1` ↔ `query2` fail-over still works);
+- wraps response bodies in `MaxBytesReader` — 1 MiB for Yahoo, 8
+  MiB for TWSE / TAIFEX — so a hostile or misbehaving upstream
+  can't exhaust memory.
 
 HTML responses carry Open Graph + Twitter Card meta tags so links
 shared on Slack / Discord / Twitter / Facebook unfurl with a title,
