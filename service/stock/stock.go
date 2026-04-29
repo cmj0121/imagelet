@@ -564,39 +564,31 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 	// band and squash the primary OHLC markers near center. When
 	// prev sits past the band it clips inward to the saturation
 	// sentinel like any other out-of-range marker.
+	// OHLC and MA bars stack tight: the MA bar attaches directly
+	// beneath OHLC's hl row with no separator. A leading ZWSP gives
+	// the bar group breathing room from the price/caption banner
+	// above; a single trailing ZWSP at the very end gives breathing
+	// room from whatever follows (TW enrichment, or bottom of figure).
+	// Literal empty rows would be trimmed by pylon; ZWSP holds the line.
+	//
+	// The bar's top row (▼ prev-close overlay floating mid-row) carries
+	// leading whitespace and needs zwspGuard against pylon's strip;
+	// the OCP / HL / caption data rows are left-anchored and survive
+	// without a guard.
 	if q.HasOHLC() {
 		ohlcBand := render.PriceBandFor(q.Last, q.Open, q.DayHigh, q.DayLow)
 		top, bar, ocp, hl := render.OHLCBar(q.Open, q.DayHigh, q.DayLow, q.Last, q.PrevClose, ohlcWidth, ohlcBand, formatPrice)
 		if bar != "" {
-			// Leading + trailing ZWSP rows give the OHLC block breathing
-			// room from the price/caption banner above and from whatever
-			// follows below (TW enrichment, or bottom of the figure for
-			// non-TW visitors). A literal empty row would be trimmed by
-			// pylon; ZWSP holds the line.
-			//
-			// Only the top row (▼ prev-close overlay floating mid-row,
-			// blank columns elsewhere) carries leading whitespace; the
-			// OCP / HL data rows are left-anchored so they survive
-			// pylon's strip without a ZWSP guard.
-			rows := []string{blankRow, zwspGuard(top), bar, render.StripPylonSyntax(ocp)}
+			bs.ohlc = append(bs.ohlc, blankRow, zwspGuard(top), bar, render.StripPylonSyntax(ocp))
 			if hl != "" {
-				rows = append(rows, render.StripPylonSyntax(hl))
+				bs.ohlc = append(bs.ohlc, render.StripPylonSyntax(hl))
 			}
-			rows = append(rows, blankRow)
-			bs.ohlc = rows
 		}
 	}
 
-	// MA position bar (optional): a sibling visualization rendered AFTER
-	// the OHLC bar inside the same AlignLeft box. Width matches ohlcWidth
-	// so the two bars line up column-for-column when stacked. Skipped when
-	// either MA is zero — that signals "insufficient closed-session
-	// history" from the upstream and the row would mislead.
-	//
-	// When the OHLC bar is absent (Yahoo didn't supply day-high/low/open),
-	// the MA bar still wants a leading ZWSP for breathing room from the
-	// caption banner above; when OHLC IS present its trailing ZWSP serves
-	// as the divider so we skip emitting another one.
+	// MA position bar (optional). Skipped when either MA is zero —
+	// that signals "insufficient closed-session history" from the
+	// upstream and the row would mislead.
 	if q.MA5 > 0 && q.MA10 > 0 {
 		maBand := render.PriceBandFor(q.Last, q.MA5, q.MA10)
 		top, bar, caption := render.MAPositionBar(q.MA10, q.MA5, q.Last, q.PrevClose, ohlcWidth, maBand, formatPrice)
@@ -604,11 +596,13 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 			if len(bs.ohlc) == 0 {
 				bs.ohlc = append(bs.ohlc, blankRow)
 			}
-			// `top` carries leading whitespace (▼ overlay floating mid-
-			// row); guard against pylon's strip. `caption` is left-
-			// anchored and survives without a guard.
-			bs.ohlc = append(bs.ohlc, zwspGuard(top), bar, render.StripPylonSyntax(caption), blankRow)
+			bs.ohlc = append(bs.ohlc, zwspGuard(top), bar, render.StripPylonSyntax(caption))
 		}
+	}
+
+	// Trailing breathing room for the whole bar group, if anything was emitted.
+	if len(bs.ohlc) > 0 {
+		bs.ohlc = append(bs.ohlc, blankRow)
 	}
 
 	// Market-state gating: 籌碼面 (positioning) and 信用餘額 (credit)
