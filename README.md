@@ -76,12 +76,12 @@ capped at ±5% (anything past that clips to the edge with the
 ```text
                                 ▼
 L───────────────────O████C─────────────────────────────────────H─
-O: 6,860.19 · C: 6,827.41 · P: 6,820.00
+O: 6,820.00 · C: 6,827.41 · P: 6,860.19
 H: 6,895.00 · L: 6,810.50
 
                                 ▼
 ─────────────────M10──M5────────C────────────────────────────────
-M5: ▲6,830.00 · M10: ▼6,815.00 · 5↗10
+M5: ▲6,825.00 · M10: ▲6,815.00 · 5↗10
 ```
 
 Glyph vocabulary (consistent across both bars):
@@ -96,9 +96,9 @@ Glyph vocabulary (consistent across both bars):
 | `█`        | OHLC body fill, bullish (last >= open, 紅K)    |
 | `░`        | OHLC body fill, bearish (last < open, 黑K)     |
 
-Markers outside the ±3% band clip to the bar edge with `▶` (right-
-clip) / `◀` (left-clip) saturation sentinels, with the marker glyph
-itself bumped one column inward so both stay visible.
+Markers past the fitted band edge clip to the bar edge with `▶`
+(right-clip) / `◀` (left-clip) saturation sentinels, with the marker
+glyph itself bumped one column inward so both stay visible.
 
 Both bars now carry left-anchored data rows beneath them: the OHLC
 bar emits `O: <p> · C: <p> · P: <p>` and (when a session range is

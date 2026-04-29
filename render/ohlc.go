@@ -27,8 +27,9 @@ import (
 // the volume / caption rows above. Centering on price (instead of
 // the day's range midpoint) keeps the OHLC bar directly comparable
 // to the MA position bar that stacks below: both share the same
-// axis (price ±3%), so a quick scan reveals where today's open /
-// prev close / MA5 / MA10 all sit relative to the current quote.
+// price-relative axis fitted to their own markers, so a quick scan
+// reveals where today's open / prev close / MA5 / MA10 all sit
+// relative to the current quote.
 const (
 	ohlcWick        = '─'
 	ohlcBodyBull    = '█'
@@ -86,7 +87,7 @@ const (
 //   - `O` today's open (offset from C by % difference).
 //   - `L` / `H` session low / high.
 //   - `█` / `░` body fill, bullish / bearish.
-//   - `▶` / `◀` saturation: marker exceeds the ±3% band.
+//   - `▶` / `◀` saturation: marker exceeds the fitted band edge.
 //
 // `format` is supplied by the caller so price formatting (locale,
 // precision, thousands separator) lives in one place — typically the

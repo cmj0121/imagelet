@@ -7,9 +7,11 @@ import (
 
 // MA position-bar visual constants. The bar shares its axis with the
 // OHLCBar — both are centered on the current quote (`price`) at column
-// width/2 with a ±priceBandScale window (3% by default) on either
-// side, so a reader can stack the two bars in the figure and decode
-// the columns the same way for both.
+// width/2 with a caller-supplied ±band window on either side (fitted
+// per-bar in production, falling back to the legacy ±priceBandScale
+// default when the caller passes a non-positive band), so a reader can
+// stack the two bars in the figure and decode the columns the same way
+// for both.
 //
 // Glyph vocabulary on this bar:
 //
