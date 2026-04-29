@@ -24,17 +24,23 @@ import (
 //     process-wide zerolog stream so the line lands in the same JSON output.
 //     Recovery wraps Logger so panics still produce an access entry with
 //     status 500.
-//  3. middleware.TimezoneDetector — resolves a *time.Location from the
+//  3. middleware.RequestSizeLimiter — rejects requests whose URL path or
+//     query string exceed the imagelet caps with HTTP 414, and wraps the
+//     body in a MaxBytesReader. Pinned BEFORE every imagelet middleware
+//     so oversized inputs never reach a handler that would read c.Query
+//     or c.Request.URL.Path (in particular the internal/htmlcache key
+//     builder mounted by cmd/imagelet downstream of server.New).
+//  4. middleware.TimezoneDetector — resolves a *time.Location from the
 //     CF-Timezone header (Cloudflare) and stashes it on the gin context.
 //     Falls back to time.Local when the header is missing or unparseable.
-//  4. middleware.DateOverrideDetector — parses an optional ?date=YYYY-MM-DD
+//  5. middleware.DateOverrideDetector — parses an optional ?date=YYYY-MM-DD
 //     query parameter and stashes the resolved time on the gin context.
 //     Pinned AFTER TimezoneDetector so the date string is anchored to the
 //     caller's resolved location rather than time.Local. Lets time-aware
 //     handlers (/now, /stock) reproject onto a historical date.
-//  5. middleware.ClientDetector — classifies the request by User-Agent and
+//  6. middleware.ClientDetector — classifies the request by User-Agent and
 //     stores the chosen render.Mode on the gin context.
-//  6. middleware.RegionDetector — reads the CF-IPCountry header and stashes
+//  7. middleware.RegionDetector — reads the CF-IPCountry header and stashes
 //     the visitor's 2-letter country code on the gin context. Lets handlers
 //     branch on country (e.g. service/stock picking a regional index) without
 //     re-parsing the header on every request.
@@ -46,6 +52,7 @@ func New() *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(gin.Logger())
+	r.Use(middleware.RequestSizeLimiter())
 	r.Use(middleware.TimezoneDetector())
 	r.Use(middleware.DateOverrideDetector())
 	r.Use(middleware.ClientDetector())

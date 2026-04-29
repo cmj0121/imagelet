@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -53,6 +54,14 @@ func main() {
 		kong.Name("imagelet"),
 		kong.Description("imagelet HTTP service."),
 	)
+
+	if c.CacheDir != "" {
+		abs, err := filepath.Abs(c.CacheDir)
+		if err != nil {
+			log.Fatal().Err(err).Str("cache-dir", c.CacheDir).Msg("resolve cache-dir failed")
+		}
+		c.CacheDir = abs
+	}
 
 	level := "info"
 	switch {
