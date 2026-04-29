@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/cmj0121/imagelet/internal/safehttp"
 	"github.com/cmj0121/imagelet/service/stock/quote"
 )
 
@@ -48,7 +49,7 @@ func New() *Provider {
 	return &Provider{
 		endpoint:   defaultEndpoint,
 		endpointAt: defaultEndpointAt,
-		client:     &http.Client{Timeout: 5 * time.Second},
+		client:     safehttp.NewClient(5 * time.Second),
 	}
 }
 
@@ -89,6 +90,7 @@ func (p *Provider) Get(ctx context.Context, symbol string) (quote.Quote, error) 
 		return quote.Quote{}, err
 	}
 	defer resp.Body.Close()
+	safehttp.BoundBody(resp, safehttp.YahooBodyCap)
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -195,6 +197,7 @@ func (p *Provider) GetAt(ctx context.Context, symbol string, asOf time.Time) (qu
 		return quote.Quote{}, err
 	}
 	defer resp.Body.Close()
+	safehttp.BoundBody(resp, safehttp.YahooBodyCap)
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)

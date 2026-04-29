@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cmj0121/imagelet/internal/safehttp"
+
 	"golang.org/x/sync/errgroup"
 )
 
@@ -350,6 +352,7 @@ func (p *HTTPProvider) fetchMISBatch(ctx context.Context, ex exchange, symbols [
 		return nil, err
 	}
 	defer resp.Body.Close()
+	safehttp.BoundBody(resp, safehttp.DefaultBodyCap)
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("mis: %s", resp.Status)
 	}
