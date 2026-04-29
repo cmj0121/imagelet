@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/cmj0121/imagelet/internal/safehttp"
 )
 
 // defaultTAIFEXPCREndpoint downloads the daily Put/Call ratio CSV for
@@ -140,6 +142,7 @@ func (p *HTTPProvider) fetchPCROnce(ctx context.Context, day time.Time) (Options
 		return OptionsPCR{}, false, err
 	}
 	defer resp.Body.Close()
+	safehttp.BoundBody(resp, safehttp.DefaultBodyCap)
 	if resp.StatusCode != http.StatusOK {
 		return OptionsPCR{}, false, fmt.Errorf("taifex pcr: %s", resp.Status)
 	}
@@ -232,6 +235,7 @@ func (p *HTTPProvider) fetchVIXMonth(ctx context.Context, month, asOf time.Time)
 		return VIX{}, false, err
 	}
 	defer resp.Body.Close()
+	safehttp.BoundBody(resp, safehttp.DefaultBodyCap)
 	if resp.StatusCode == http.StatusNotFound {
 		return VIX{}, false, nil
 	}

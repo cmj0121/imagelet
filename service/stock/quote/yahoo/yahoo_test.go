@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cmj0121/imagelet/internal/safehttp"
 	"github.com/cmj0121/imagelet/service/stock/quote"
 )
 
@@ -393,5 +394,23 @@ func TestMarketClosed(t *testing.T) {
 					tc.start, tc.end, tc.now, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestYahooBodyCapEnforced pins that the safehttp body cap aborts a
+// runaway upstream response: an upstream returning >YahooBodyCap bytes
+// must surface as an error rather than spilling into the JSON decoder
+// and OOM-ing the process.
+func TestYahooBodyCapEnforced(t *testing.T) {
+	// 2 MiB of filler bytes — comfortably above the 1 MiB cap.
+	payload := strings.Repeat("a", 2<<20)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer srv.Close()
+
+	provider := NewWithEndpoint(srv.URL+"/%s", safehttp.NewClient(5*time.Second))
+	if _, err := provider.Get(context.Background(), "AAA"); err == nil {
+		t.Fatalf("Get: want error from body-cap, got nil")
 	}
 }

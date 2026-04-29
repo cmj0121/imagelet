@@ -24,6 +24,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cmj0121/imagelet/internal/safehttp"
+
 	"golang.org/x/sync/singleflight"
 )
 
@@ -341,7 +343,7 @@ func New() *HTTPProvider {
 		defaultBFI82UEndpoint,
 		defaultMIMARGNEndpoint,
 		defaultMIINDEXEndpoint,
-		&http.Client{Timeout: 5 * time.Second},
+		safehttp.NewClient(5*time.Second),
 	)
 	p.universeEndpoint = defaultStockUniverseEndpoint
 	p.otcUniverseEndpoint = defaultOTCUniverseEndpoint
@@ -745,6 +747,7 @@ func (p *HTTPProvider) fetch(ctx context.Context, url string) ([]byte, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	safehttp.BoundBody(resp, safehttp.DefaultBodyCap)
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("twse: %s: %s", resp.Status, body)
