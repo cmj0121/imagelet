@@ -138,6 +138,71 @@ func TestNowForWithOverride(t *testing.T) {
 	}
 }
 
+func TestDateOverrideRejectsTooOld(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	r := gin.New()
+	r.Use(middleware.TimezoneDetector())
+	r.Use(middleware.DateOverrideDetector())
+
+	var gotSet bool
+	r.GET("/probe", func(c *gin.Context) {
+		_, gotSet = middleware.GetDate(c)
+		c.Status(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/probe?date=1990-01-01", nil)
+	r.ServeHTTP(httptest.NewRecorder(), req)
+
+	if gotSet {
+		t.Errorf("GetDate set = true for date=1990-01-01, want false (out of range)")
+	}
+}
+
+func TestDateOverrideRejectsTooFuture(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	r := gin.New()
+	r.Use(middleware.TimezoneDetector())
+	r.Use(middleware.DateOverrideDetector())
+
+	var gotSet bool
+	r.GET("/probe", func(c *gin.Context) {
+		_, gotSet = middleware.GetDate(c)
+		c.Status(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/probe?date=2050-01-01", nil)
+	r.ServeHTTP(httptest.NewRecorder(), req)
+
+	if gotSet {
+		t.Errorf("GetDate set = true for date=2050-01-01, want false (out of range)")
+	}
+}
+
+func TestDateOverrideAcceptsRecentPast(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	r := gin.New()
+	r.Use(middleware.TimezoneDetector())
+	r.Use(middleware.DateOverrideDetector())
+
+	var gotSet bool
+	r.GET("/probe", func(c *gin.Context) {
+		_, gotSet = middleware.GetDate(c)
+		c.Status(http.StatusOK)
+	})
+
+	// 9 years ago — comfortably inside the ±10y window.
+	target := time.Now().AddDate(-9, 0, 0).Format("2006-01-02")
+	req := httptest.NewRequest(http.MethodGet, "/probe?date="+target, nil)
+	r.ServeHTTP(httptest.NewRecorder(), req)
+
+	if !gotSet {
+		t.Errorf("GetDate set = false for date=%s (9y ago), want true", target)
+	}
+}
+
 func TestGetDateWithoutMiddleware(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())

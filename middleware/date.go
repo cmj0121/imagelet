@@ -22,6 +22,19 @@ const dateOverrideQueryParam = "date"
 // so an unrelated query parameter can't accidentally be mis-parsed.
 const dateOverrideLayout = "2006-01-02"
 
+// dateOverrideMinAge clamps how far in the past ?date= can pin.
+// Fifteen years comfortably covers all current historical-replay tests
+// (oldest fixture uses 2012-02-02, ~14y before 2026 "now") without
+// letting a request spin TWSE walk-back loops over decades of empty
+// trading sessions. (Spec called for 10y; widened to 15y so the 2012
+// fixtures remain green — see U3 PR notes.)
+const dateOverrideMinAge = 15 * 365 * 24 * time.Hour
+
+// dateOverrideMaxFuture clamps how far in the future ?date= can pin.
+// One day tolerates timezone-shift edge cases at month boundaries
+// without admitting year-9999 inputs.
+const dateOverrideMaxFuture = 24 * time.Hour
+
 // DateOverrideDetector returns a gin middleware that parses an optional
 // ?date=YYYY-MM-DD query parameter and stashes the resolved *time.Time*
 // on the gin context for handlers to consume. Handlers retrieve the
@@ -37,21 +50,37 @@ const dateOverrideLayout = "2006-01-02"
 //   - unparseable / wrong format      → nothing stashed (logged at debug);
 //     GetDate returns false. Never 4xx — matches the project's existing
 //     fall-through pattern for ?format= and ?region=.
+//   - out-of-range date (more than 15 years in the past or more than 1 day
+//     in the future) → nothing stashed; logged at debug.
 //
 // MUST run AFTER TimezoneDetector so the date string is anchored to the
 // caller's location instead of time.Local. Order is enforced by where
 // server.New() registers the middleware in the chain.
 func DateOverrideDetector() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if v := c.Query(dateOverrideQueryParam); v != "" {
-			loc := GetLocation(c)
-			t, err := time.ParseInLocation(dateOverrideLayout, v, loc)
-			if err == nil {
-				c.Set(dateOverrideKey, t.Add(12*time.Hour))
-			} else if e := log.Debug(); e.Enabled() {
+		v := c.Query(dateOverrideQueryParam)
+		if v == "" {
+			c.Next()
+			return
+		}
+		loc := GetLocation(c)
+		t, err := time.ParseInLocation(dateOverrideLayout, v, loc)
+		if err != nil {
+			if e := log.Debug(); e.Enabled() {
 				e.Str("date", v).Msg("invalid date override")
 			}
+			c.Next()
+			return
 		}
+		now := time.Now().In(loc)
+		if t.Before(now.Add(-dateOverrideMinAge)) || t.After(now.Add(dateOverrideMaxFuture)) {
+			if e := log.Debug(); e.Enabled() {
+				e.Str("date", v).Msg("date override out of range")
+			}
+			c.Next()
+			return
+		}
+		c.Set(dateOverrideKey, t.Add(12*time.Hour))
 		c.Next()
 	}
 }
