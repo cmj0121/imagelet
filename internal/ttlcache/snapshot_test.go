@@ -3,6 +3,7 @@ package ttlcache
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -130,5 +131,105 @@ func TestLoadJSONFileMissingIsNoop(t *testing.T) {
 	}
 	if dst.Len() != 0 {
 		t.Errorf("Len = %d, want 0 on missing-file load", dst.Len())
+	}
+}
+
+// TestLoadJSONRefusesOversize pins the OOM-prevention guard: a
+// snapshot stream that exceeds MaxSnapshotBytes must surface
+// ErrSnapshotTooLarge instead of being decoded into memory.
+func TestLoadJSONRefusesOversize(t *testing.T) {
+	orig := MaxSnapshotBytes
+	MaxSnapshotBytes = 1024
+	defer func() { MaxSnapshotBytes = orig }()
+
+	src := New[string, sample](128)
+	exp := time.Now().Add(time.Hour)
+	// 50 entries with long keys easily exceed 1 KiB of JSON.
+	for i := 0; i < 50; i++ {
+		k := fmt.Sprintf("padded-key-%030d", i)
+		src.Set(k, Entry[sample]{Value: sample{Name: k, Count: i}, Found: true, ExpiresAt: exp})
+	}
+
+	var buf bytes.Buffer
+	if err := SaveJSON(src, &buf); err != nil {
+		t.Fatalf("SaveJSON: %v", err)
+	}
+	if int64(buf.Len()) <= MaxSnapshotBytes {
+		t.Fatalf("test setup: snapshot %d bytes <= cap %d, oversize check is moot", buf.Len(), MaxSnapshotBytes)
+	}
+
+	dst := New[string, sample](128)
+	err := LoadJSON(dst, &buf)
+	if !errors.Is(err, ErrSnapshotTooLarge) {
+		t.Errorf("err = %v, want ErrSnapshotTooLarge", err)
+	}
+}
+
+// TestSaveJSONFileRefusesSymlinkDest pins the TOCTOU guard: if the
+// destination path has been swapped to a symlink between MkdirAll
+// and Rename, SaveJSONFile must refuse rather than clobber the
+// symlink target.
+func TestSaveJSONFileRefusesSymlinkDest(t *testing.T) {
+	dir := t.TempDir()
+	// Real file outside the snapshot dir, holding sentinel content.
+	realPath := filepath.Join(dir, "victim.txt")
+	sentinel := []byte("untouched")
+	if err := os.WriteFile(realPath, sentinel, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	snapPath := filepath.Join(dir, "snap.json")
+	if err := os.Symlink(realPath, snapPath); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	src := New[string, sample](16)
+	src.Set("k", Entry[sample]{Value: sample{Name: "v"}, Found: true, ExpiresAt: time.Now().Add(time.Hour)})
+
+	err := SaveJSONFile(src, snapPath)
+	if err == nil {
+		t.Fatalf("SaveJSONFile: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "refuse to rename over symlink") {
+		t.Errorf("err = %v, want substring %q", err, "refuse to rename over symlink")
+	}
+
+	got, readErr := os.ReadFile(realPath)
+	if readErr != nil {
+		t.Fatalf("ReadFile: %v", readErr)
+	}
+	if !bytes.Equal(got, sentinel) {
+		t.Errorf("victim file content changed: got %q, want %q", got, sentinel)
+	}
+}
+
+// TestSaveJSONFilePermissions pins that the snapshot file lands at
+// 0o600 and its parent directory at 0o700 — cached upstream payloads
+// stay readable only by the running UID.
+func TestSaveJSONFilePermissions(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "sub", "dir")
+	path := filepath.Join(parent, "snap.json")
+
+	src := New[string, sample](16)
+	src.Set("k", Entry[sample]{Value: sample{Name: "v"}, Found: true, ExpiresAt: time.Now().Add(time.Hour)})
+
+	if err := SaveJSONFile(src, path); err != nil {
+		t.Fatalf("SaveJSONFile: %v", err)
+	}
+
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat file: %v", err)
+	}
+	if got := fi.Mode() & os.ModePerm; got != 0o600 {
+		t.Errorf("file mode = %o, want 0o600", got)
+	}
+
+	di, err := os.Stat(parent)
+	if err != nil {
+		t.Fatalf("Stat dir: %v", err)
+	}
+	if got := di.Mode() & os.ModePerm; got != 0o700 {
+		t.Errorf("dir mode = %o, want 0o700", got)
 	}
 }
