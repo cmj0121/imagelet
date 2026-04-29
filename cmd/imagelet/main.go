@@ -41,9 +41,10 @@ var version = "dev"
 
 // cli defines the top-level kong CLI flags.
 type cli struct {
-	Host    string `short:"H" help:"Host address to bind." default:"0.0.0.0"`
-	Port    int    `short:"p" help:"TCP port to listen on." default:"8080"`
-	Verbose int    `short:"v" type:"counter" help:"Increase log verbosity (-v for debug, -vv for trace)."`
+	Host     string `short:"H" help:"Host address to bind." default:"0.0.0.0"`
+	Port     int    `short:"p" help:"TCP port to listen on." default:"8080"`
+	Verbose  int    `short:"v" type:"counter" help:"Increase log verbosity (-v for debug, -vv for trace)."`
+	CacheDir string `name:"cache-dir" help:"Persist per-stock + TAIFEX cache snapshots to this directory; restored on startup, saved on graceful shutdown. Empty (default) disables disk persistence."`
 }
 
 func main() {
@@ -88,8 +89,14 @@ func main() {
 	quoteProvider := cached.New(yahoo.New())
 	// TW-only enrichment provider: 三大法人 + market margin balance from
 	// TWSE legacy openapi. Cached with 4h success / 30m failure TTL since
-	// TWSE publishes daily (~16:00 Asia/Taipei).
+	// TWSE publishes daily (~16:00 Asia/Taipei). NewCached auto-attaches
+	// per-(stockID, date) walk-back caches over T86 / TWT93U / MI_MARGN
+	// and date-keyed walk-back caches over the TAIFEX endpoints.
 	twseProvider := twse.NewCached(twse.New())
+	if c.CacheDir != "" {
+		twseProvider.LoadSnapshots(c.CacheDir)
+		log.Info().Str("dir", c.CacheDir).Msg("ttlcache: snapshots loaded")
+	}
 	stock.Register(r, quoteProvider, twseProvider)
 
 	// NoRoute fallback — must be installed last so every other route had
@@ -136,6 +143,11 @@ func main() {
 	}
 	if err := <-errCh; err != nil {
 		log.Fatal().Err(err).Msg("server terminated")
+	}
+
+	if c.CacheDir != "" {
+		twseProvider.SaveSnapshots(c.CacheDir)
+		log.Info().Str("dir", c.CacheDir).Msg("ttlcache: snapshots saved")
 	}
 
 	log.Info().Msg("server stopped")
