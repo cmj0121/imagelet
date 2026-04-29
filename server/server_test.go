@@ -3,6 +3,7 @@ package server_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -59,6 +60,34 @@ func TestNewInstallsClientDetector(t *testing.T) {
 		if got, want := rec.Body.String(), tc.want.String(); got != want {
 			t.Errorf("ua=%q: mode = %q, want %q", tc.ua, got, want)
 		}
+	}
+}
+
+// TestNewInstallsRequestSizeLimiter pins that server.New preinstalls the
+// request-size limiter: a probe path well over MaxRequestPathBytes must
+// be rejected with HTTP 414 before reaching any registered handler.
+// Without RequestSizeLimiter in the chain, gin would route the probe
+// to the registered handler and return 200, so this test would fail.
+func TestNewInstallsRequestSizeLimiter(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	r := server.New()
+	// NoRoute also runs the engine middleware chain in gin, so any
+	// unregistered path still flows through RequestSizeLimiter — which
+	// is what we want to assert here.
+	r.NoRoute(func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	// 2 KiB path: well over MaxRequestPathBytes (1 KiB), well under
+	// MaxRequestQueryBytes (4 KiB) so the path branch is what fires.
+	path := "/" + strings.Repeat("a", 2<<10)
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestURITooLong {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestURITooLong)
 	}
 }
 
