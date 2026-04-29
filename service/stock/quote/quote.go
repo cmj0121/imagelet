@@ -44,6 +44,13 @@ type Quote struct {
 	Week52High float64   // trailing 52-week high; 0 when missing
 	Week52Low  float64   // trailing 52-week low; 0 when missing
 	Volume     int64     // session traded shares; 0 when missing
+	// MA5 is the simple moving average of the last 5 closed-session
+	// closes. 0 signals "insufficient data" (fewer than 5 closes
+	// available); the renderer skips the MA row entirely in that case.
+	MA5 float64
+	// MA10 mirrors MA5 over the last 10 closed-session closes.
+	// 0 signals "insufficient data".
+	MA10 float64
 }
 
 // HasDayRange reports whether DayHigh and DayLow are both populated and
@@ -108,6 +115,30 @@ func (q Quote) ChangePercent() float64 {
 		return 0
 	}
 	return (q.Last - q.PrevClose) / q.PrevClose * 100
+}
+
+// MeanOfLastN returns the simple arithmetic mean of the last n
+// non-zero entries in closes. Returns 0 when fewer than n
+// non-zero entries exist (signals "insufficient data" to callers).
+// Walks the slice from end → start so callers can pass the whole
+// close array without pre-trimming.
+func MeanOfLastN(closes []float64, n int) float64 {
+	if n <= 0 || len(closes) == 0 {
+		return 0
+	}
+	var sum float64
+	count := 0
+	for i := len(closes) - 1; i >= 0 && count < n; i-- {
+		if closes[i] == 0 {
+			continue
+		}
+		sum += closes[i]
+		count++
+	}
+	if count < n {
+		return 0
+	}
+	return sum / float64(n)
 }
 
 // Provider is implemented by anything that can fetch a Quote for a symbol.

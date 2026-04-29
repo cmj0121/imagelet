@@ -17,21 +17,23 @@ import (
 )
 
 // defaultEndpoint is Yahoo's v8 chart URL template. Override via
-// NewWithEndpoint for tests.
-const defaultEndpoint = "https://query1.finance.yahoo.com/v8/finance/chart/%s?interval=1d&range=2d"
+// NewWithEndpoint for tests. The 3mo range gives us enough closed
+// sessions to compute MA5 / MA10 robustly even across a holiday-cluster
+// month (e.g. Lunar New Year + 228) without bloating the response.
+const defaultEndpoint = "https://query1.finance.yahoo.com/v8/finance/chart/%s?interval=1d&range=3mo"
 
 // defaultEndpointAt is the v8 chart URL template for a historical window
 // query: %s = symbol, %d %d = period1 / period2 Unix seconds. Used by
-// GetAt — narrow window (asOf-14d → asOf+1d) keeps the response small
-// while covering enough trading days that any holiday gap still resolves
-// to a real bar.
+// GetAt — 90-day window (asOf-90d → asOf+1d) covers enough trading
+// sessions to compute MA5 / MA10 even after a holiday-cluster month
+// while keeping the response small.
 const defaultEndpointAt = "https://query1.finance.yahoo.com/v8/finance/chart/%s?interval=1d&period1=%d&period2=%d"
 
 // historicalLookbackDays is the days-before-asOf window passed as
-// period1. 14 calendar days covers ~10 trading sessions — comfortably
-// past the longest TWSE / NYSE holiday gap (Lunar New Year ~5 days)
-// while keeping the response tiny.
-const historicalLookbackDays = 14
+// period1. 90 calendar days covers ~60 trading sessions — comfortably
+// enough to compute MA5 / MA10 from closed-session closes even after
+// the longest holiday cluster (Lunar New Year ~5 days).
+const historicalLookbackDays = 90
 
 // Provider satisfies quote.Provider against Yahoo Finance.
 type Provider struct {
@@ -109,13 +111,12 @@ func (p *Provider) Get(ctx context.Context, symbol string) (quote.Quote, error) 
 		return quote.Quote{}, quote.ErrUnavailable
 	}
 
-	return quote.Quote{
+	q := quote.Quote{
 		Symbol:     m.Symbol,
 		Name:       m.ShortName,
 		LongName:   m.LongName,
 		Last:       m.RegularMarketPrice,
 		Open:       latestOpen(result.Indicators),
-		PrevClose:  m.ChartPreviousClose,
 		Currency:   m.Currency,
 		AsOf:       time.Unix(m.RegularMarketTime, 0),
 		IsClosed:   marketClosed(m, time.Now().Unix()),
@@ -124,7 +125,43 @@ func (p *Provider) Get(ctx context.Context, symbol string) (quote.Quote, error) 
 		Week52High: m.FiftyTwoWeekHigh,
 		Week52Low:  m.FiftyTwoWeekLow,
 		Volume:     m.RegularMarketVolume,
-	}, nil
+	}
+
+	// Derive PrevClose from the closes array rather than meta.chartPrevious-
+	// Close. The meta field carries the close of the bar immediately before
+	// the requested range — which used to be "yesterday" when range=2d, but
+	// after we widened the request to range=3mo it now points 3 months back.
+	// The closes array already gives us a precise, range-independent answer:
+	// the latest bar at len-1 is today (final close when market is closed,
+	// intraday partial when open), so walk back from len-2 — yesterday's
+	// closed-session value — and skip past any zero-padding Yahoo writes
+	// for non-trading calendar days inside the window.
+	var closes []float64
+	if len(result.Indicators.Quote) > 0 {
+		closes = result.Indicators.Quote[0].Close
+	}
+	for i := len(closes) - 2; i >= 0; i-- {
+		if closes[i] > 0 {
+			q.PrevClose = closes[i]
+			break
+		}
+	}
+	if q.PrevClose == 0 {
+		q.PrevClose = m.ChartPreviousClose // fallback when the array is empty/sparse
+	}
+
+	// Compute MA5 / MA10 from the closed-session closes. When the market
+	// is open the latest bar is today's intraday partial close — drop it
+	// so the price-vs-MA arrow doesn't fold today's price into its own
+	// reference. When closed, the latest bar is yesterday's close and is
+	// safe to include.
+	maCloses := closes
+	if !q.IsClosed && len(maCloses) > 0 {
+		maCloses = maCloses[:len(maCloses)-1]
+	}
+	q.MA5 = quote.MeanOfLastN(maCloses, 5)
+	q.MA10 = quote.MeanOfLastN(maCloses, 10)
+	return q, nil
 }
 
 // GetAt fetches the latest bar at or before asOf using a narrow
@@ -231,6 +268,16 @@ func (p *Provider) GetAt(ctx context.Context, symbol string, asOf time.Time) (qu
 	if q.Symbol == "" {
 		q.Symbol = symbol
 	}
+
+	// Compute MA5 / MA10 from closes up to and including pickIdx — the
+	// chosen bar IS the "current" price for the historical view and is
+	// closed by definition, so it counts toward the MA. Bars after
+	// pickIdx (if any — Yahoo can return a few entries past asOf when
+	// the cutoff straddles a session) must be excluded so the historical
+	// MA only reflects data the caller would have seen at asOf.
+	closes := ind.Close[:pickIdx+1]
+	q.MA5 = quote.MeanOfLastN(closes, 5)
+	q.MA10 = quote.MeanOfLastN(closes, 10)
 	return q, nil
 }
 

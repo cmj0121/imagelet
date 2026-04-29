@@ -38,6 +38,62 @@ func TestHasDayRangeAndPosition(t *testing.T) {
 	}
 }
 
+// TestMeanOfLastN_BasicAverage pins the basic arithmetic mean over the
+// last n entries with no zeros to filter.
+func TestMeanOfLastN_BasicAverage(t *testing.T) {
+	closes := []float64{100, 102, 104, 106, 108}
+	if got := quote.MeanOfLastN(closes, 5); got != 104 {
+		t.Errorf("MeanOfLastN = %v, want 104", got)
+	}
+}
+
+// TestMeanOfLastN_FiltersZeroes pins that zero entries are skipped — they
+// represent holiday/weekend gaps in the close array — so the average is
+// taken over the last n non-zero values.
+func TestMeanOfLastN_FiltersZeroes(t *testing.T) {
+	closes := []float64{0, 100, 0, 102, 104, 106, 108}
+	if got := quote.MeanOfLastN(closes, 5); got != 104 {
+		t.Errorf("MeanOfLastN = %v, want 104", got)
+	}
+}
+
+// TestMeanOfLastN_InsufficientReturnsZero pins the "insufficient data"
+// sentinel: fewer than n non-zero entries → 0.
+func TestMeanOfLastN_InsufficientReturnsZero(t *testing.T) {
+	closes := []float64{100, 102, 104}
+	if got := quote.MeanOfLastN(closes, 5); got != 0 {
+		t.Errorf("MeanOfLastN = %v, want 0", got)
+	}
+}
+
+// TestMeanOfLastN_ZeroOrNegativeN pins the n<=0 guard.
+func TestMeanOfLastN_ZeroOrNegativeN(t *testing.T) {
+	closes := []float64{100, 102, 104}
+	if got := quote.MeanOfLastN(closes, 0); got != 0 {
+		t.Errorf("n=0: MeanOfLastN = %v, want 0", got)
+	}
+	if got := quote.MeanOfLastN(closes, -1); got != 0 {
+		t.Errorf("n=-1: MeanOfLastN = %v, want 0", got)
+	}
+}
+
+// TestMeanOfLastN_NilInput pins the nil-slice guard.
+func TestMeanOfLastN_NilInput(t *testing.T) {
+	if got := quote.MeanOfLastN(nil, 5); got != 0 {
+		t.Errorf("MeanOfLastN(nil) = %v, want 0", got)
+	}
+}
+
+// TestMeanOfLastN_TakesLastN pins that only the trailing n non-zero
+// entries are averaged — older entries don't bias the mean.
+func TestMeanOfLastN_TakesLastN(t *testing.T) {
+	closes := []float64{1, 2, 3, 4, 5, 6, 7, 100, 200, 300}
+	want := (100.0 + 200.0 + 300.0) / 3.0
+	if got := quote.MeanOfLastN(closes, 3); got != want {
+		t.Errorf("MeanOfLastN = %v, want %v", got, want)
+	}
+}
+
 // TestHas52WeekRangeAndPosition mirrors TestHasDayRangeAndPosition for
 // the 52-week fields. Same code path, different scale -- the sanity is
 // that the helpers don't share state between them.

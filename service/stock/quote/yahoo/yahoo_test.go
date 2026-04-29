@@ -85,6 +85,120 @@ func TestGetOpenMarket(t *testing.T) {
 	if p := q.Week52Position(); p < 0 || p > 1 {
 		t.Errorf("Week52Position = %v, want in [0,1]", p)
 	}
+	// Fixture carries 12 daily closes; with the market open the latest
+	// bar (today's intraday) is dropped, leaving 11 closed sessions —
+	// enough to populate both MAs. Bounds: prices in fixture sit in
+	// [7000, 7108.40] before the drop, so the MAs must too.
+	if q.MA5 == 0 {
+		t.Errorf("MA5 == 0, want non-zero (fixture has ≥ 5 closed sessions)")
+	}
+	if q.MA10 == 0 {
+		t.Errorf("MA10 == 0, want non-zero (fixture has ≥ 10 closed sessions)")
+	}
+	if q.MA5 < 7000 || q.MA5 > 7200 {
+		t.Errorf("MA5 = %v out of expected range [7000, 7200]", q.MA5)
+	}
+	if q.MA10 < 7000 || q.MA10 > 7200 {
+		t.Errorf("MA10 = %v out of expected range [7000, 7200]", q.MA10)
+	}
+}
+
+// TestGet_MAExcludesIntradayWhenOpen pins that the latest bar — today's
+// intraday partial close — is NOT folded into the MA when the market is
+// open. Otherwise the price-vs-MA arrow is self-referential.
+func TestGet_MAExcludesIntradayWhenOpen(t *testing.T) {
+	// 11 closes; the last one is an intentional outlier. If the MA
+	// includes it the mean shoots above 7100; if it's correctly dropped
+	// the mean stays around 7050.
+	body := []byte(`{
+		"chart": {
+			"result": [
+				{
+					"meta": {
+						"symbol": "AAA",
+						"currency": "USD",
+						"regularMarketPrice": 9999.0,
+						"chartPreviousClose": 7100.0,
+						"regularMarketTime": 1777062990,
+						"currentTradingPeriod": {"regular": {"start": 0, "end": 9999999999}}
+					},
+					"timestamp": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+					"indicators": {
+						"quote": [
+							{
+								"close": [7000, 7010, 7020, 7030, 7040, 7050, 7060, 7070, 7080, 7090, 9999],
+								"open":  [7000, 7010, 7020, 7030, 7040, 7050, 7060, 7070, 7080, 7090, 9999]
+							}
+						]
+					}
+				}
+			]
+		}
+	}`)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	q, err := newProvider(srv).Get(context.Background(), "AAA")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if q.IsClosed {
+		t.Fatalf("IsClosed = true; this fixture's regular window covers `now`")
+	}
+	// MA5 of [7050, 7060, 7070, 7080, 7090] = 7070; if 9999 leaked in
+	// the mean would jump to ~7660.
+	wantMA5 := 7070.0
+	if q.MA5 != wantMA5 {
+		t.Errorf("MA5 = %v, want %v (latest 9999 must be dropped)", q.MA5, wantMA5)
+	}
+}
+
+// TestGet_MASparseDataYieldsZero pins the "insufficient data" sentinel:
+// fewer than 5 closed sessions yields MA5 == 0 so the renderer can skip
+// the MA row entirely on freshly-listed symbols.
+func TestGet_MASparseDataYieldsZero(t *testing.T) {
+	body := []byte(`{
+		"chart": {
+			"result": [
+				{
+					"meta": {
+						"symbol": "AAA",
+						"currency": "USD",
+						"regularMarketPrice": 105.0,
+						"chartPreviousClose": 104.0,
+						"regularMarketTime": 1777062990,
+						"currentTradingPeriod": {"regular": {"start": 0, "end": 9999999999}}
+					},
+					"timestamp": [1, 2, 3],
+					"indicators": {
+						"quote": [
+							{
+								"close": [100, 102, 105],
+								"open":  [100, 102, 105]
+							}
+						]
+					}
+				}
+			]
+		}
+	}`)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	q, err := newProvider(srv).Get(context.Background(), "AAA")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if q.MA5 != 0 {
+		t.Errorf("MA5 = %v, want 0 (only 3 closes, intraday drop leaves 2)", q.MA5)
+	}
+	if q.MA10 != 0 {
+		t.Errorf("MA10 = %v, want 0", q.MA10)
+	}
 }
 
 func TestGetClosedMarket(t *testing.T) {
