@@ -166,6 +166,14 @@ func (c *Cache[K, V]) GetOrFetch(key K, ttl time.Duration, fetch func() (value V
 	}
 	// singleflight wants a string key; %v handles string / int / struct
 	// keys uniformly without forcing the generic K to be string.
+	//
+	// SECURITY: %v formatting is collision-safe ONLY for primitive key
+	// types (string, integer). All current callers pass string keys.
+	// If a future caller passes a struct- or map-typed K, two distinct
+	// keys could format to the same string (e.g. struct{A,B int}{1,23}
+	// and {12,3} both print as "{1 23}"), causing singleflight to
+	// dedupe unrelated fetches. Switch to a hash-based key (or constrain
+	// K to ~string) before adding non-primitive-keyed caches.
 	sfKey := fmt.Sprintf("%v", key)
 	out, err, _ := c.sf.Do(sfKey, func() (any, error) {
 		// Re-check after acquiring the slot — another caller may have

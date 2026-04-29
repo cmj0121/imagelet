@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -114,6 +115,36 @@ func TestAbsoluteURLForwardedProtoCaseInsensitive(t *testing.T) {
 	got := AbsoluteURL(c, "")
 	if got != "https://example.com/now" {
 		t.Errorf("got %q want lowercased https scheme", got)
+	}
+}
+
+func TestAbsoluteURLRejectsJavascriptScheme(t *testing.T) {
+	c := newCtx(t, "http://example.com/now", map[string]string{
+		"X-Forwarded-Proto": "javascript",
+	}, nil)
+	got := AbsoluteURL(c, "")
+	if !strings.HasPrefix(got, "http://") {
+		t.Errorf("got %q, want http:// prefix (javascript scheme must be ignored)", got)
+	}
+}
+
+func TestAbsoluteURLRejectsDataScheme(t *testing.T) {
+	c := newCtx(t, "http://example.com/now", map[string]string{
+		"X-Forwarded-Proto": "data:",
+	}, nil)
+	got := AbsoluteURL(c, "")
+	if !strings.HasPrefix(got, "http://") {
+		t.Errorf("got %q, want http:// prefix (data: scheme must be ignored)", got)
+	}
+}
+
+func TestAbsoluteURLAcceptsHTTPSCaseInsensitive(t *testing.T) {
+	c := newCtx(t, "http://example.com/now", map[string]string{
+		"X-Forwarded-Proto": "HTTPS",
+	}, nil)
+	got := AbsoluteURL(c, "")
+	if !strings.HasPrefix(got, "https://") {
+		t.Errorf("got %q, want https:// prefix", got)
 	}
 }
 

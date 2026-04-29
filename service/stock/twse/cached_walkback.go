@@ -420,6 +420,11 @@ func loadOne(s snapshotter, dir, filename string) {
 			_ = removeFile(path)
 			return
 		}
+		if errors.Is(err, ttlcache.ErrSnapshotTooLarge) {
+			log.Warn().Err(err).Str("path", path).Msg("ttlcache: dropping oversize snapshot")
+			_ = removeFile(path)
+			return
+		}
 		log.Warn().Err(err).Str("path", path).Msg("ttlcache: snapshot load failed; cold-starting")
 	}
 }

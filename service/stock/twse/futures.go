@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cmj0121/imagelet/internal/safehttp"
+
 	"golang.org/x/text/encoding/traditionalchinese"
 	"golang.org/x/text/transform"
 )
@@ -171,6 +173,7 @@ func (p *HTTPProvider) fetchTAIFEXOnce(ctx context.Context, commodity string, da
 		return 0, false, err
 	}
 	defer resp.Body.Close()
+	safehttp.BoundBody(resp, safehttp.DefaultBodyCap)
 	if resp.StatusCode != http.StatusOK {
 		return 0, false, fmt.Errorf("taifex: %s", resp.Status)
 	}
