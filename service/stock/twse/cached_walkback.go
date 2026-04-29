@@ -2,7 +2,12 @@ package twse
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"time"
+
+	"github.com/rs/zerolog/log"
 
 	"github.com/cmj0121/imagelet/internal/ttlcache"
 )
@@ -351,3 +356,100 @@ func (c *CachedVIX) GetVIX(ctx context.Context, asOf time.Time) (VIX, error) {
 	})
 	return out, err
 }
+
+// Per-provider snapshot filenames under the cache dir. Each cache
+// owns its own file so a schema change to one value type doesn't
+// invalidate the others.
+const (
+	snapshotT86             = "twse-t86.json"
+	snapshotLending         = "twse-securities-lending.json"
+	snapshotMargin          = "twse-stock-margin.json"
+	snapshotRetailFutures   = "taifex-retail-futures.json"
+	snapshotOptionsPCR      = "taifex-options-pcr.json"
+	snapshotVIX             = "taifex-vix.json"
+)
+
+// LoadSnapshots restores cached entries from JSON files under dir.
+// Missing files are no-ops (cold start). Schema-mismatched files
+// are deleted so the next save writes a current-schema replacement.
+// Other read errors are logged but don't block startup.
+func (c *Cached) LoadSnapshots(dir string) {
+	if dir == "" || c == nil {
+		return
+	}
+	loadOne(c.perStockT86, dir, snapshotT86)
+	loadOne(c.perStockLending, dir, snapshotLending)
+	loadOne(c.perStockMargin, dir, snapshotMargin)
+	loadOne(c.taifexFutures, dir, snapshotRetailFutures)
+	loadOne(c.taifexPCR, dir, snapshotOptionsPCR)
+	loadOne(c.taifexVIX, dir, snapshotVIX)
+}
+
+// SaveSnapshots writes each cache's live entries to dir as JSON.
+// Failures are logged per-cache but don't stop the rest from saving;
+// disk-cache benefits are best-effort by design (SIGKILL / OOM /
+// panic still skip the save).
+func (c *Cached) SaveSnapshots(dir string) {
+	if dir == "" || c == nil {
+		return
+	}
+	saveOne(c.perStockT86, dir, snapshotT86)
+	saveOne(c.perStockLending, dir, snapshotLending)
+	saveOne(c.perStockMargin, dir, snapshotMargin)
+	saveOne(c.taifexFutures, dir, snapshotRetailFutures)
+	saveOne(c.taifexPCR, dir, snapshotOptionsPCR)
+	saveOne(c.taifexVIX, dir, snapshotVIX)
+}
+
+// snapshotter is the minimal interface every CachedFoo exposes for
+// disk persistence. Each wrapper's Save/Load just delegate to the
+// underlying ttlcache.
+type snapshotter interface {
+	loadFrom(path string) error
+	saveTo(path string) error
+}
+
+func loadOne(s snapshotter, dir, filename string) {
+	if s == nil {
+		return
+	}
+	path := filepath.Join(dir, filename)
+	if err := s.loadFrom(path); err != nil {
+		if errors.Is(err, ttlcache.ErrSchemaMismatch) {
+			log.Warn().Err(err).Str("path", path).Msg("ttlcache: dropping stale snapshot (schema mismatch)")
+			_ = removeFile(path)
+			return
+		}
+		log.Warn().Err(err).Str("path", path).Msg("ttlcache: snapshot load failed; cold-starting")
+	}
+}
+
+func saveOne(s snapshotter, dir, filename string) {
+	if s == nil {
+		return
+	}
+	path := filepath.Join(dir, filename)
+	if err := s.saveTo(path); err != nil {
+		log.Warn().Err(err).Str("path", path).Msg("ttlcache: snapshot save failed")
+	}
+}
+
+// removeFile is split out so tests can replace it via package-level
+// rebinding if needed; production calls os.Remove with a best-effort
+// failure mode.
+var removeFile = os.Remove
+
+// Per-wrapper snapshotter conformance — each delegates to the
+// underlying ttlcache via SaveJSONFile / LoadJSONFile.
+func (c *CachedT86) loadFrom(path string) error             { return ttlcache.LoadJSONFile(c.cache, path) }
+func (c *CachedT86) saveTo(path string) error               { return ttlcache.SaveJSONFile(c.cache, path) }
+func (c *CachedSecuritiesLending) loadFrom(path string) error { return ttlcache.LoadJSONFile(c.cache, path) }
+func (c *CachedSecuritiesLending) saveTo(path string) error   { return ttlcache.SaveJSONFile(c.cache, path) }
+func (c *CachedStockMargin) loadFrom(path string) error     { return ttlcache.LoadJSONFile(c.cache, path) }
+func (c *CachedStockMargin) saveTo(path string) error       { return ttlcache.SaveJSONFile(c.cache, path) }
+func (c *CachedRetailFutures) loadFrom(path string) error   { return ttlcache.LoadJSONFile(c.cache, path) }
+func (c *CachedRetailFutures) saveTo(path string) error     { return ttlcache.SaveJSONFile(c.cache, path) }
+func (c *CachedOptionsPCR) loadFrom(path string) error      { return ttlcache.LoadJSONFile(c.cache, path) }
+func (c *CachedOptionsPCR) saveTo(path string) error        { return ttlcache.SaveJSONFile(c.cache, path) }
+func (c *CachedVIX) loadFrom(path string) error             { return ttlcache.LoadJSONFile(c.cache, path) }
+func (c *CachedVIX) saveTo(path string) error               { return ttlcache.SaveJSONFile(c.cache, path) }

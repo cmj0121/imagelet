@@ -126,6 +126,25 @@ func (c *Cache[K, V]) Set(key K, e Entry[V]) {
 	}
 }
 
+// All returns a snapshot of every live entry under lock, ordered
+// most-recently-used first. Used by the JSON snapshot save path.
+// Expired entries are filtered out so a save-on-shutdown doesn't
+// persist already-dead entries.
+func (c *Cache[K, V]) All() map[K]Entry[V] {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.now()
+	out := make(map[K]Entry[V], len(c.items))
+	for e := c.lru.Front(); e != nil; e = e.Next() {
+		n := e.Value.(*entryNode[K, V])
+		if !n.e.ExpiresAt.IsZero() && !n.e.ExpiresAt.After(now) {
+			continue
+		}
+		out[n.key] = n.e
+	}
+	return out
+}
+
 // GetOrFetch returns the cached value when present + unexpired, else
 // calls fetch under a singleflight slot keyed on `key` so concurrent
 // callers for the same key make at most one upstream call. The
