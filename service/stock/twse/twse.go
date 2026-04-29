@@ -842,21 +842,54 @@ type Cached struct {
 	cachedErr   error
 	cachedHasOK bool
 	flight      singleflight.Group
+
+	// Per-stock + TAIFEX cache layers. Populated automatically when
+	// `inner` exposes the matching Exact*Provider interface; nil
+	// fallthrough drops to the legacy bypass path (raw inner walk-back,
+	// no caching). HTTPProvider implements all six.
+	perStockT86      *CachedT86
+	perStockLending  *CachedSecuritiesLending
+	perStockMargin   *CachedStockMargin
+	taifexFutures    *CachedRetailFutures
+	taifexPCR        *CachedOptionsPCR
+	taifexVIX        *CachedVIX
 }
 
-// NewCached returns a Cached wrapper using the default TTLs (4h / 30m).
+// NewCached returns a Cached wrapper using the default TTLs (4h / 30m)
+// for the market-wide aggregate. Per-stock and TAIFEX walk-back caches
+// are attached automatically when `inner` exposes the matching
+// Exact*Provider interfaces.
 func NewCached(inner Provider) *Cached {
 	return NewCachedWithTTL(inner, 4*time.Hour, 30*time.Minute)
 }
 
-// NewCachedWithTTL lets tests pick TTLs.
+// NewCachedWithTTL lets tests pick the market-wide TTLs.
 func NewCachedWithTTL(inner Provider, successTTL, failureTTL time.Duration) *Cached {
-	return &Cached{
+	c := &Cached{
 		inner:      inner,
 		successTTL: successTTL,
 		failureTTL: failureTTL,
 		now:        time.Now,
 	}
+	if e, ok := inner.(PerStockExactProvider); ok {
+		c.perStockT86 = NewCachedT86(e, 0)
+	}
+	if e, ok := inner.(SecuritiesLendingExactProvider); ok {
+		c.perStockLending = NewCachedSecuritiesLending(e, 0)
+	}
+	if e, ok := inner.(StockMarginExactProvider); ok {
+		c.perStockMargin = NewCachedStockMargin(e, 0)
+	}
+	if e, ok := inner.(RetailFuturesExactProvider); ok {
+		c.taifexFutures = NewCachedRetailFutures(e, 0)
+	}
+	if e, ok := inner.(OptionsPCRExactProvider); ok {
+		c.taifexPCR = NewCachedOptionsPCR(e, 0)
+	}
+	if e, ok := inner.(VIXExactProvider); ok {
+		c.taifexVIX = NewCachedVIX(e, 0)
+	}
+	return c
 }
 
 // Get returns the cached entry if fresh; otherwise refreshes via the
@@ -933,14 +966,14 @@ func (c *Cached) GetAt(ctx context.Context, asOf time.Time) (MarketData, error) 
 	return hp.GetAt(ctx, asOf)
 }
 
-// GetForStock delegates to the inner provider when it implements
-// PerStockProvider. Per-stock lookups bypass the cache for the same
-// reason GetAt does — the single-entry cache is keyed by nothing,
-// so a per-stock response would pollute the market-wide path. The
-// inner HTTPProvider has no its own per-stock cache yet either; if
-// repeat-stock traffic shows up in production we can add one
-// (date+stockID keyed) without changing this contract.
+// GetForStock prefers the per-(stockID, date) walk-back cache when
+// inner exposes FetchT86Exact; otherwise falls back to inner's raw
+// PerStockProvider (no caching). The cached path keys on the resolved
+// trading date so repeat asOf values converge on the same entry.
 func (c *Cached) GetForStock(ctx context.Context, stockID string, asOf time.Time) (StockData, error) {
+	if c.perStockT86 != nil {
+		return c.perStockT86.GetForStock(ctx, stockID, asOf)
+	}
 	psp, ok := c.inner.(PerStockProvider)
 	if !ok {
 		return StockData{}, ErrUnavailable
@@ -961,11 +994,12 @@ func (c *Cached) LookupName(ctx context.Context, stockID string, isOTC bool) (st
 	return np.LookupName(ctx, stockID, isOTC)
 }
 
-// GetOptionsPCR delegates to the inner provider when it implements
-// OptionsPCRProvider. Bypasses the single-entry market-wide cache —
-// the upstream is daily afterTrading and a date-keyed cache can be
-// added later if traffic justifies it.
+// GetOptionsPCR prefers the date-keyed walk-back cache when inner
+// exposes FetchPCRExact; otherwise falls back to the raw provider.
 func (c *Cached) GetOptionsPCR(ctx context.Context, asOf time.Time) (OptionsPCR, error) {
+	if c.taifexPCR != nil {
+		return c.taifexPCR.GetOptionsPCR(ctx, asOf)
+	}
 	op, ok := c.inner.(OptionsPCRProvider)
 	if !ok {
 		return OptionsPCR{}, ErrUnavailable
@@ -973,9 +1007,12 @@ func (c *Cached) GetOptionsPCR(ctx context.Context, asOf time.Time) (OptionsPCR,
 	return op.GetOptionsPCR(ctx, asOf)
 }
 
-// GetVIX delegates to the inner provider when it implements VIXProvider.
-// Same caching note as GetOptionsPCR.
+// GetVIX prefers the date-keyed walk-back cache when inner exposes
+// FetchVIXExact; otherwise falls back to the raw provider.
 func (c *Cached) GetVIX(ctx context.Context, asOf time.Time) (VIX, error) {
+	if c.taifexVIX != nil {
+		return c.taifexVIX.GetVIX(ctx, asOf)
+	}
 	vp, ok := c.inner.(VIXProvider)
 	if !ok {
 		return VIX{}, ErrUnavailable
@@ -983,12 +1020,13 @@ func (c *Cached) GetVIX(ctx context.Context, asOf time.Time) (VIX, error) {
 	return vp.GetVIX(ctx, asOf)
 }
 
-// GetSecuritiesLending delegates to the inner provider when it implements
-// SecuritiesLendingProvider. Per-stock + per-date keying isn't represented
-// in the single-entry market-wide cache so we bypass for now; a date+stockID
-// keyed cache can be added later without changing this contract. Returns
-// ErrUnavailable when the inner provider doesn't support it.
+// GetSecuritiesLending prefers the per-(stockID, date) walk-back cache
+// when inner exposes FetchTWT93UExact; otherwise falls back to the raw
+// provider.
 func (c *Cached) GetSecuritiesLending(ctx context.Context, stockID string, asOf time.Time) (SecuritiesLending, error) {
+	if c.perStockLending != nil {
+		return c.perStockLending.GetSecuritiesLending(ctx, stockID, asOf)
+	}
 	slp, ok := c.inner.(SecuritiesLendingProvider)
 	if !ok {
 		return SecuritiesLending{}, ErrUnavailable
@@ -996,12 +1034,13 @@ func (c *Cached) GetSecuritiesLending(ctx context.Context, stockID string, asOf 
 	return slp.GetSecuritiesLending(ctx, stockID, asOf)
 }
 
-// GetStockMargin delegates to the inner provider when it implements
-// StockMarginProvider. Same per-stock + per-date keying caveat as
-// GetSecuritiesLending — bypasses the single-entry market-wide cache
-// for now. Returns ErrUnavailable when the inner provider doesn't
-// support it.
+// GetStockMargin prefers the per-(stockID, date) walk-back cache when
+// inner exposes FetchMIMARGNStockExact; otherwise falls back to the
+// raw provider.
 func (c *Cached) GetStockMargin(ctx context.Context, stockID string, asOf time.Time) (StockMargin, error) {
+	if c.perStockMargin != nil {
+		return c.perStockMargin.GetStockMargin(ctx, stockID, asOf)
+	}
 	smp, ok := c.inner.(StockMarginProvider)
 	if !ok {
 		return StockMargin{}, ErrUnavailable
@@ -1009,14 +1048,13 @@ func (c *Cached) GetStockMargin(ctx context.Context, stockID string, asOf time.T
 	return smp.GetStockMargin(ctx, stockID, asOf)
 }
 
-// GetRetailFutures delegates to the inner provider when it implements
-// RetailFuturesProvider. The TAIFEX upstream is per-contract POST and
-// has its own day lookback; the single-entry market-wide cache here
-// can't represent it without keying. Bypasses the cache for now —
-// repeat-traffic costs can drive a date+contract keyed cache later
-// without changing this contract. Returns ErrUnavailable when the
-// inner provider doesn't support it.
+// GetRetailFutures prefers the date-keyed walk-back cache when inner
+// exposes FetchTAIFEXFuturesExact; otherwise falls back to the raw
+// provider.
 func (c *Cached) GetRetailFutures(ctx context.Context, asOf time.Time) (RetailFutures, error) {
+	if c.taifexFutures != nil {
+		return c.taifexFutures.GetRetailFutures(ctx, asOf)
+	}
 	rfp, ok := c.inner.(RetailFuturesProvider)
 	if !ok {
 		return RetailFutures{}, ErrUnavailable
