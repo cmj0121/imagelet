@@ -185,8 +185,9 @@ func TestServeOpenMarketASCII(t *testing.T) {
 	}
 	// OHLC range bar is enabled when the quote carries the full OHLC
 	// quartet (freshQuote does). The bar glyphs (O, C, █ for bullish)
-	// land in the ASCII surface alongside the Low / High edge labels.
-	for _, want := range []string{"O", "C", "█", "4,440.00", "4,520.00", "4,460.00"} {
+	// land in the ASCII surface; the OCP data row carries `O: <open>`
+	// to pin the open value alongside C (current close) and P (prev).
+	for _, want := range []string{"O", "C", "█", "O: 4,460.00"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("ASCII body missing OHLC token %q\n--- body ---\n%s", want, body)
 		}
@@ -582,9 +583,10 @@ func TestServeFormatSVGOverridesUA(t *testing.T) {
 			// OHLC bar tokens survive pylon's SVG path. Pylon coalesces
 			// adjacent same-glyph runs into <rect> blocks (the body
 			// fill) and packs surrounding text into multi-char <text>
-			// elements, so the markers and edge labels show up as
-			// substrings rather than isolated nodes.
-			for _, want := range []string{"O", "C", "4,440.00", "4,520.00", "4,460.00"} {
+			// elements, so the markers and bottom labels show up as
+			// substrings rather than isolated nodes. The price-centered
+			// design no longer emits session low/high edge labels.
+			for _, want := range []string{"O", "C", "O: 4,460.00"} {
 				if !strings.Contains(body, want) {
 					t.Errorf("SVG body missing OHLC token %q\n--- body ---\n%s", want, body)
 				}
@@ -1331,5 +1333,172 @@ func TestServeCacheControlVariesByMarketState(t *testing.T) {
 				t.Errorf("Cache-Control = %q, want %q", got, tc.wantCC)
 			}
 		})
+	}
+}
+
+// TestRenderHasMAPositionBarWhenMAsPresent asserts the MA position bar
+// and its numeric caption render when the upstream supplied MA5 / MA10.
+// Strong-uptrend layout (Last > MA5 > MA10) so both arrows are ▲, the
+// price marker sits to the right of both MA markers, and the trailing
+// trend hint reads `5↗10` (golden-cross territory).
+func TestRenderHasMAPositionBarWhenMAsPresent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.MA5 = 575.20
+	q.MA10 = 568.40
+	q.Last = 583.00
+	r := newRouter(fakeProvider{q: q})
+
+	req := httptest.NewRequest(http.MethodGet, "/stock", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	// The text-marker layout puts literal `M10` / `M5` glyphs on the
+	// bar itself (self-identifying — no separate label row), and the
+	// caption row combines value, arrow, and trend hint:
+	// `M5: ▲<v> · M10: ▲<v> · 5↗10`.
+	for _, want := range []string{"M10", "M5", "M5: ▲575.20", "M10: ▲568.40", "5↗10"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q\n--- body ---\n%s", want, body)
+		}
+	}
+}
+
+// TestRenderMATrendTokenBranches pins each branch of the trailing
+// trend token in the MA caption: golden-cross (MA5 > MA10*1.001),
+// death-cross (MA5 < MA10*0.999), and the within-noise-floor neutral
+// case (MA5 ≈ MA10). The threshold is 0.1% — values inside ±0.1% of
+// MA10 collapse to ≈ regardless of which side they fall on.
+func TestRenderMATrendTokenBranches(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cases := []struct {
+		name      string
+		ma5, ma10 float64
+		want      string
+		banned    string
+	}{
+		{"golden_cross", 575.20, 568.40, "5↗10", "5↘10"},
+		{"death_cross", 568.40, 575.20, "5↘10", "5↗10"},
+		{"neutral_equal", 100.00, 100.00, "≈", "5↗10"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := freshQuote()
+			q.MA5 = tc.ma5
+			q.MA10 = tc.ma10
+			r := newRouter(fakeProvider{q: q})
+
+			req := httptest.NewRequest(http.MethodGet, "/stock", nil)
+			req.Header.Set("User-Agent", "curl/8.4.0")
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, tc.want) {
+				t.Errorf("body missing trend token %q\n--- body ---\n%s", tc.want, body)
+			}
+			if tc.banned != "" && strings.Contains(body, tc.banned) {
+				t.Errorf("body contains banned trend token %q\n--- body ---\n%s", tc.banned, body)
+			}
+		})
+	}
+}
+
+// TestRenderMAReachesHTMLResponse pins that the MA position bar (and
+// its caption) survives the HTML pipeline end-to-end: a Mozilla UA
+// triggers the HTML response path, the `text/html` content type lands,
+// and the MA caption substrings + position-bar / price-marker glyphs
+// appear literally in the body. Negative half pins that the gating
+// (skip when MA5 == 0) holds through the same pipeline so a regression
+// can't quietly leak the MA row into responses where it shouldn't show.
+func TestRenderMAReachesHTMLResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Run("present", func(t *testing.T) {
+		q := freshQuote()
+		q.MA5 = 575.20
+		q.MA10 = 568.40
+		q.Last = 583.00
+		r := newRouter(fakeProvider{q: q})
+
+		req := httptest.NewRequest(http.MethodGet, "/stock", nil)
+		req.Header.Set("User-Agent", "Mozilla/5.0")
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		if got := rec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+			t.Errorf("Content-Type = %q, want text/html; charset=utf-8", got)
+		}
+		body := rec.Body.String()
+		// The MA bar uses literal `M10` / `M5` text markers and a
+		// combined caption (`M5: ▲<v> · M10: ▲<v> · <trend>`).
+		for _, want := range []string{"M10", "M5", "M10: ▲", "M5: ▲", "C"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("HTML body missing %q\n--- body ---\n%s", want, body)
+			}
+		}
+	})
+	t.Run("absent_when_ma5_zero", func(t *testing.T) {
+		q := freshQuote()
+		q.MA5 = 0
+		q.MA10 = 568.40
+		r := newRouter(fakeProvider{q: q})
+
+		req := httptest.NewRequest(http.MethodGet, "/stock", nil)
+		req.Header.Set("User-Agent", "Mozilla/5.0")
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		if got := rec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+			t.Errorf("Content-Type = %q, want text/html; charset=utf-8", got)
+		}
+		body := rec.Body.String()
+		for _, banned := range []string{"M10:", "M5:"} {
+			if strings.Contains(body, banned) {
+				t.Errorf("HTML body unexpectedly contains MA caption %q (gating regression)\n--- body ---\n%s", banned, body)
+			}
+		}
+	})
+}
+
+// TestRenderSkipsMARowWhenInsufficientHistory asserts MA5 == MA10 == 0
+// (the upstream's "not enough closed-session history" signal) collapses
+// the row entirely. The `M10` / `M5` text markers are unique to the MA
+// bar — the OHLC bar uses ─, O, and C — so their absence is a clean
+// signal that the MA row was skipped without misclassifying the OHLC
+// bar.
+func TestRenderSkipsMARowWhenInsufficientHistory(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.MA5 = 0
+	q.MA10 = 0
+	r := newRouter(fakeProvider{q: q})
+
+	req := httptest.NewRequest(http.MethodGet, "/stock", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, unwanted := range []string{"M10:", "M5:", "5↗10", "5↘10"} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("body unexpectedly contains %q\n--- body ---\n%s", unwanted, body)
+		}
 	}
 }

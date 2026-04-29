@@ -489,6 +489,21 @@ func (bs stockBlocks) boxes() []render.BoxBlock {
 // row, so the gap survives.
 const blankRow = "​"
 
+// zwspGuard prepends a U+200B (zero-width space) to a row whose
+// rendered visual carries leading whitespace — pylon's borderless
+// `(...)` row parser strips outer whitespace, which would shift
+// centered labels (e.g. the OHLC `O:`/`C:` bottom row, the MA
+// position bar's marker labels) to column 0 and break their
+// alignment under the bar markers above. ZWSP is invisible but
+// counts as content, so the strip stops at it and the centering
+// padding survives. No-op when `row` is empty.
+func zwspGuard(row string) string {
+	if row == "" {
+		return row
+	}
+	return "​" + row
+}
+
 // buildBlocks assembles the per-surface content. useEnglish=true picks
 // English labels for the TW block on the PNG path only — pylon's PNG
 // font (basicfont.Face7x13) has zero CJK coverage so Chinese would
@@ -536,16 +551,58 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 		bs.captions = append(bs.captions, render.StripPylonSyntax(formatVolumeRow(q)))
 	}
 
+	// Each bar gets its own adaptive band fitted to its own primary
+	// markers so each fills the width on quiet days. They no longer
+	// decode column-by-column under each other (a shared band would
+	// cluster OHLC markers when MA values trend far from price), but
+	// each bar reads independently and the price-centered C glyph
+	// anchors the eye on both.
+	//
+	// PrevClose intentionally drops out of the band fit — it's a
+	// secondary reference (▼ on the top row, value in the OCP / HL
+	// data rows), and a far-trended prev would otherwise widen the
+	// band and squash the primary OHLC markers near center. When
+	// prev sits past the band it clips inward to the saturation
+	// sentinel like any other out-of-range marker.
+	// OHLC and MA bars stack tight: the MA bar attaches directly
+	// beneath OHLC's hl row with no separator. A leading ZWSP gives
+	// the bar group breathing room from the price/caption banner
+	// above; a single trailing ZWSP at the very end gives breathing
+	// room from whatever follows (TW enrichment, or bottom of figure).
+	// Literal empty rows would be trimmed by pylon; ZWSP holds the line.
+	//
+	// The bar's top row (▼ prev-close overlay floating mid-row) carries
+	// leading whitespace and needs zwspGuard against pylon's strip;
+	// the OCP / HL / caption data rows are left-anchored and survive
+	// without a guard.
 	if q.HasOHLC() {
-		top, bar, bottom := render.OHLCBar(q.Open, q.DayHigh, q.DayLow, q.Last, q.PrevClose, ohlcWidth, formatPrice)
+		ohlcBand := render.PriceBandFor(q.Last, q.Open, q.DayHigh, q.DayLow)
+		top, bar, ocp, hl := render.OHLCBar(q.Open, q.DayHigh, q.DayLow, q.Last, q.PrevClose, ohlcWidth, ohlcBand, formatPrice)
 		if bar != "" {
-			// Leading + trailing ZWSP rows give the OHLC block breathing
-			// room from the price/caption banner above and from whatever
-			// follows below (TW enrichment, or bottom of the figure for
-			// non-TW visitors). A literal empty row would be trimmed by
-			// pylon; ZWSP holds the line.
-			bs.ohlc = []string{blankRow, top, bar, bottom, blankRow}
+			bs.ohlc = append(bs.ohlc, blankRow, zwspGuard(top), bar, render.StripPylonSyntax(ocp))
+			if hl != "" {
+				bs.ohlc = append(bs.ohlc, render.StripPylonSyntax(hl))
+			}
 		}
+	}
+
+	// MA position bar (optional). Skipped when either MA is zero —
+	// that signals "insufficient closed-session history" from the
+	// upstream and the row would mislead.
+	if q.MA5 > 0 && q.MA10 > 0 {
+		maBand := render.PriceBandFor(q.Last, q.MA5, q.MA10)
+		top, bar, caption := render.MAPositionBar(q.MA10, q.MA5, q.Last, q.PrevClose, ohlcWidth, maBand, formatPrice)
+		if bar != "" {
+			if len(bs.ohlc) == 0 {
+				bs.ohlc = append(bs.ohlc, blankRow)
+			}
+			bs.ohlc = append(bs.ohlc, zwspGuard(top), bar, render.StripPylonSyntax(caption))
+		}
+	}
+
+	// Trailing breathing room for the whole bar group, if anything was emitted.
+	if len(bs.ohlc) > 0 {
+		bs.ohlc = append(bs.ohlc, blankRow)
 	}
 
 	// Market-state gating: 籌碼面 (positioning) and 信用餘額 (credit)

@@ -5,22 +5,30 @@ import (
 	"strings"
 )
 
-// OHLC bar visual constants. Marker glyphs sit at the Open and Close
-// price columns; body fills the span between them; wicks fill the rest
-// to the Low / High edges.
+// OHLC bar visual constants. The bar centers on the current quote
+// (`last` = today's close, or the intraday partial when the market
+// is open) at column width/2 and spans a ±priceBandScale window
+// (3% by default) on either side. Marker glyphs sit at:
 //
-// TW/Eastern convention drives the body fill: solid █ for bullish
-// (Close >= Open, 紅K), hollow ░ for bearish (Close < Open, 黑K).
-// Marker order on the bar (`O...C` vs `C...O`) is the secondary
-// direction cue; readers familiar with either convention can decode
-// either way.
+//   - `C` at the center column = current close (= the price the
+//     headline caption is reporting; the bar's "you are here").
+//   - `O` at today's open offset, where the offset is computed from
+//     (open − last) / last clipped into ±priceBandScale.
+//   - `▼` overlaid on the top row at the prev-close offset, with a
+//     `P:<price>` label tucked next to it when there's room.
 //
-// The prev-close marker (▼) is overlaid on the top edge-label row
-// at the prev-close column — pointing down toward the bar — when
-// callers supply a positive prev-close. Useful for spotting the
-// day's gap (open vs prev-close) and where Close ended relative to
-// yesterday at a glance. When the prev-close label would collide
-// with the Low / High edge labels, the marker is dropped (edges win).
+// The bar body fills the span between O and C: solid `█` for bullish
+// (last >= open, 紅K), hollow `░` for bearish (last < open, 黑K).
+// TW/Eastern reading convention drives the fill choice; the marker
+// order on the bar (`O…C` vs `C…O`) provides the secondary cue —
+// readers familiar with either decode the other for free.
+//
+// High and low are NOT visualized on the bar — readers have them in
+// the volume / caption rows above. Centering on price (instead of
+// the day's range midpoint) keeps the OHLC bar directly comparable
+// to the MA position bar that stacks below: both share the same
+// axis (price ±3%), so a quick scan reveals where today's open /
+// prev close / MA5 / MA10 all sit relative to the current quote.
 const (
 	ohlcWick        = '─'
 	ohlcBodyBull    = '█'
@@ -28,108 +36,213 @@ const (
 	ohlcMarkerOpen  = 'O'
 	ohlcMarkerClose = 'C'
 	ohlcMarkerPrev  = '▼'
+	// Letter glyphs at the session-low / session-high offset columns —
+	// self-identifying like `O` / `C`, so the reader doesn't need a
+	// separate label row to disambiguate them. Pylon's `[...]` framed-
+	// box parser ruled out literal `[` / `]` brackets; plain letters
+	// have no special meaning in pylon source either.
+	ohlcMarkerLow  = 'L'
+	ohlcMarkerHigh = 'H'
+
+	// priceBandScale is a conservative default half-width (±3%) for
+	// callers that don't compute an adaptive band via PriceBandFor.
+	// Production callers (service/stock) pass an adaptive band fitted
+	// to the actual marker values so quiet days fill the bar; this
+	// constant remains the fallback for tests and ad-hoc invocations.
+	priceBandScale = 0.03
+
+	// minPriceBand floors the adaptive band so a degenerate input
+	// (all markers equal to price) still yields a usable bar instead
+	// of dividing by zero.
+	minPriceBand = 0.005
+	// maxPriceBand caps the adaptive band so a single far-off marker
+	// (typically MA10 in a strongly trending stock) doesn't widen the
+	// scale enough to cluster every other marker at the center.
+	// Markers beyond ±5% clip to the edge with ▶ / ◀ sentinels.
+	maxPriceBand = 0.05
 )
 
-// OHLCBar renders an OHLC range bar as three equal-width strings: the
-// top row carries Low (left-anchored) and High (right-anchored) labels
-// at the bar edges with an optional prev-close ▼ marker + label
-// overlaid at the prev-close column; the bar row maps [low, high]
-// across `width` columns with `O` / `C` glyphs at the Open / Close
-// positions and the body filled between them; the bottom row carries
-// Open / Close labels centered under their markers.
+// OHLCBar renders a price-relative range bar as four equal-width
+// strings:
+//
+//   - `top`: the prev-close marker row — a single `▼` glyph at the
+//     prev-close offset column, blank elsewhere. The numeric value
+//     lives on the OCP row below (`P: <price>`); the marker on this
+//     row only conveys position relative to the bar.
+//   - `bar`: the bar itself — `L` / `H` letters at the day's low /
+//     high, `O` at today's open, `C` at the center column = current
+//     close, body `█` (bullish) / `░` (bearish) between O and C, and
+//     wick `─` everywhere else.
+//   - `ocp`: a left-anchored data row — `O: <open> · C: <close> · P: <prev>`.
+//     The P field drops when prevClose is 0.
+//   - `hl`: a left-anchored data row — `H: <high> · L: <low>`. Empty
+//     when the caller didn't supply a meaningful range.
+//
+// Glyph vocabulary (shared with MAPositionBar so both bars decode
+// identically):
+//
+//   - `▼` previous close (position only; value in OCP row).
+//   - `C` current close (always at the bar's center column).
+//   - `O` today's open (offset from C by % difference).
+//   - `L` / `H` session low / high.
+//   - `█` / `░` body fill, bullish / bearish.
+//   - `▶` / `◀` saturation: marker exceeds the ±3% band.
 //
 // `format` is supplied by the caller so price formatting (locale,
 // precision, thousands separator) lives in one place — typically the
-// /stock service's formatPrice. Returns three empty strings when the
-// range is degenerate (high <= low) or `width` is too narrow for the
-// markers + at least one wick column on each side. Callers that pass
-// in a quote should gate on quote.HasOHLC() first.
-//
-// Bottom-row label collision (Open and Close labels overlap when the
-// body is narrow): the label closer to the run-edge wins, the inner
-// label is dropped. Doji (Open == Close, markers fuse to `OC`) renders
-// a single midpoint label.
+// /stock service's formatPrice. Returns four empty strings when
+// `last` is non-positive or `width` is too narrow for the markers
+// (< 8 columns).
 //
 // `prevClose` is the previous trading day's close. Pass 0 to omit
-// the ▼ marker (e.g. when upstream did not supply a prev-close).
-// Values outside [low, high] are clamped to the edge — gap-up opens
-// pin the marker to the left edge, gap-downs to the right. The
-// marker + label is silently dropped if it would collide with the
-// Low / High edge labels.
-func OHLCBar(open, high, low, last, prevClose float64, width int, format func(float64) string) (top, bar, bottom string) {
-	if high <= low || width < 8 {
-		return "", "", ""
+// the ▼ marker AND the `P:` field on the OCP row.
+// `high` / `low` (when both > 0 with low <= high) drive the bracket
+// markers and the HL data row. Pass 0 for either to omit.
+//
+// `band` is the half-width pct window of the bar's price axis (e.g.
+// 0.03 = ±3%). Pass priceBandScale for the legacy fixed window;
+// production callers compute an adaptive band via PriceBandFor so
+// markers fill the bar on quiet days. Non-positive band falls back
+// to priceBandScale.
+func OHLCBar(open, high, low, last, prevClose float64, width int, band float64, format func(float64) string) (top, bar, ocp, hl string) {
+	if last <= 0 || width < 8 {
+		return "", "", "", ""
 	}
-	span := high - low
-	openPos := clampInt(int(math.Round((open-low)/span*float64(width-1))), 0, width-1)
-	closePos := clampInt(int(math.Round((last-low)/span*float64(width-1))), 0, width-1)
+	centerCol := width / 2
+	openCol, openClipL, openClipR := priceOffsetCol(open, last, width, band)
 
-	top = ohlcEdgeLabels(format(low), format(high), width)
-	if prevClose > 0 {
-		prevPos := clampInt(int(math.Round((prevClose-low)/span*float64(width-1))), 0, width-1)
-		top = overlayPrevMarker(top, format(prevClose), prevPos, len(format(low)), len(format(high)), width)
+	hasRange := high > 0 && low > 0 && low <= high
+	var lowCol, highCol int
+	var lowClipL, highClipR bool
+	if hasRange {
+		lowCol, lowClipL, _ = priceOffsetCol(low, last, width, band)
+		highCol, _, highClipR = priceOffsetCol(high, last, width, band)
 	}
-	bar = ohlcBarRow(openPos, closePos, last >= open, width)
-	bottom = ohlcMarkerLabels(format(open), format(last), openPos, closePos, width)
+
+	bar = ohlcBarRow(openCol, centerCol, lowCol, highCol, hasRange,
+		last >= open, openClipL, openClipR, lowClipL, highClipR, width)
+
+	top = strings.Repeat(" ", width)
+	if prevClose > 0 {
+		prevCol, _, _ := priceOffsetCol(prevClose, last, width, band)
+		top = overlayPrevGlyph(top, prevCol, width)
+	}
+
+	ocp = formatOCPRow(open, last, prevClose, format)
+	if hasRange {
+		hl = "H: " + format(high) + " · L: " + format(low)
+	}
 	return
 }
 
-// overlayPrevMarker writes `▼ <label>` over `top` at column `prevPos`
-// — pointing at the bar's prev-close column. Drops the marker
-// silently if its span (▼ + space + label) would collide with the
-// Low or High edge labels already on the row, since those are the
-// load-bearing axis labels and the prev marker is supplementary.
-//
-// Layout: ▼ sits at prevPos itself; the label tucks in to the right
-// when there's space, otherwise to the left. lowLen / highLen are
-// the rendered widths of the existing edge labels and define the
-// keep-out zones the overlay must avoid.
-func overlayPrevMarker(top, label string, prevPos, lowLen, highLen, width int) string {
-	const gap = 1 // space between ▼ and the price label
-	span := 1 + gap + len(label)
-	// Require a 1-column gap between edge labels and the overlay so a
-	// prev-close marker that lands right next to the Low or High label
-	// doesn't visually fuse — `4,440.00▼ 4,450.00` reads as one token,
-	// `4,440.00 ▼ 4,450.00` reads as two.
-	leftEdge := lowLen + 1           // overlay must start at column ≥ lowLen+1
-	rightEdge := width - highLen - 1 // overlay must end at column ≤ width-highLen-1
-	// Try right-of-marker layout first.
-	start := prevPos
-	end := start + span
-	if start >= leftEdge && end <= rightEdge {
-		return writeOverlay(top, prevPos, label, true)
+// formatOCPRow returns the left-anchored OCP data row. The P field
+// drops silently when prevClose is 0 — upstream didn't supply a
+// previous close (typical for newly-listed symbols or when the chart
+// range was too short to walk back to a prior session).
+func formatOCPRow(open, last, prevClose float64, format func(float64) string) string {
+	row := "O: " + format(open) + " · C: " + format(last)
+	if prevClose > 0 {
+		row += " · P: " + format(prevClose)
 	}
-	// Fall back to left-of-marker layout.
-	start = prevPos - (gap + len(label))
-	end = prevPos + 1
-	if start >= leftEdge && end <= rightEdge {
-		return writeOverlay(top, prevPos, label, false)
-	}
-	// Neither side fits without colliding — drop the overlay.
-	return top
+	return row
 }
 
-// writeOverlay returns `top` with `▼` placed at prevPos and `label`
-// placed adjacent (right side when rightSide=true, else left).
-func writeOverlay(top string, prevPos int, label string, rightSide bool) string {
-	runes := []rune(top)
-	runes[prevPos] = ohlcMarkerPrev
-	if rightSide {
-		// `▼ <label>` — label starts at prevPos+2.
-		writeRunes(runes, label, prevPos+2)
-	} else {
-		// `<label> ▼` — label ends at prevPos-1, starts at prevPos-1-len(label)+1.
-		writeRunes(runes, label, prevPos-1-len(label))
+// priceOffsetCol maps `value` onto a width-cell bar centered on
+// `price` at column `width/2`, with the bar spanning ±band around
+// price. Returns the column index plus clip-left / clip-right flags
+// when the offset exceeds the band so the caller can swap in a ▶ /
+// ◀ saturation sentinel at the edge.
+//
+// Non-positive `price` returns the center column with no clipping —
+// the caller is expected to gate on `price > 0` before drawing, but
+// this conservative fallback keeps the helper from dividing by zero
+// on a degenerate input. Non-positive `band` falls back to the
+// priceBandScale default.
+func priceOffsetCol(value, price float64, width int, band float64) (col int, clipLeft, clipRight bool) {
+	centerCol := width / 2
+	if price <= 0 {
+		return centerCol, false, false
 	}
+	if band <= 0 {
+		band = priceBandScale
+	}
+	pctOffset := (value - price) / price
+	raw := float64(centerCol) + pctOffset/band*float64(centerCol)
+	col = int(math.Round(raw))
+	if col < 0 {
+		return 0, true, false
+	}
+	if col > width-1 {
+		return width - 1, false, true
+	}
+	return col, false, false
+}
+
+// PriceBandFor returns an adaptive half-width pct band fitted to
+// `values` relative to `price`: the largest absolute pct offset
+// across the non-zero values, plus a 10% padding margin so the
+// widest marker doesn't sit at the very edge. Floored at minPriceBand
+// (so degenerate all-equal-to-price inputs still yield a usable bar)
+// and capped at maxPriceBand (so a single far-off MA doesn't widen
+// the scale enough to cluster every other marker at center; values
+// beyond the cap clip to the edge with ▶ / ◀).
+//
+// Pass the values that should drive the spread — typically the
+// union of OHLC + prev-close + MA markers when sharing the band
+// across stacked bars so they decode column-by-column.
+func PriceBandFor(price float64, values ...float64) float64 {
+	if price <= 0 {
+		return priceBandScale
+	}
+	var maxAbs float64
+	for _, v := range values {
+		if v <= 0 {
+			continue
+		}
+		abs := math.Abs((v - price) / price)
+		if abs > maxAbs {
+			maxAbs = abs
+		}
+	}
+	band := maxAbs * 1.10
+	if band < minPriceBand {
+		return minPriceBand
+	}
+	if band > maxPriceBand {
+		return maxPriceBand
+	}
+	return band
+}
+
+// overlayPrevGlyph writes `▼` over `top` at column `prevCol`. The
+// numeric value lives on the OCP data row below (`P: <price>`), so
+// this top-row marker only conveys position. Bumps one column inward
+// when the offset would clip the bar edge so the ▼ is never erased
+// by a `◀` / `▶` saturation sentinel; falls back to no-op when
+// prevCol is somehow out of range.
+func overlayPrevGlyph(top string, prevCol, width int) string {
+	if prevCol < 0 || prevCol >= width {
+		return top
+	}
+	runes := []rune(top)
+	runes[prevCol] = ohlcMarkerPrev
 	return string(runes)
 }
 
-// ohlcBarRow builds the bar string. Markers are placed at openPos and
-// closePos; positions strictly between them carry the body glyph; all
-// other positions carry the wick glyph. When openPos == closePos
-// (doji), `OC` is fused at adjacent columns (rolling left if openPos
-// is at the right edge).
-func ohlcBarRow(openPos, closePos int, bullish bool, width int) string {
+// ohlcBarRow builds the bar string. The close glyph (`C`) is always at
+// `centerCol`; `O` sits at the open's offset column. Plain letters
+// are used for L/H instead of `[...]` because pylon parses literal
+// brackets as a framed box and would re-frame the row.
+//
+// On doji (openCol == centerCol) the row shows a single `C` glyph —
+// O and C coincide; the OCP data row still carries both identities.
+//
+// Saturation: when an offset exceeds ±band, the marker bumps
+// one column inward and the edge column carries `◀` / `▶` so the
+// reader sees both the marker AND the off-screen indicator. Marker
+// priority on shared columns: `O` / `C` win over `L` / `H` — open and
+// close are the load-bearing OHLC values; L / H only bound the wick.
+func ohlcBarRow(openCol, centerCol, lowCol, highCol int, hasRange, bullish, openClipL, openClipR, lowClipL, highClipR bool, width int) string {
 	body := ohlcBodyBull
 	if !bullish {
 		body = ohlcBodyBear
@@ -138,88 +251,58 @@ func ohlcBarRow(openPos, closePos int, bullish bool, width int) string {
 	for i := range runes {
 		runes[i] = ohlcWick
 	}
-	if openPos == closePos {
-		if openPos == width-1 {
-			runes[openPos-1] = ohlcMarkerOpen
-			runes[openPos] = ohlcMarkerClose
-		} else {
-			runes[openPos] = ohlcMarkerOpen
-			runes[openPos+1] = ohlcMarkerClose
-		}
-		return string(runes)
+
+	// Bump clipped open marker inward so the saturation sentinel
+	// doesn't erase it.
+	openBarCol := openCol
+	switch {
+	case openClipL:
+		openBarCol = 1
+	case openClipR:
+		openBarCol = width - 2
 	}
-	leftPos, rightPos := openPos, closePos
-	leftMarker, rightMarker := ohlcMarkerOpen, ohlcMarkerClose
-	if openPos > closePos {
-		leftPos, rightPos = closePos, openPos
-		leftMarker, rightMarker = ohlcMarkerClose, ohlcMarkerOpen
+
+	// Body span = strictly between min(open, close) and max(open, close).
+	leftCol, rightCol := openBarCol, centerCol
+	if openBarCol > centerCol {
+		leftCol, rightCol = centerCol, openBarCol
 	}
-	runes[leftPos] = leftMarker
-	runes[rightPos] = rightMarker
-	for i := leftPos + 1; i < rightPos; i++ {
+	for i := leftCol + 1; i < rightCol; i++ {
 		runes[i] = body
 	}
-	return string(runes)
-}
 
-// ohlcEdgeLabels returns a width-wide string with `low` left-anchored
-// at column 0 and `high` right-anchored at column width-1. Falls back
-// to a blank row when the labels would overrun the available width.
-func ohlcEdgeLabels(low, high string, width int) string {
-	if len(low)+len(high)+1 > width {
-		return strings.Repeat(" ", width)
+	// Range brackets — only drawn when they sit OUTSIDE the OC body
+	// span; otherwise the O/C marker covers the same column and wins
+	// (the OC pair carries the more important read).
+	if hasRange {
+		lowBarCol, highBarCol := lowCol, highCol
+		if lowClipL {
+			lowBarCol = 1
+		}
+		if highClipR {
+			highBarCol = width - 2
+		}
+		if lowBarCol < leftCol {
+			runes[lowBarCol] = ohlcMarkerLow
+		}
+		if highBarCol > rightCol {
+			runes[highBarCol] = ohlcMarkerHigh
+		}
 	}
-	return low + strings.Repeat(" ", width-len(low)-len(high)) + high
-}
 
-// ohlcMarkerLabels centers `open` under openPos and `last` under
-// closePos within a width-wide string. Edge clamping keeps both labels
-// inside the bar bounds. Collision rule: when the two label spans
-// overlap, the label whose marker sits further from the bar interior
-// wins (i.e. the one closer to the Low or High edge keeps its column);
-// the inner label is dropped to avoid a garbled overlay.
-func ohlcMarkerLabels(open, last string, openPos, closePos, width int) string {
-	runes := make([]rune, width)
-	for i := range runes {
-		runes[i] = ' '
+	// O / C markers (top priority — written last).
+	runes[centerCol] = ohlcMarkerClose
+	if openBarCol != centerCol {
+		runes[openBarCol] = ohlcMarkerOpen
 	}
-	if openPos == closePos {
-		// Doji: render a single label at the marker column. Open and
-		// last carry the same price, so either is correct.
-		writeCentered(runes, open, openPos)
-		return string(runes)
-	}
-	openStart := centeredStart(openPos, len(open), width)
-	lastStart := centeredStart(closePos, len(last), width)
 
-	// Collision check (only matters when the two spans overlap).
-	openEnd := openStart + len(open)
-	lastEnd := lastStart + len(last)
-	openLeft := openPos < closePos
-	collide := (openLeft && openEnd > lastStart) || (!openLeft && lastEnd > openStart)
-	if collide {
-		// Drop the inner label — keep the one closer to the bar edge.
-		// "Inner" means: when Open sits to the left of Close, Close is
-		// inner if it's closer to the right edge less than Open is to
-		// the left edge — i.e. the marker with the smaller distance to
-		// its own edge wins.
-		openEdgeDist := openPos
-		if !openLeft {
-			openEdgeDist = (width - 1) - openPos
-		}
-		closeEdgeDist := (width - 1) - closePos
-		if !openLeft {
-			closeEdgeDist = closePos
-		}
-		if openEdgeDist <= closeEdgeDist {
-			writeRunes(runes, open, openStart)
-		} else {
-			writeRunes(runes, last, lastStart)
-		}
-		return string(runes)
+	// Saturation sentinels at the bar edges.
+	if openClipR || highClipR {
+		runes[width-1] = maClipRight
 	}
-	writeRunes(runes, open, openStart)
-	writeRunes(runes, last, lastStart)
+	if openClipL || lowClipL {
+		runes[0] = maClipLeft
+	}
 	return string(runes)
 }
 
@@ -236,12 +319,6 @@ func centeredStart(pos, n, width int) int {
 	return start
 }
 
-// writeCentered writes `s` centered at `pos` into `runes`, clamping
-// to the slice bounds. Out-of-range writes are silently dropped.
-func writeCentered(runes []rune, s string, pos int) {
-	writeRunes(runes, s, centeredStart(pos, len(s), len(runes)))
-}
-
 // writeRunes copies the runes of `s` into `runes` starting at `start`,
 // stopping at the slice end. ASCII-only callers (price digits, comma,
 // dot) make len(s) == rune count safe to assume here.
@@ -253,14 +330,4 @@ func writeRunes(runes []rune, s string, start int) {
 		}
 		runes[idx] = r
 	}
-}
-
-func clampInt(v, lo, hi int) int {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
 }
