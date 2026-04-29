@@ -7,6 +7,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// Note: c.Request.Host (read below) carries the same proxy-trust property
+// as X-Forwarded-Proto — when a CDN passes the Host header through verbatim
+// it is similarly attacker-influenceable. We are NOT patching it in this
+// PR; flagged here for a future hardening pass (host allowlist).
+
 // xForwardedProtoHeader is the de-facto standard reverse-proxy header
 // carrying the original client-facing scheme. Cloudflare, Caddy, nginx,
 // and Fly.io all set it. We trust it because imagelet runs behind a CDN
@@ -20,7 +25,7 @@ const xForwardedProtoHeader = "X-Forwarded-Proto"
 //
 // Scheme picked in order:
 //
-//  1. X-Forwarded-Proto request header (set by Cloudflare in production)
+//  1. X-Forwarded-Proto request header — IF set to "http" or "https" (case-insensitive). Other values are ignored to prevent javascript:/data:/file: schemes from flowing into og:url emitters.
 //  2. "https" when the request itself terminated TLS at this server
 //  3. "http" otherwise
 //
@@ -48,8 +53,8 @@ const xForwardedProtoHeader = "X-Forwarded-Proto"
 // `?a=1&b=2` after a round-trip.
 func AbsoluteURL(c *gin.Context, queryOverride string) string {
 	scheme := "http"
-	if proto := strings.TrimSpace(c.GetHeader(xForwardedProtoHeader)); proto != "" {
-		scheme = strings.ToLower(proto)
+	if proto := strings.ToLower(strings.TrimSpace(c.GetHeader(xForwardedProtoHeader))); proto == "http" || proto == "https" {
+		scheme = proto
 	} else if c.Request != nil && c.Request.TLS != nil {
 		scheme = "https"
 	}
