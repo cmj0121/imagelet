@@ -7,9 +7,12 @@
 // Both assets are baked into the binary via go:embed so the
 // service has no filesystem or network dependencies. The .ico is
 // a multi-resolution Windows icon (16 + 32 + 48) generated from
-// the canonical favicon.svg via rsvg-convert + ImageMagick; the
-// SVG is the brand mark itself, a bracketless block "I" on the
-// project's dark theme.
+// the canonical favicon.svg via rsvg-convert + ImageMagick. The
+// SVG is byte-identical to assets/logo.svg (the README hero) so
+// the brand mark stays consistent across browser tab, desktop
+// shortcut, and project landing page; the duplication is
+// unavoidable because go:embed cannot reach outside its package
+// directory.
 package favicon
 
 import (

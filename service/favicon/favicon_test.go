@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -64,5 +66,27 @@ func TestFaviconSVG(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(body), []byte("<svg")) {
 		t.Errorf("body missing <svg root: %q", body)
+	}
+}
+
+// TestFaviconSVGMatchesLogo guards against the two SVGs drifting.
+// The embed directive cannot reach outside the package directory,
+// so the canonical logo (assets/logo.svg, used by the README)
+// must be kept byte-identical to service/favicon/favicon.svg by
+// hand — this test fails loudly when someone edits one and
+// forgets the other.
+func TestFaviconSVGMatchesLogo(t *testing.T) {
+	logoPath := filepath.Join("..", "..", "assets", "logo.svg")
+	logo, err := os.ReadFile(logoPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", logoPath, err)
+	}
+	favPath := filepath.Join("favicon.svg")
+	fav, err := os.ReadFile(favPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", favPath, err)
+	}
+	if !bytes.Equal(logo, fav) {
+		t.Errorf("favicon.svg differs from assets/logo.svg; keep them byte-identical or update both")
 	}
 }
