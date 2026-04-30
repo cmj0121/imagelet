@@ -336,14 +336,14 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 					if l, lerr := slp.GetSecuritiesLending(ctx, stockID, asOfQuery); lerr == nil {
 						lending = l
 					} else if lerr != twse.ErrUnavailable {
-						log.Warn().Err(lerr).Str("stock", stockID).Msg("twse securities-lending fetch failed; omitting 借券 row")
+						log.Warn().Err(lerr).Str("stock", stockID).Msg("twse securities-lending fetch failed; omitting securities-lending row")
 					}
 				}
 				if smp, ok := h.twse.(twse.StockMarginProvider); ok {
 					if m, merr := smp.GetStockMargin(ctx, stockID, asOfQuery); merr == nil {
 						margin = m
 					} else if merr != twse.ErrUnavailable {
-						log.Warn().Err(merr).Str("stock", stockID).Msg("twse stock-margin fetch failed; omitting 融資/融券 row")
+						log.Warn().Err(merr).Str("stock", stockID).Msg("twse stock-margin fetch failed; omitting margin/short row")
 					}
 				}
 			} else {
@@ -351,7 +351,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 					if r, rerr := rfp.GetRetailFutures(ctx, asOfQuery); rerr == nil {
 						retail = r
 					} else if rerr != twse.ErrUnavailable {
-						log.Warn().Err(rerr).Msg("taifex retail futures fetch failed; omitting 散戶 group")
+						log.Warn().Err(rerr).Msg("taifex retail futures fetch failed; omitting retail-futures group")
 					}
 				}
 				if op, ok := h.twse.(twse.OptionsPCRProvider); ok {
