@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="imagelet">
+  <title>imagelet</title>
+  <rect width="128" height="128" rx="18" fill="#0d1117"/>
+  <g fill="#c9d1d9">
+    <path d="M 18 18 H 38 V 24 H 24 V 38 H 18 Z"/>
+    <path d="M 110 18 H 90 V 24 H 104 V 38 H 110 Z"/>
+    <path d="M 18 110 H 38 V 104 H 24 V 90 H 18 Z"/>
+    <path d="M 110 110 H 90 V 104 H 104 V 90 H 110 Z"/>
+    <rect x="46" y="46" width="36" height="9"/>
+    <rect x="59" y="55" width="10" height="18"/>
+    <rect x="46" y="73" width="36" height="9"/>
+  </g>
+</svg>
