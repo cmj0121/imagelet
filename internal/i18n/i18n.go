@@ -159,23 +159,35 @@ var (
 //  4. LocaleEN.
 //
 // After c.Next() returns, the middleware appends "Accept-Language" to
-// the response's Vary header IFF al-influenced was set. Owning Vary
-// here (rather than per-handler) keeps the cache-correctness contract
-// in one place — new routes and existing routes alike Just Work.
+// the response's Vary header IFF al-influenced was set. The Vary write
+// is wrapped in a defer so that even if a downstream handler panics
+// (and gin.Recovery converts it to a 500), the cache-correctness
+// contract still holds — the recovered response carries Vary just like
+// a normal one. Owning Vary here (rather than per-handler) keeps the
+// contract in one place — new routes and existing routes alike Just Work.
+//
+// X-Imagelet-Locale is set unconditionally BEFORE c.Next() so handlers
+// can observe (and, in a hypothetical future, override) it. The header
+// value is bounded to the {"en","zh-TW","zh-CN"} enum from
+// Locale.String() — no PII, safe to log and to expose to operators
+// running `curl -I` against staged-rollout deployments.
 func LocaleDetector() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		loc, alInfluenced := resolveLocale(c)
 		c.Set(localeKey, loc)
 		c.Set(alInfluencedKey, alInfluenced)
+		c.Writer.Header().Set("X-Imagelet-Locale", loc.String())
 		if e := log.Debug(); e.Enabled() {
 			e.Stringer("locale", loc).Bool("al_influenced", alInfluenced).Msg("locale resolved")
 		}
 
-		c.Next()
+		defer func() {
+			if alInfluenced {
+				c.Writer.Header().Add("Vary", "Accept-Language")
+			}
+		}()
 
-		if alInfluenced {
-			c.Writer.Header().Add("Vary", "Accept-Language")
-		}
+		c.Next()
 	}
 }
 

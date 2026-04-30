@@ -338,6 +338,110 @@ func TestLocaleDetectorVaryHeader(t *testing.T) {
 	}
 }
 
+func TestLocaleDetector_VaryHeaderSurvivesPanic(t *testing.T) {
+	// If a downstream handler panics, gin.Recovery catches it and
+	// ships a 500. The Vary: Accept-Language hook must still fire on
+	// the recovered response — wrapping it in a defer (placed BEFORE
+	// c.Next()) is what makes that work. Regression guard for the
+	// post-c.Next() form, where panic skipped the Vary write entirely.
+	r := gin.New()
+	r.Use(gin.Recovery()) // installed first so it can catch downstream panics
+	r.Use(middleware.RegionDetector())
+	r.Use(i18n.LocaleDetector())
+	r.GET("/boom", func(c *gin.Context) {
+		panic("simulated handler failure")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/boom", nil)
+	req.Header.Set("Accept-Language", "zh-TW")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 from gin.Recovery, got %d", w.Code)
+	}
+	vary := w.Header().Values("Vary")
+	has := false
+	for _, v := range vary {
+		if v == "Accept-Language" {
+			has = true
+			break
+		}
+	}
+	if !has {
+		t.Errorf("Vary: Accept-Language missing on recovered 500 response (full Vary=%v)", vary)
+	}
+}
+
+func TestLocaleDetector_XImageletLocaleHeader(t *testing.T) {
+	// X-Imagelet-Locale must be set unconditionally on every response
+	// so operators can verify staged-rollout behavior with `curl -I`
+	// and access logs can extract locale without re-parsing the
+	// request. Value space is the bounded enum from Locale.String() —
+	// no PII.
+	cases := []struct {
+		name    string
+		url     string
+		headers map[string]string
+		want    string
+	}{
+		{
+			name: "default-en",
+			url:  "/echo",
+			want: "en",
+		},
+		{
+			name:    "cf-ipcountry-tw",
+			url:     "/echo",
+			headers: map[string]string{"CF-IPCountry": "TW"},
+			want:    "zh-TW",
+		},
+		{
+			name:    "cf-ipcountry-cn",
+			url:     "/echo",
+			headers: map[string]string{"CF-IPCountry": "CN"},
+			want:    "zh-CN",
+		},
+		{
+			name:    "accept-language-zh-tw",
+			url:     "/echo",
+			headers: map[string]string{"Accept-Language": "zh-TW"},
+			want:    "zh-TW",
+		},
+		{
+			name:    "accept-language-zh-cn",
+			url:     "/echo",
+			headers: map[string]string{"Accept-Language": "zh-CN"},
+			want:    "zh-CN",
+		},
+		{
+			name: "lang-query-zh-tw",
+			url:  "/echo?lang=zh-TW",
+			want: "zh-TW",
+		},
+		{
+			name: "lang-query-zh-cn",
+			url:  "/echo?lang=zh-CN",
+			want: "zh-CN",
+		},
+		{
+			name: "lang-query-en-explicit",
+			url:  "/echo?lang=en",
+			want: "en",
+		},
+	}
+
+	r := makeRouter()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := send(r, tc.url, tc.headers)
+			if got := w.Header().Get("X-Imagelet-Locale"); got != tc.want {
+				t.Errorf("X-Imagelet-Locale = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseLocaleQueryEdgeCases(t *testing.T) {
 	// Internal helper not exported; exercise via LocaleDetector
 	// since that's the only call site. These cases pin behavior for
