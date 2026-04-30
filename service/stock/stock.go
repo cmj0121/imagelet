@@ -46,6 +46,7 @@ package stock
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -305,7 +306,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 					isOTC := strings.HasSuffix(symbol, ".TWO")
 					if name, lerr := np.LookupName(c.Request.Context(), stockID, isOTC); lerr == nil {
 						q.Name = name
-					} else if lerr != twse.ErrUnavailable {
+					} else if !errors.Is(lerr, twse.ErrUnavailable) {
 						log.Debug().Err(lerr).Str("stock", stockID).Msg("twse name lookup failed; keeping upstream name")
 					}
 				}
@@ -335,14 +336,14 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 				if slp, ok := h.twse.(twse.SecuritiesLendingProvider); ok {
 					if l, lerr := slp.GetSecuritiesLending(ctx, stockID, asOfQuery); lerr == nil {
 						lending = l
-					} else if lerr != twse.ErrUnavailable {
+					} else if !errors.Is(lerr, twse.ErrUnavailable) {
 						log.Warn().Err(lerr).Str("stock", stockID).Msg("twse securities-lending fetch failed; omitting securities-lending row")
 					}
 				}
 				if smp, ok := h.twse.(twse.StockMarginProvider); ok {
 					if m, merr := smp.GetStockMargin(ctx, stockID, asOfQuery); merr == nil {
 						margin = m
-					} else if merr != twse.ErrUnavailable {
+					} else if !errors.Is(merr, twse.ErrUnavailable) {
 						log.Warn().Err(merr).Str("stock", stockID).Msg("twse stock-margin fetch failed; omitting margin/short row")
 					}
 				}
@@ -350,21 +351,21 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 				if rfp, ok := h.twse.(twse.RetailFuturesProvider); ok {
 					if r, rerr := rfp.GetRetailFutures(ctx, asOfQuery); rerr == nil {
 						retail = r
-					} else if rerr != twse.ErrUnavailable {
+					} else if !errors.Is(rerr, twse.ErrUnavailable) {
 						log.Warn().Err(rerr).Msg("taifex retail futures fetch failed; omitting retail-futures group")
 					}
 				}
 				if op, ok := h.twse.(twse.OptionsPCRProvider); ok {
 					if v, perr := op.GetOptionsPCR(ctx, asOfQuery); perr == nil {
 						pcr = v
-					} else if perr != twse.ErrUnavailable {
+					} else if !errors.Is(perr, twse.ErrUnavailable) {
 						log.Warn().Err(perr).Msg("taifex pcr fetch failed; omitting PCR row")
 					}
 				}
 				if vp, ok := h.twse.(twse.VIXProvider); ok {
 					if v, verr := vp.GetVIX(ctx, asOfQuery); verr == nil {
 						vix = v
-					} else if verr != twse.ErrUnavailable {
+					} else if !errors.Is(verr, twse.ErrUnavailable) {
 						log.Warn().Err(verr).Msg("taifex vix fetch failed; omitting VIX row")
 					}
 				}
