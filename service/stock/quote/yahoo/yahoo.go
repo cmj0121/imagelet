@@ -83,7 +83,7 @@ func (p *Provider) Get(ctx context.Context, symbol string) (quote.Quote, error) 
 	}
 	// Yahoo returns 401 for some default user-agent strings — Go's default
 	// User-Agent is not reliable here; spoof a browser-shaped UA.
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; imagelet/0.2)")
+	req.Header.Set("User-Agent", safehttp.DefaultUserAgent)
 
 	resp, err := p.client.Do(req)
 	if err != nil {
@@ -101,6 +101,9 @@ func (p *Provider) Get(ctx context.Context, symbol string) (quote.Quote, error) 
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return quote.Quote{}, err
 	}
+	// Drain any trailing bytes so net/http can return the connection
+	// to the keep-alive pool — json.Decoder stops at the closing `}`.
+	_, _ = io.Copy(io.Discard, resp.Body)
 	if raw.Chart.Error != nil && raw.Chart.Error.Description != "" {
 		return quote.Quote{}, fmt.Errorf("yahoo: %s", raw.Chart.Error.Description)
 	}
@@ -190,7 +193,7 @@ func (p *Provider) GetAt(ctx context.Context, symbol string, asOf time.Time) (qu
 	if err != nil {
 		return quote.Quote{}, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; imagelet/0.2)")
+	req.Header.Set("User-Agent", safehttp.DefaultUserAgent)
 
 	resp, err := p.client.Do(req)
 	if err != nil {
@@ -208,6 +211,7 @@ func (p *Provider) GetAt(ctx context.Context, symbol string, asOf time.Time) (qu
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return quote.Quote{}, err
 	}
+	_, _ = io.Copy(io.Discard, resp.Body)
 	if raw.Chart.Error != nil && raw.Chart.Error.Description != "" {
 		return quote.Quote{}, fmt.Errorf("yahoo: %s", raw.Chart.Error.Description)
 	}

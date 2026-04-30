@@ -18,11 +18,13 @@ import (
 	"bytes"
 	_ "embed"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
 	"image/png"
+	"io"
 	"strconv"
 	"strings"
 	"sync"
@@ -119,7 +121,7 @@ func RasterizeSVG(svgBody []byte) ([]byte, error) {
 	}
 
 	var buf bytes.Buffer
-	enc := png.Encoder{CompressionLevel: png.BestCompression}
+	enc := png.Encoder{CompressionLevel: png.DefaultCompression}
 	if err := enc.Encode(&buf, img); err != nil {
 		return nil, fmt.Errorf("encode png: %w", err)
 	}
@@ -236,7 +238,10 @@ func parseSVG(body []byte) (*svgDoc, error) {
 	for {
 		tok, err := dec.Token()
 		if err != nil {
-			break
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, fmt.Errorf("parseSVG: %w", err)
 		}
 		se, ok := tok.(xml.StartElement)
 		if !ok {
