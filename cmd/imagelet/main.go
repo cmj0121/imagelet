@@ -22,6 +22,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/cmj0121/imagelet/internal/htmlcache"
+	"github.com/cmj0121/imagelet/internal/i18n"
 	"github.com/cmj0121/imagelet/logger"
 	"github.com/cmj0121/imagelet/server"
 	"github.com/cmj0121/imagelet/service/index"
@@ -88,7 +89,13 @@ func main() {
 	// no-store (/now, /404) opt out automatically; / and /stock
 	// participate via their existing Cache-Control values. Mounted
 	// before the route handlers so it sees every request.
-	r.Use(htmlcache.New().Middleware())
+	//
+	// Capacity 1024 (vs the package-default 256) absorbs the ~4×
+	// fan-out that locale-aware caching introduces — the cache key
+	// now varies by resolved Locale (via WithLocale), and three
+	// supported locales × the existing per-symbol working set leaves
+	// headroom for hot routes without LRU thrash.
+	r.Use(htmlcache.NewWithCapacity(1024).WithLocale(i18n.LocaleString).Middleware())
 	index.Register(r, version)
 	now.Register(r)
 

@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/cmj0121/imagelet/internal/i18n"
 	"github.com/cmj0121/imagelet/middleware"
 )
 
@@ -44,6 +45,12 @@ import (
 //     the visitor's 2-letter country code on the gin context. Lets handlers
 //     branch on country (e.g. service/stock picking a regional index) without
 //     re-parsing the header on every request.
+//  8. i18n.LocaleDetector — resolves the request Locale via ?lang= →
+//     Accept-Language → CF-IPCountry → en, stashes it on the gin context,
+//     and (post-c.Next()) appends "Accept-Language" to the response Vary
+//     header iff the resolved locale was chosen via Accept-Language. Pinned
+//     AFTER RegionDetector because the CF-IPCountry-based fallback step
+//     reads what RegionDetector wrote.
 //
 // GET /healthz is also registered as the always-empty liveness probe.
 // Callers mount additional services (including the rendered GET /
@@ -57,6 +64,7 @@ func New() *gin.Engine {
 	r.Use(middleware.DateOverrideDetector())
 	r.Use(middleware.ClientDetector())
 	r.Use(middleware.RegionDetector())
+	r.Use(i18n.LocaleDetector())
 	r.GET("/healthz", healthzHandler)
 	return r
 }
