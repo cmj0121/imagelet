@@ -58,7 +58,7 @@ func Register(r gin.IRouter) {
 // reflect the requested day.
 func Handler(c *gin.Context) {
 	t := middleware.NowFor(c)
-	cat := i18n.For(i18n.GetLocale(c))
+	cat := i18n.CatalogFor(c)
 	head := headline(t)
 	lines := metadataLines(t, cat)
 
@@ -106,7 +106,7 @@ func Handler(c *gin.Context) {
 // weekday name — readable at a glance in a chat preview unfurl. The
 // weekday name is sourced from the catalog so it localizes alongside
 // the rest of the page.
-func ogDescription(t time.Time, cat i18n.Catalog) string {
+func ogDescription(t time.Time, cat *i18n.Catalog) string {
 	_, off := t.Zone()
 	return fmt.Sprintf("%s UTC%+d · %s",
 		t.Format("2006-01-02"), off/3600, cat.Weekdays[t.Weekday()])
@@ -126,7 +126,7 @@ func headline(t time.Time) string {
 // visual replacement. The year-progress label localizes via the
 // catalog; WeekStrip stays single-letter Latin across locales (the
 // bracket position carries the signal, not the letter shape).
-func metadataLines(t time.Time, cat i18n.Catalog) []string {
+func metadataLines(t time.Time, cat *i18n.Catalog) []string {
 	_, off := t.Zone()
 	return []string{
 		fmt.Sprintf("%s UTC%+d · %s",

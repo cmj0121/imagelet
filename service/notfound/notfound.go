@@ -110,7 +110,7 @@ func Handler(c *gin.Context) {
 		// (see package doc). OG title localizes via the catalog so a
 		// chat-preview unfurl reads in the visitor's language even
 		// though the banner glyphs are Latin-only.
-		cat := i18n.For(i18n.GetLocale(c))
+		cat := i18n.CatalogFor(c)
 		og := render.OGMeta{
 			Title:     cat.NotFoundTitle,
 			ImageURL:  middleware.AbsoluteURL(c, "format=png"),

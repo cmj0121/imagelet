@@ -35,6 +35,14 @@ const (
 	alInfluencedKey = "imagelet.i18n.al-influenced"
 )
 
+// HTTP header names this package reads or writes. Centralized so a
+// rename or audit grep finds every site at once.
+const (
+	headerAcceptLanguage  = "Accept-Language"
+	headerVary            = "Vary"
+	headerXImageletLocale = "X-Imagelet-Locale"
+)
+
 // Locale is the canonical identifier for a supported imagelet locale.
 // LocaleEN is the zero value and the safe fallback for unknown inputs.
 type Locale int
@@ -176,14 +184,14 @@ func LocaleDetector() gin.HandlerFunc {
 		loc, alInfluenced := resolveLocale(c)
 		c.Set(localeKey, loc)
 		c.Set(alInfluencedKey, alInfluenced)
-		c.Writer.Header().Set("X-Imagelet-Locale", loc.String())
+		c.Writer.Header().Set(headerXImageletLocale, loc.String())
 		if e := log.Debug(); e.Enabled() {
 			e.Stringer("locale", loc).Bool("al_influenced", alInfluenced).Msg("locale resolved")
 		}
 
 		defer func() {
 			if alInfluenced {
-				c.Writer.Header().Add("Vary", "Accept-Language")
+				c.Writer.Header().Add(headerVary, headerAcceptLanguage)
 			}
 		}()
 
@@ -198,7 +206,7 @@ func resolveLocale(c *gin.Context) (Locale, bool) {
 	if loc, ok := parseLocaleQuery(c.Query("lang")); ok {
 		return loc, false
 	}
-	if al := c.GetHeader("Accept-Language"); al != "" {
+	if al := c.GetHeader(headerAcceptLanguage); al != "" {
 		if loc, matched := matchAcceptLanguage(al); matched {
 			return loc, true
 		}
@@ -253,13 +261,21 @@ func matchAcceptLanguage(al string) (Locale, bool) {
 
 // For returns the Catalog for the requested locale. Unknown locales
 // fall back to the English catalog so a corrupt value can't render
-// blank labels.
-func For(loc Locale) Catalog {
+// blank labels. Returned by pointer to keep request-path copies cheap
+// — the catalog is ~800 bytes and gets threaded through several render
+// helpers per stock render.
+func For(loc Locale) *Catalog {
 	switch loc {
 	case LocaleZhTW:
-		return catalogZhTW
+		return &catalogZhTW
 	case LocaleZhCN:
-		return catalogZhCN
+		return &catalogZhCN
 	}
-	return catalogEN
+	return &catalogEN
+}
+
+// CatalogFor is a one-call helper that resolves the request's Locale
+// and returns its Catalog. Equivalent to For(GetLocale(c)).
+func CatalogFor(c *gin.Context) *Catalog {
+	return For(GetLocale(c))
 }
