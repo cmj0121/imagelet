@@ -125,6 +125,6 @@ func metadataLines(t time.Time) []string {
 	return []string{
 		fmt.Sprintf("%s UTC%+d · %s",
 			t.Format("2006-01-02"), off/3600, render.WeekStrip(t)),
-		render.YearProgress(t),
+		render.YearProgress(t, "year"),
 	}
 }

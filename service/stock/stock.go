@@ -430,7 +430,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 			ImageType:   "image/png",
 			PageURL:     middleware.AbsoluteURL(c, ""),
 		}
-		body = render.InjectDateNav(body)
+		body = render.InjectDateNav(body, render.DefaultHelpLabels())
 		c.Data(http.StatusOK, "text/html; charset=utf-8", render.InjectOGMeta(body, og))
 		return
 	}
@@ -577,7 +577,7 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 	// without a guard.
 	if q.HasOHLC() {
 		ohlcBand := render.PriceBandFor(q.Last, q.Open, q.DayHigh, q.DayLow)
-		top, bar, ocp, hl := render.OHLCBar(q.Open, q.DayHigh, q.DayLow, q.Last, q.PrevClose, ohlcWidth, ohlcBand, formatPrice)
+		top, bar, ocp, hl := render.OHLCBar(q.Open, q.DayHigh, q.DayLow, q.Last, q.PrevClose, ohlcWidth, ohlcBand, render.DefaultOHLCLabels(), formatPrice)
 		if bar != "" {
 			bs.ohlc = append(bs.ohlc, blankRow, zwspGuard(top), bar, render.StripPylonSyntax(ocp))
 			if hl != "" {
@@ -591,7 +591,7 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 	// upstream and the row would mislead.
 	if q.MA5 > 0 && q.MA10 > 0 {
 		maBand := render.PriceBandFor(q.Last, q.MA5, q.MA10)
-		top, bar, caption := render.MAPositionBar(q.MA10, q.MA5, q.Last, q.PrevClose, ohlcWidth, maBand, formatPrice)
+		top, bar, caption := render.MAPositionBar(q.MA10, q.MA5, q.Last, q.PrevClose, ohlcWidth, maBand, render.DefaultMALabels(), formatPrice)
 		if bar != "" {
 			if len(bs.ohlc) == 0 {
 				bs.ohlc = append(bs.ohlc, blankRow)

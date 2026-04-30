@@ -5,6 +5,42 @@ import (
 	"strings"
 )
 
+// OHLCLabels carries the data-row label prefixes for OHLCBar's `ocp`
+// and `hl` rows. Pre-translated by the caller — render itself stays
+// locale-agnostic so tests and ad-hoc invocations don't take on an
+// i18n dependency.
+//
+// Note: the bar-drawing markers (the single-rune `O`/`H`/`L`/`C`/`▼`
+// glyphs written into the bar at marker columns) are NOT driven from
+// this struct. Pylon's ASCII bar uses 1-cell rune positioning, and a
+// 2-cell CJK glyph would misalign the bar; the markers stay Latin
+// even when the data-row labels localize. Readers bridge the bar
+// glyph and the data-row prefix mentally.
+type OHLCLabels struct {
+	Open  string
+	High  string
+	Low   string
+	Close string
+	Prev  string
+	Sep   string // separator between fields ("·")
+}
+
+// DefaultOHLCLabels returns the English label set. The values match
+// internal/i18n/en.go's catalog byte-for-byte — render and the i18n
+// catalog must agree on the en defaults so a caller that hasn't
+// wired through a locale produces output identical to the previous
+// pre-i18n behavior.
+func DefaultOHLCLabels() OHLCLabels {
+	return OHLCLabels{
+		Open:  "O",
+		High:  "H",
+		Low:   "L",
+		Close: "C",
+		Prev:  "P",
+		Sep:   "·",
+	}
+}
+
 // OHLC bar visual constants. The bar centers on the current quote
 // (`last` = today's close, or the intraday partial when the market
 // is open) at column width/2 and spans a ±priceBandScale window
@@ -105,7 +141,7 @@ const (
 // production callers compute an adaptive band via PriceBandFor so
 // markers fill the bar on quiet days. Non-positive band falls back
 // to priceBandScale.
-func OHLCBar(open, high, low, last, prevClose float64, width int, band float64, format func(float64) string) (top, bar, ocp, hl string) {
+func OHLCBar(open, high, low, last, prevClose float64, width int, band float64, labels OHLCLabels, format func(float64) string) (top, bar, ocp, hl string) {
 	if last <= 0 || width < 8 {
 		return "", "", "", ""
 	}
@@ -129,9 +165,10 @@ func OHLCBar(open, high, low, last, prevClose float64, width int, band float64, 
 		top = overlayPrevGlyph(top, prevCol, width)
 	}
 
-	ocp = formatOCPRow(open, last, prevClose, format)
+	sep := " " + labels.Sep + " "
+	ocp = formatOCPRow(open, last, prevClose, labels, sep, format)
 	if hasRange {
-		hl = "H: " + format(high) + " · L: " + format(low)
+		hl = labels.High + ": " + format(high) + sep + labels.Low + ": " + format(low)
 	}
 	return
 }
@@ -140,10 +177,10 @@ func OHLCBar(open, high, low, last, prevClose float64, width int, band float64, 
 // drops silently when prevClose is 0 — upstream didn't supply a
 // previous close (typical for newly-listed symbols or when the chart
 // range was too short to walk back to a prior session).
-func formatOCPRow(open, last, prevClose float64, format func(float64) string) string {
-	row := "O: " + format(open) + " · C: " + format(last)
+func formatOCPRow(open, last, prevClose float64, labels OHLCLabels, sep string, format func(float64) string) string {
+	row := labels.Open + ": " + format(open) + sep + labels.Close + ": " + format(last)
 	if prevClose > 0 {
-		row += " · P: " + format(prevClose)
+		row += sep + labels.Prev + ": " + format(prevClose)
 	}
 	return row
 }

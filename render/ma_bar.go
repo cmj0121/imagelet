@@ -35,9 +35,43 @@ const (
 	maBarMinWidth = 10
 	maBarMaxWidth = 80
 
+	// maMarkerMA10 / maMarkerMA5 are the default English bar-marker
+	// strings. Used as the seed for DefaultMALabels and referenced by
+	// in-package tests; not exported because callers customize through
+	// the MALabels struct, not these constants.
 	maMarkerMA10 = "M10"
 	maMarkerMA5  = "M5"
 )
+
+// MALabels carries the bar-marker text and caption-row tokens for
+// MAPositionBar. Pre-translated by the caller so render stays
+// locale-agnostic.
+//
+// M5 / M10 stay Latin across all locales today — visual stability beats
+// localization for these markers, and the trend token (5↗10 / 5↘10 / ≈)
+// carries the localization signal. internal/i18n's catalog enforces
+// this convention at the source-of-truth level.
+type MALabels struct {
+	M5          string
+	M10         string
+	GoldenCross string // MA5 > MA10 — bullish bias
+	DeathCross  string // MA5 < MA10 — bearish bias
+	Flat        string // MA5 ≈ MA10 — no directional signal
+	Sep         string // separator between fields ("·")
+}
+
+// DefaultMALabels returns the English label set. Values match
+// internal/i18n/en.go's catalog byte-for-byte.
+func DefaultMALabels() MALabels {
+	return MALabels{
+		M5:          maMarkerMA5,
+		M10:         maMarkerMA10,
+		GoldenCross: "5↗10",
+		DeathCross:  "5↘10",
+		Flat:        "≈",
+		Sep:         "·",
+	}
+}
 
 // MAPositionBar returns three width-cell rows:
 //
@@ -68,7 +102,7 @@ const (
 // = ±3%). When stacking the MA bar under an OHLCBar pass the same
 // band to both so the columns align. Non-positive band falls back
 // to priceBandScale.
-func MAPositionBar(ma10, ma5, price, prevClose float64, width int, band float64, format func(float64) string) (top, bar, caption string) {
+func MAPositionBar(ma10, ma5, price, prevClose float64, width int, band float64, labels MALabels, format func(float64) string) (top, bar, caption string) {
 	if ma10 <= 0 || ma5 <= 0 || price <= 0 {
 		return "", "", ""
 	}
@@ -93,11 +127,11 @@ func MAPositionBar(ma10, ma5, price, prevClose float64, width int, band float64,
 	// then M10 (overwrites M5 on overlap — the more stable, longer-term
 	// reference takes precedence in tight clusters), then C at center
 	// (always wins; the price reference is the load-bearing read).
-	ma5Start := textMarkerStart(ma5Col, len(maMarkerMA5), ma5ClipL, ma5ClipR, width)
-	writeRunes(barRunes, maMarkerMA5, ma5Start)
+	ma5Start := textMarkerStart(ma5Col, len(labels.M5), ma5ClipL, ma5ClipR, width)
+	writeRunes(barRunes, labels.M5, ma5Start)
 
-	ma10Start := textMarkerStart(ma10Col, len(maMarkerMA10), ma10ClipL, ma10ClipR, width)
-	writeRunes(barRunes, maMarkerMA10, ma10Start)
+	ma10Start := textMarkerStart(ma10Col, len(labels.M10), ma10ClipL, ma10ClipR, width)
+	writeRunes(barRunes, labels.M10, ma10Start)
 
 	barRunes[centerCol] = ohlcMarkerClose
 
@@ -120,7 +154,7 @@ func MAPositionBar(ma10, ma5, price, prevClose float64, width int, band float64,
 	}
 
 	// --- Caption row: M5 + M10 values with arrows + trend hint. ---
-	caption = formatMACaption(ma10, ma5, price, format)
+	caption = formatMACaption(ma10, ma5, price, labels, format)
 	return
 }
 
@@ -144,11 +178,14 @@ func textMarkerStart(col, textLen int, clipL, clipR bool, width int) int {
 // match how readers scan short-term-momentum first, long-term-trend
 // second; the trailing trend token is the canonical golden-cross /
 // death-cross read at a glance.
-func formatMACaption(ma10, ma5, price float64, format func(float64) string) string {
-	return fmt.Sprintf("M5: %s%s · M10: %s%s · %s",
-		arrowFor(price, ma5), format(ma5),
-		arrowFor(price, ma10), format(ma10),
-		maTrendToken(ma5, ma10),
+func formatMACaption(ma10, ma5, price float64, labels MALabels, format func(float64) string) string {
+	sep := " " + labels.Sep + " "
+	return fmt.Sprintf("%s: %s%s%s%s: %s%s%s%s",
+		labels.M5, arrowFor(price, ma5), format(ma5),
+		sep,
+		labels.M10, arrowFor(price, ma10), format(ma10),
+		sep,
+		maTrendToken(ma5, ma10, labels),
 	)
 }
 
@@ -179,12 +216,12 @@ func arrowFor(price, ma float64) string {
 // 0.1% is the noise floor — markers smaller than that are visually
 // indistinguishable on the position bar above anyway, so the caption
 // reflects the same ambiguity instead of falsely picking a side.
-func maTrendToken(ma5, ma10 float64) string {
+func maTrendToken(ma5, ma10 float64, labels MALabels) string {
 	switch {
 	case ma5 > ma10*1.001:
-		return "5↗10"
+		return labels.GoldenCross
 	case ma5 < ma10*0.999:
-		return "5↘10"
+		return labels.DeathCross
 	}
-	return "≈"
+	return labels.Flat
 }
