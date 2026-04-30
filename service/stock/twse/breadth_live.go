@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -344,7 +345,7 @@ func (p *HTTPProvider) fetchMISBatch(ctx context.Context, ex exchange, symbols [
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; imagelet/0.2)")
+	req.Header.Set("User-Agent", safehttp.DefaultUserAgent)
 	req.Header.Set("Referer", "https://mis.twse.com.tw/stock/")
 
 	resp, err := p.client.Do(req)
@@ -360,6 +361,7 @@ func (p *HTTPProvider) fetchMISBatch(ctx context.Context, ex exchange, symbols [
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return nil, err
 	}
+	_, _ = io.Copy(io.Discard, resp.Body)
 	if raw.RTCode != "" && raw.RTCode != "0000" {
 		return nil, fmt.Errorf("mis rtcode %s: %s", raw.RTCode, raw.RTMessage)
 	}

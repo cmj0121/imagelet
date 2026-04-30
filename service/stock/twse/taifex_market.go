@@ -135,7 +135,7 @@ func (p *HTTPProvider) fetchPCROnce(ctx context.Context, day time.Time) (Options
 		return OptionsPCR{}, false, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; imagelet/0.3)")
+	req.Header.Set("User-Agent", safehttp.DefaultUserAgent)
 
 	resp, err := p.client.Do(req)
 	if err != nil {
@@ -228,7 +228,7 @@ func (p *HTTPProvider) fetchVIXMonth(ctx context.Context, month, asOf time.Time)
 	if err != nil {
 		return VIX{}, false, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; imagelet/0.3)")
+	req.Header.Set("User-Agent", safehttp.DefaultUserAgent)
 
 	resp, err := p.client.Do(req)
 	if err != nil {

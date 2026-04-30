@@ -166,7 +166,7 @@ func (p *HTTPProvider) fetchTAIFEXOnce(ctx context.Context, commodity string, da
 		return 0, false, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; imagelet/0.3)")
+	req.Header.Set("User-Agent", safehttp.DefaultUserAgent)
 
 	resp, err := p.client.Do(req)
 	if err != nil {

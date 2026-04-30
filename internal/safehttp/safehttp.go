@@ -33,6 +33,12 @@ const DefaultBodyCap = 8 << 20 // 8 MiB
 // 3-month range, so 1 MiB is comfortably above legitimate traffic.
 const YahooBodyCap = 1 << 20 // 1 MiB
 
+// DefaultUserAgent is the User-Agent string sent by every outbound
+// imagelet HTTP request. Yahoo rejects Go's default UA with 401, and
+// TWSE/TAIFEX endpoints expect a browser-shaped UA; a single shared
+// constant keeps the version in lockstep across providers.
+const DefaultUserAgent = "Mozilla/5.0 (compatible; imagelet/0.3)"
+
 // NewClient returns an http.Client with the given timeout and the
 // shared CheckRedirect policy.
 func NewClient(timeout time.Duration) *http.Client {
