@@ -35,11 +35,13 @@
 // Blank rows between groups are zero-width space (U+200B) — a literal
 // blank string would be trimmed away by pylon's row parser. Bordered
 // boxes and `[A] <-> [B]` side-by-side rows were earlier designs but
-// pylon v0.5 mis-renders both around CJK content in SVG mode. The TW block uses Chinese labels on every
-// surface that can render CJK glyphs (ASCII / text/pylon / SVG / HTML);
-// PNG is the lone English holdout because pylon's PNG uses
-// basicfont.Face7x13 which has zero CJK coverage and would render
-// Chinese as tofu.
+// pylon v0.5 mis-renders both around CJK content in SVG mode. The TW
+// block uses Chinese labels on every rendered surface (ASCII / text/
+// pylon / SVG / HTML / PNG) — render/png.go embeds a Sarasa Mono SC
+// subset with full CJK coverage, so PNG no longer needs a Latin
+// fallback. en visitors instead skip the entire TWSE enrichment block
+// via showTWSEEnrichment(loc) — the TWSE-specific labels (借券賣出
+// 當日餘額, 融券, etc.) have no clean English equivalents.
 package stock
 
 import (
@@ -53,6 +55,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
 
+	"github.com/cmj0121/imagelet/internal/i18n"
 	"github.com/cmj0121/imagelet/middleware"
 	"github.com/cmj0121/imagelet/render"
 	"github.com/cmj0121/imagelet/service/stock/quote"
@@ -84,22 +87,30 @@ const defaultSymbol = "^GSPC"
 // box parens and padding).
 const ohlcWidth = 65
 
+// showTWSEEnrichment reports whether the TWSE-specific enrichment block
+// (positioning / breadth / credit / per-stock margin / sentiment /
+// retail-futures rows) should be emitted for the given locale.
+//
+// Policy: en strips the block. Translating the TWSE-specific labels
+// (借券賣出當日餘額, 融券, etc.) to English produces awkward business
+// terminology with no clean equivalent; en visitors get the generic
+// OHLC + MA card and that's it. zh-TW and zh-CN keep all rows. The
+// policy lives at this use site rather than in internal/i18n's catalog
+// so the catalog stays a pure string table.
+func showTWSEEnrichment(loc i18n.Locale) bool {
+	return loc != i18n.LocaleEN
+}
+
 // titleFor builds the title row shown above the price box —
 // `<symbol> · <name>` when Yahoo supplies a name, bare `<symbol>`
-// otherwise. ShortName is preferred on CJK-capable surfaces (often
-// localized e.g. "台積電"); LongName is used on the PNG path where
-// pylon's basicfont has zero CJK coverage and would render Chinese as
-// tofu — Yahoo's longName is conventionally Latin (e.g. "Taiwan
-// Semiconductor Manufacturing Company Limited"). Falls back to the
-// other field when the preferred one is empty.
-func titleFor(symbol string, q quote.Quote, useEnglish bool) string {
+// otherwise. Prefers ShortName (often localized e.g. "台積電") and
+// falls back to LongName when ShortName is empty. The PNG path no
+// longer needs a Latin-only branch: render/png.go rasterizes via the
+// embedded Sarasa Mono SC subset which carries full CJK coverage, so
+// CJK ShortNames render cleanly on every surface.
+func titleFor(symbol string, q quote.Quote) string {
 	name := q.Name
-	if useEnglish {
-		name = q.LongName
-		if name == "" {
-			name = q.Name
-		}
-	} else if name == "" {
+	if name == "" {
 		name = q.LongName
 	}
 	if name == "" {
@@ -180,6 +191,8 @@ func (h *handler) serveSymbol(c *gin.Context) {
 // for both /stock and /stock/:symbol — the only difference between the
 // two routes is how the symbol and the enrichTW gate are derived.
 func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
+	loc := i18n.GetLocale(c)
+	cat := i18n.For(loc)
 	asOf, dateOverride := middleware.GetDate(c)
 
 	q, err := h.fetchQuote(c.Request.Context(), symbol, asOf, dateOverride)
@@ -222,7 +235,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	var margin twse.StockMargin
 	var pcr twse.OptionsPCR
 	var vix twse.VIX
-	if enrichTW && h.twse != nil {
+	if enrichTW && h.twse != nil && showTWSEEnrichment(loc) {
 		ctx := c.Request.Context()
 		switch {
 		case dateOverride:
@@ -388,7 +401,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	// labels via the ASCII path; honors both Accept: text/pylon and
 	// ?format=pylon for header/query parity.
 	if middleware.WantsPylonSource(c) {
-		bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, stale, false)
+		bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, stale, loc, cat)
 		c.Data(http.StatusOK, "text/pylon",
 			[]byte(render.BannerSourceBoxes(headline, "", bs.captions, bs.boxes())))
 		return
@@ -396,14 +409,13 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 
 	mode := middleware.ResolveMode(c)
 
-	// CN labels appear on every surface that can render CJK glyphs:
-	// All four rendered surfaces — ASCII, SVG, HTML, PNG — now run on
-	// CN labels: ASCII / pylon-source via terminal fonts, SVG / HTML
-	// via browser fallback, PNG via the embedded Sarasa Mono SC font
-	// in render/png.go. The EN fallback path is preserved as the
-	// useEnglish=true branch in case a future surface lands without
-	// CJK coverage.
-	bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, stale, false)
+	// All four rendered surfaces — ASCII, SVG, HTML, PNG — share the
+	// same CN-label set: ASCII / pylon-source via terminal fonts, SVG /
+	// HTML via browser fallback, PNG via the embedded Sarasa Mono SC
+	// font in render/png.go. The TWSE enrichment rows are gated on
+	// locale via showTWSEEnrichment so en visitors see only the
+	// generic OHLC + MA card.
+	bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, stale, loc, cat)
 
 	renderAt := func(m render.Mode) ([]byte, error) {
 		return render.BannerBoxes(headline, "", bs.captions, bs.boxes(), m)
@@ -424,13 +436,21 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	}
 	if mode == render.ModeHTML {
 		og := render.OGMeta{
-			Title:       titleFor(symbol, q, false),
+			Title:       titleFor(symbol, q),
 			Description: ogDescription(q),
 			ImageURL:    middleware.AbsoluteURL(c, "format=png"),
 			ImageType:   "image/png",
 			PageURL:     middleware.AbsoluteURL(c, ""),
 		}
-		body = render.InjectDateNav(body, render.DefaultHelpLabels())
+		body = render.InjectDateNav(body, render.HelpLabels{
+			Heading: cat.HelpHeading,
+			Esc:     cat.HelpEsc,
+			EscHint: cat.HelpEscHint,
+			Prev:    cat.HelpPrev,
+			Next:    cat.HelpNext,
+			Today:   cat.HelpToday,
+			Toggle:  cat.HelpToggle,
+		})
 		c.Data(http.StatusOK, "text/html; charset=utf-8", render.InjectOGMeta(body, og))
 		return
 	}
@@ -441,6 +461,12 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 // /stock page. Mirrors the on-figure primary caption row: change-percent
 // arrow, signed change percent, formatted price, currency. Reads as a
 // glanceable summary in a chat preview unfurl.
+//
+// The catalog's StockOGDescriptionPriceFmt is intentionally NOT used
+// here yet — its symbol/price/change shape doesn't map onto the
+// arrow/percent/price/currency layout pinned by service tests. H4
+// (which fills the zh-TW + zh-CN translations) is the right time to
+// reconcile the catalog format string with the rendered shape.
 func ogDescription(q quote.Quote) string {
 	arrow := "▲"
 	if q.ChangePercent() < 0 {
@@ -504,28 +530,33 @@ func zwspGuard(row string) string {
 	return "​" + row
 }
 
-// buildBlocks assembles the per-surface content. useEnglish=true picks
-// English labels for the TW block on the PNG path only — pylon's PNG
-// font (basicfont.Face7x13) has zero CJK coverage so Chinese would
-// render as tofu. Every other surface (ASCII, text/pylon, SVG, HTML)
-// uses the Chinese label set. perStock takes precedence over tw for
-// the 三大法人 group: when the symbol carries a TWSE stock id and
-// T86 returned a row, we render PER-STOCK flow with shares; otherwise
-// fall back to the market-wide BFI82U numbers in NTD.
-func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse.StockData, live twse.LiveBreadth, retail twse.RetailFutures, lending twse.SecuritiesLending, margin twse.StockMargin, pcr twse.OptionsPCR, vix twse.VIX, stale, useEnglish bool) stockBlocks {
+// buildBlocks assembles the per-surface content. perStock takes
+// precedence over tw for the 三大法人 group: when the symbol carries
+// a TWSE stock id and T86 returned a row, we render PER-STOCK flow
+// with shares; otherwise fall back to the market-wide BFI82U numbers
+// in NTD.
+//
+// loc + cat drive the locale-aware bits: STALE/CLOSED tags pull from
+// cat.StaleTag/ClosedTag, OHLC and MA bar labels come from cat, and
+// showTWSEEnrichment(loc) gates whether the TWSE enrichment rows are
+// emitted at all (en strips them; zh-TW / zh-CN keep them). The CJK
+// labels inside the TWSE block stay literal — every rendered surface
+// (ASCII / pylon-source / SVG / HTML / PNG) carries CJK coverage now,
+// so there is no tofu-fallback path to gate them on.
+func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse.StockData, live twse.LiveBreadth, retail twse.RetailFutures, lending twse.SecuritiesLending, margin twse.StockMargin, pcr twse.OptionsPCR, vix twse.VIX, stale bool, loc i18n.Locale, cat i18n.Catalog) stockBlocks {
 	bs := stockBlocks{captions: make([]string, 0, 3)}
 
 	// Title row: `<symbol> · <name>`. The symbol/name pair contains
 	// "S&P 500" in some cases — `&P` would otherwise parse as a pylon
 	// Ref node and shred the line, so the strip is load-bearing here.
-	bs.captions = append(bs.captions, render.StripPylonSyntax(titleFor(symbol, q, useEnglish)))
+	bs.captions = append(bs.captions, render.StripPylonSyntax(titleFor(symbol, q)))
 
 	prefix := ""
 	switch {
 	case stale:
-		prefix = "STALE · "
+		prefix = cat.StaleTag + " · "
 	case q.IsClosed:
-		prefix = "CLOSED · "
+		prefix = cat.ClosedTag + " · "
 	}
 	arrow := "▲"
 	if q.ChangePercent() < 0 {
@@ -577,7 +608,15 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 	// without a guard.
 	if q.HasOHLC() {
 		ohlcBand := render.PriceBandFor(q.Last, q.Open, q.DayHigh, q.DayLow)
-		top, bar, ocp, hl := render.OHLCBar(q.Open, q.DayHigh, q.DayLow, q.Last, q.PrevClose, ohlcWidth, ohlcBand, render.DefaultOHLCLabels(), formatPrice)
+		ohlcLabels := render.OHLCLabels{
+			Open:  cat.OHLCOpen,
+			High:  cat.OHLCHigh,
+			Low:   cat.OHLCLow,
+			Close: cat.OHLCClose,
+			Prev:  cat.OHLCPrev,
+			Sep:   cat.Separator,
+		}
+		top, bar, ocp, hl := render.OHLCBar(q.Open, q.DayHigh, q.DayLow, q.Last, q.PrevClose, ohlcWidth, ohlcBand, ohlcLabels, formatPrice)
 		if bar != "" {
 			bs.ohlc = append(bs.ohlc, blankRow, zwspGuard(top), bar, render.StripPylonSyntax(ocp))
 			if hl != "" {
@@ -591,7 +630,15 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 	// upstream and the row would mislead.
 	if q.MA5 > 0 && q.MA10 > 0 {
 		maBand := render.PriceBandFor(q.Last, q.MA5, q.MA10)
-		top, bar, caption := render.MAPositionBar(q.MA10, q.MA5, q.Last, q.PrevClose, ohlcWidth, maBand, render.DefaultMALabels(), formatPrice)
+		maLabels := render.MALabels{
+			M5:          cat.MA5Marker,
+			M10:         cat.MA10Marker,
+			GoldenCross: cat.MAGoldenCross,
+			DeathCross:  cat.MADeathCross,
+			Flat:        cat.MAFlat,
+			Sep:         cat.Separator,
+		}
+		top, bar, caption := render.MAPositionBar(q.MA10, q.MA5, q.Last, q.PrevClose, ohlcWidth, maBand, maLabels, formatPrice)
 		if bar != "" {
 			if len(bs.ohlc) == 0 {
 				bs.ohlc = append(bs.ohlc, blankRow)
@@ -603,6 +650,16 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 	// Trailing breathing room for the whole bar group, if anything was emitted.
 	if len(bs.ohlc) > 0 {
 		bs.ohlc = append(bs.ohlc, blankRow)
+	}
+
+	// Locale gates the entire TWSE enrichment block. en strips it
+	// (no clean English equivalents for 借券賣出當日餘額 / 融券 / etc.;
+	// English speakers reading a TW listing get the generic OHLC + MA
+	// card and that's it). zh-TW and zh-CN keep all rows. The CJK
+	// labels inside this block stay literal until H4 lifts them into
+	// the catalog.
+	if !showTWSEEnrichment(loc) {
+		return bs
 	}
 
 	// Market-state gating: 籌碼面 (positioning) and 信用餘額 (credit)
@@ -624,26 +681,26 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 	var groups [][]string
 	switch {
 	case q.IsClosed && perStock.HasFlow():
-		groups = append(groups, perStockPositioningRows(perStock, q, useEnglish))
+		groups = append(groups, perStockPositioningRows(perStock, q))
 	case q.IsClosed && tw.HasInstitutional():
-		groups = append(groups, positioningRows(tw, useEnglish))
+		groups = append(groups, positioningRows(tw))
 	}
 	if !isPerStock {
-		if rows := breadthRows(tw, live, q.IsClosed, useEnglish); len(rows) > 0 {
+		if rows := breadthRows(tw, live, q.IsClosed); len(rows) > 0 {
 			groups = append(groups, rows)
 		}
 	}
 	if q.IsClosed && tw.HasMargin() {
-		groups = append(groups, creditRows(tw, useEnglish))
+		groups = append(groups, creditRows(tw))
 	}
 	if q.IsClosed && (margin.Has() || lending.Has()) {
-		groups = append(groups, perStockCreditRows(margin, lending, useEnglish))
+		groups = append(groups, perStockCreditRows(margin, lending))
 	}
 	if q.IsClosed && (pcr.Has() || vix.Has()) {
-		groups = append(groups, []string{marketSentimentRow(pcr, vix, useEnglish)})
+		groups = append(groups, []string{marketSentimentRow(pcr, vix)})
 	}
 	if q.IsClosed && retail.HasAny() {
-		groups = append(groups, retailFuturesRows(retail, useEnglish))
+		groups = append(groups, retailFuturesRows(retail))
 	}
 	for i, g := range groups {
 		if i > 0 {
@@ -661,31 +718,31 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 // populated exchange labelled 上市 / 上櫃 — TPEx outages can leave
 // only 上市 populated, in which case the 上櫃 row is silently
 // skipped. Returns nil when no source is available.
-func breadthRows(tw twse.MarketData, live twse.LiveBreadth, isClosed, useEnglish bool) []string {
+func breadthRows(tw twse.MarketData, live twse.LiveBreadth, isClosed bool) []string {
 	const halfWidth = 10
 	if !isClosed && live.HasBreadth() {
 		var rows []string
 		if live.HasTSEBreadth() {
 			rows = append(rows, breadthRow(
-				tseLabel(useEnglish),
+				"上市",
 				live.TSEAdvance, live.TSEDecline, live.TSEUnchanged,
-				halfWidth, useEnglish,
+				halfWidth,
 			))
 		}
 		if live.HasOTCBreadth() {
 			rows = append(rows, breadthRow(
-				otcLabel(useEnglish),
+				"上櫃",
 				live.OTCAdvance, live.OTCDecline, live.OTCUnchanged,
-				halfWidth, useEnglish,
+				halfWidth,
 			))
 		}
 		return rows
 	}
 	if tw.HasBreadth() {
 		return []string{breadthRow(
-			closedLabel(useEnglish),
+			"漲跌家數",
 			tw.AdvanceCount, tw.DeclineCount, tw.UnchangedCount,
-			halfWidth, useEnglish,
+			halfWidth,
 		)}
 	}
 	return nil
@@ -695,38 +752,14 @@ func breadthRows(tw twse.MarketData, live twse.LiveBreadth, isClosed, useEnglish
 // Shared shape across the closed-market 漲跌家數 row and the open-
 // market 上市 / 上櫃 split rows so column widths line up under
 // AlignLeft regardless of which path produced them.
-func breadthRow(label string, adv, dec, unc int64, halfWidth int, useEnglish bool) string {
+func breadthRow(label string, adv, dec, unc int64, halfWidth int) string {
 	moving := adv + dec
 	score := 0.0
 	if moving > 0 {
 		score = float64(adv-dec) / float64(moving)
 	}
 	bar := render.SignedBar(score, 1.0, halfWidth)
-	if useEnglish {
-		return fmt.Sprintf("%s  %s  up %d  down %d  even %d", label, bar, adv, dec, unc)
-	}
 	return fmt.Sprintf("%s  %s  漲 %d 跌 %d 平 %d", label, bar, adv, dec, unc)
-}
-
-func tseLabel(en bool) string {
-	if en {
-		return "tse  "
-	}
-	return "上市"
-}
-
-func otcLabel(en bool) string {
-	if en {
-		return "otc  "
-	}
-	return "上櫃"
-}
-
-func closedLabel(en bool) string {
-	if en {
-		return "breadth"
-	}
-	return "漲跌家數"
 }
 
 // positioningRows formats the 三大法人 section: 外資籌碼 / 投信籌碼 /
@@ -734,31 +767,26 @@ func closedLabel(en bool) string {
 // scale (the largest absolute value across the four), so a glance
 // reveals which participant dominated the day. The 合計 row carries a
 // ▲/▼ arrow matching its sign as the summary cue.
-func positioningRows(tw twse.MarketData, useEnglish bool) []string {
+func positioningRows(tw twse.MarketData) []string {
 	const halfWidth = 10
 	maxF := float64(absMaxInt64(tw.ForeignNet, tw.TrustNet, tw.DealerNet, tw.Net))
 
 	type entry struct {
-		labelEN, labelCN string
-		value            int64
+		label string
+		value int64
 	}
 	rows := []entry{
-		{"foreign", "外資籌碼", tw.ForeignNet},
-		{"trust  ", "投信籌碼", tw.TrustNet},
-		{"dealer ", "自營籌碼", tw.DealerNet},
-		{"total  ", "合計籌碼", tw.Net},
+		{"外資籌碼", tw.ForeignNet},
+		{"投信籌碼", tw.TrustNet},
+		{"自營籌碼", tw.DealerNet},
+		{"合計籌碼", tw.Net},
 	}
 
 	out := make([]string, 0, len(rows))
 	for i, r := range rows {
 		bar := render.SignedBar(float64(r.value), maxF, halfWidth)
 		amount := formatNTDBillions(r.value)
-		var line string
-		if useEnglish {
-			line = fmt.Sprintf("%s  %s  %s", r.labelEN, bar, amount)
-		} else {
-			line = fmt.Sprintf("%s  %s  %s", r.labelCN, bar, amount)
-		}
+		line := fmt.Sprintf("%s  %s  %s", r.label, bar, amount)
 		if i == len(rows)-1 {
 			arrowChar := "▲"
 			if r.value < 0 {
@@ -778,32 +806,27 @@ func positioningRows(tw twse.MarketData, useEnglish bool) []string {
 // q.Last for visual consistency with the market-wide block. Same
 // row shape as positioningRows so a TW symbol seamlessly switches
 // between per-stock and market-wide presentations.
-func perStockPositioningRows(d twse.StockData, q quote.Quote, useEnglish bool) []string {
+func perStockPositioningRows(d twse.StockData, q quote.Quote) []string {
 	const halfWidth = 10
 	maxF := float64(absMaxInt64(d.ForeignNet, d.TrustNet, d.DealerNet, d.Net))
 	price := q.Last
 
 	type entry struct {
-		labelEN, labelCN string
-		shares           int64
+		label  string
+		shares int64
 	}
 	rows := []entry{
-		{"foreign", "外資籌碼", d.ForeignNet},
-		{"trust  ", "投信籌碼", d.TrustNet},
-		{"dealer ", "自營籌碼", d.DealerNet},
-		{"total  ", "合計籌碼", d.Net},
+		{"外資籌碼", d.ForeignNet},
+		{"投信籌碼", d.TrustNet},
+		{"自營籌碼", d.DealerNet},
+		{"合計籌碼", d.Net},
 	}
 
 	out := make([]string, 0, len(rows))
 	for i, r := range rows {
 		bar := render.SignedBar(float64(r.shares), maxF, halfWidth)
 		amount := formatNTDFromShares(r.shares, price)
-		var line string
-		if useEnglish {
-			line = fmt.Sprintf("%s  %s  %s", r.labelEN, bar, amount)
-		} else {
-			line = fmt.Sprintf("%s  %s  %s", r.labelCN, bar, amount)
-		}
+		line := fmt.Sprintf("%s  %s  %s", r.label, bar, amount)
 		if i == len(rows)-1 {
 			arrowChar := "▲"
 			if r.shares < 0 {
@@ -858,26 +881,17 @@ func absMaxInt64(vs ...int64) int64 {
 // is the read at a glance); 借券賣出 sits on the same sheet because
 // it's the institutional-facing short balance — together they
 // describe the full standing-short picture for the listing.
-func perStockCreditRows(m twse.StockMargin, l twse.SecuritiesLending, useEnglish bool) []string {
+func perStockCreditRows(m twse.StockMargin, l twse.SecuritiesLending) []string {
 	var rows []string
 	if m.Has() {
 		// MI_MARGN reports 融資/融券 in 張 directly (per-stock 交易單位),
 		// unlike TWT93U which reports 借券 in shares — no /1000 here.
-		if useEnglish {
-			rows = append(rows, fmt.Sprintf("margin-bal  %s lots", formatThousands(m.MarginBalance)))
-			rows = append(rows, fmt.Sprintf("short-bal   %s lots", formatThousands(m.ShortBalance)))
-		} else {
-			rows = append(rows, fmt.Sprintf("融資餘額  %s 張", formatThousands(m.MarginBalance)))
-			rows = append(rows, fmt.Sprintf("融券餘額  %s 張", formatThousands(m.ShortBalance)))
-		}
+		rows = append(rows, fmt.Sprintf("融資餘額  %s 張", formatThousands(m.MarginBalance)))
+		rows = append(rows, fmt.Sprintf("融券餘額  %s 張", formatThousands(m.ShortBalance)))
 	}
 	if l.Has() {
 		lots := l.Balance / 1000
-		if useEnglish {
-			rows = append(rows, fmt.Sprintf("sbl-bal     %s lots", formatThousands(lots)))
-		} else {
-			rows = append(rows, fmt.Sprintf("借券賣出  %s 張", formatThousands(lots)))
-		}
+		rows = append(rows, fmt.Sprintf("借券賣出  %s 張", formatThousands(lots)))
 	}
 	return rows
 }
@@ -888,25 +902,17 @@ func perStockCreditRows(m twse.StockMargin, l twse.SecuritiesLending, useEnglish
 // value to two decimals. Either half may be empty when its upstream
 // fetcher is unavailable; in that case the row collapses to whichever
 // signal is present. Callers gate on (pcr.Has() || vix.Has()).
-func marketSentimentRow(p twse.OptionsPCR, v twse.VIX, useEnglish bool) string {
+func marketSentimentRow(p twse.OptionsPCR, v twse.VIX) string {
 	var parts []string
 	if p.Has() {
 		arrow := "▲"
 		if p.OIRatio > 100 {
 			arrow = "▼"
 		}
-		if useEnglish {
-			parts = append(parts, fmt.Sprintf("opt-pcr  %.1f%%%s", p.OIRatio, arrow))
-		} else {
-			parts = append(parts, fmt.Sprintf("台指選擇  PCR %.1f%%%s", p.OIRatio, arrow))
-		}
+		parts = append(parts, fmt.Sprintf("台指選擇  PCR %.1f%%%s", p.OIRatio, arrow))
 	}
 	if v.Has() {
-		if useEnglish {
-			parts = append(parts, fmt.Sprintf("vix  %.2f", v.Value))
-		} else {
-			parts = append(parts, fmt.Sprintf("波動指數  %.2f", v.Value))
-		}
+		parts = append(parts, fmt.Sprintf("波動指數  %.2f", v.Value))
 	}
 	return strings.Join(parts, "  ")
 }
@@ -922,7 +928,7 @@ func marketSentimentRow(p twse.OptionsPCR, v twse.VIX, useEnglish bool) string {
 // Rows where the upstream had no data (HasMXF / HasTMF false) are
 // silently skipped; the handler caller has already gated on
 // retail.HasAny() so this never returns an empty slice.
-func retailFuturesRows(r twse.RetailFutures, useEnglish bool) []string {
+func retailFuturesRows(r twse.RetailFutures) []string {
 	const halfWidth = 10
 	scale := absMaxInt64(r.MXFNet, r.TMFNet)
 	if scale == 0 {
@@ -930,10 +936,10 @@ func retailFuturesRows(r twse.RetailFutures, useEnglish bool) []string {
 	}
 	out := make([]string, 0, 2)
 	if r.HasMXF() {
-		out = append(out, retailFuturesRow(mxfLabel(useEnglish), r.MXFNet, scale, halfWidth))
+		out = append(out, retailFuturesRow("小台散戶", r.MXFNet, scale, halfWidth))
 	}
 	if r.HasTMF() {
-		out = append(out, retailFuturesRow(tmfLabel(useEnglish), r.TMFNet, scale, halfWidth))
+		out = append(out, retailFuturesRow("微台散戶", r.TMFNet, scale, halfWidth))
 	}
 	return out
 }
@@ -946,20 +952,6 @@ func retailFuturesRow(label string, net, scale int64, halfWidth int) string {
 	return fmt.Sprintf("%s  %s  %s 口", label, bar, formatSignedLots(net))
 }
 
-func mxfLabel(en bool) string {
-	if en {
-		return "mxf-retail"
-	}
-	return "小台散戶"
-}
-
-func tmfLabel(en bool) string {
-	if en {
-		return "tmf-retail"
-	}
-	return "微台散戶"
-}
-
 // formatSignedLots returns the lot count with a leading sign and
 // thousands separator: 1234 → "+1,234"; -56789 → "-56,789".
 func formatSignedLots(v int64) string {
@@ -970,16 +962,12 @@ func formatSignedLots(v int64) string {
 }
 
 // creditRows formats the credit section: a single 信用餘額 row carrying
-// the 融資 / 融券 totals. CN units (億 / 萬張) on CJK-capable surfaces,
-// K/M/B/T in EN. The retail bull/bear row was dropped — its score sits
-// near +1 most days because TW retail margin is structurally long-biased,
-// so the signal reads as drift-from-baseline rather than absolute
-// sentiment and was not adding glance-value.
-func creditRows(tw twse.MarketData, useEnglish bool) []string {
-	if useEnglish {
-		return []string{fmt.Sprintf("balance   long %s   short %s",
-			formatLargeNumber(tw.MarginLongTWD), formatLargeNumber(tw.MarginShortLots))}
-	}
+// the 融資 / 融券 totals in CN units (億 / 萬張). The retail bull/bear
+// row was dropped — its score sits near +1 most days because TW retail
+// margin is structurally long-biased, so the signal reads as drift-
+// from-baseline rather than absolute sentiment and was not adding
+// glance-value.
+func creditRows(tw twse.MarketData) []string {
 	return []string{fmt.Sprintf("信用餘額  融資 %s   融券 %s",
 		formatTWDInYi(tw.MarginLongTWD), formatLotsInWan(tw.MarginShortLots))}
 }

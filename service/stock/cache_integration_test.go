@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/cmj0121/imagelet/internal/htmlcache"
+	"github.com/cmj0121/imagelet/internal/i18n"
 	"github.com/cmj0121/imagelet/middleware"
 	"github.com/cmj0121/imagelet/service/stock"
 	"github.com/cmj0121/imagelet/service/stock/quote"
@@ -48,6 +49,7 @@ func TestStockHTMLResponseCachesOnSecondRequest(t *testing.T) {
 	r.Use(middleware.TimezoneDetector())
 	r.Use(middleware.DateOverrideDetector())
 	r.Use(middleware.RegionDetector())
+	r.Use(i18n.LocaleDetector())
 	r.Use(middleware.ClientDetector())
 	r.Use(htmlcache.New().Middleware())
 	stock.Register(r, p, stock.NoopTWSE())
@@ -98,6 +100,7 @@ func TestStockSVGResponseDoesNotCache(t *testing.T) {
 	r.Use(middleware.TimezoneDetector())
 	r.Use(middleware.DateOverrideDetector())
 	r.Use(middleware.RegionDetector())
+	r.Use(i18n.LocaleDetector())
 	r.Use(middleware.ClientDetector())
 	r.Use(htmlcache.New().Middleware())
 	stock.Register(r, p, stock.NoopTWSE())

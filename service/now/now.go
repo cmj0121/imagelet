@@ -31,6 +31,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
 
+	"github.com/cmj0121/imagelet/internal/i18n"
 	"github.com/cmj0121/imagelet/middleware"
 	"github.com/cmj0121/imagelet/render"
 )
@@ -57,8 +58,9 @@ func Register(r gin.IRouter) {
 // reflect the requested day.
 func Handler(c *gin.Context) {
 	t := middleware.NowFor(c)
+	cat := i18n.For(i18n.GetLocale(c))
 	head := headline(t)
-	lines := metadataLines(t)
+	lines := metadataLines(t, cat)
 
 	c.Header("Cache-Control", "no-store")
 	if middleware.WantsPylonSource(c) {
@@ -87,8 +89,8 @@ func Handler(c *gin.Context) {
 	}
 	if mode == render.ModeHTML {
 		og := render.OGMeta{
-			Title:       "imagelet · " + head,
-			Description: ogDescription(t),
+			Title:       cat.NowOGTitle + " · " + head,
+			Description: ogDescription(t, cat),
 			ImageURL:    middleware.AbsoluteURL(c, "format=png"),
 			ImageType:   "image/png",
 			PageURL:     middleware.AbsoluteURL(c, ""),
@@ -101,11 +103,13 @@ func Handler(c *gin.Context) {
 
 // ogDescription builds the og:description / twitter:description for the
 // /now page. Format matches the on-figure caption row 1: date, UTC offset,
-// weekday name — readable at a glance in a chat preview unfurl.
-func ogDescription(t time.Time) string {
+// weekday name — readable at a glance in a chat preview unfurl. The
+// weekday name is sourced from the catalog so it localizes alongside
+// the rest of the page.
+func ogDescription(t time.Time, cat i18n.Catalog) string {
 	_, off := t.Zone()
 	return fmt.Sprintf("%s UTC%+d · %s",
-		t.Format("2006-01-02"), off/3600, t.Format("Monday"))
+		t.Format("2006-01-02"), off/3600, cat.Weekdays[t.Weekday()])
 }
 
 // headline returns the wall-clock time as HH:MM.
@@ -119,12 +123,14 @@ func headline(t time.Time) string {
 // the same field-separator glyph the codebase uses elsewhere (e.g.
 // /stock's STALE prefix). Row 2 is the year-progress meter on its own
 // line. The textual weekday name (`MON`) is dropped; WeekStrip is its
-// visual replacement.
-func metadataLines(t time.Time) []string {
+// visual replacement. The year-progress label localizes via the
+// catalog; WeekStrip stays single-letter Latin across locales (the
+// bracket position carries the signal, not the letter shape).
+func metadataLines(t time.Time, cat i18n.Catalog) []string {
 	_, off := t.Zone()
 	return []string{
 		fmt.Sprintf("%s UTC%+d · %s",
 			t.Format("2006-01-02"), off/3600, render.WeekStrip(t)),
-		render.YearProgress(t, "year"),
+		render.YearProgress(t, cat.YearProgressLabel),
 	}
 }
