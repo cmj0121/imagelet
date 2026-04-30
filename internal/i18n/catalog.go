@@ -57,12 +57,21 @@ type Catalog struct {
 	TWSEForeignNet    string
 	TWSETrustNet      string
 	TWSEDealerNet     string
+	TWSETotalNet      string // 合計籌碼 — 三大法人 net summary
 	TWSESecLending    string
-	TWSETSE           string
-	TWSEOTC           string
+	TWSETSE           string // 上市 — TWSE listed (open-market breadth row)
+	TWSEOTC           string // 上櫃 — TPEx listed (open-market breadth row)
 	TWSEMarginShort   string // 融資 — short form used inline in row composition
 	TWSEShortShort    string // 融券 — short form used inline in row composition
 	TWSEUnitYi        string // 億
 	TWSEUnitWanZhang  string // 萬張
 	TWSEUnitZhang     string // 張
+	TWSEUnitKou       string // 口 — futures-lot suffix
+	TWSEAdvLabel      string // 漲 / 涨 — breadth count prefix (advance)
+	TWSEDecLabel      string // 跌 — breadth count prefix (decline)
+	TWSEUnchLabel     string // 平 — breadth count prefix (unchanged)
+	TWSERetailMXF     string // 小台散戶 / 小台散户 — retail futures (mini-TWII)
+	TWSERetailTMF     string // 微台散戶 / 微台散户 — retail futures (micro-TWII)
+	TWSEOptionsPCR    string // 台指選擇 / 台指期权 — TAIFEX options PCR row
+	TWSEVIX           string // 波動指數 / 波动指数 — Taiwan VIX row
 }

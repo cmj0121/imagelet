@@ -53,6 +53,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/mattn/go-runewidth"
 	"github.com/rs/zerolog/log"
 
 	"github.com/cmj0121/imagelet/internal/i18n"
@@ -655,9 +656,9 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 	// Locale gates the entire TWSE enrichment block. en strips it
 	// (no clean English equivalents for 借券賣出當日餘額 / 融券 / etc.;
 	// English speakers reading a TW listing get the generic OHLC + MA
-	// card and that's it). zh-TW and zh-CN keep all rows. The CJK
-	// labels inside this block stay literal until H4 lifts them into
-	// the catalog.
+	// card and that's it). zh-TW and zh-CN keep all rows. Labels inside
+	// the block now flow through the catalog (cat.TWSE*) so zh-TW and
+	// zh-CN both render in the visitor's script.
 	if !showTWSEEnrichment(loc) {
 		return bs
 	}
@@ -681,26 +682,26 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 	var groups [][]string
 	switch {
 	case q.IsClosed && perStock.HasFlow():
-		groups = append(groups, perStockPositioningRows(perStock, q))
+		groups = append(groups, perStockPositioningRows(perStock, q, cat))
 	case q.IsClosed && tw.HasInstitutional():
-		groups = append(groups, positioningRows(tw))
+		groups = append(groups, positioningRows(tw, cat))
 	}
 	if !isPerStock {
-		if rows := breadthRows(tw, live, q.IsClosed); len(rows) > 0 {
+		if rows := breadthRows(tw, live, q.IsClosed, cat); len(rows) > 0 {
 			groups = append(groups, rows)
 		}
 	}
 	if q.IsClosed && tw.HasMargin() {
-		groups = append(groups, creditRows(tw))
+		groups = append(groups, creditRows(tw, cat))
 	}
 	if q.IsClosed && (margin.Has() || lending.Has()) {
-		groups = append(groups, perStockCreditRows(margin, lending))
+		groups = append(groups, perStockCreditRows(margin, lending, cat))
 	}
 	if q.IsClosed && (pcr.Has() || vix.Has()) {
-		groups = append(groups, []string{marketSentimentRow(pcr, vix)})
+		groups = append(groups, []string{marketSentimentRow(pcr, vix, cat)})
 	}
 	if q.IsClosed && retail.HasAny() {
-		groups = append(groups, retailFuturesRows(retail))
+		groups = append(groups, retailFuturesRows(retail, cat))
 	}
 	for i, g := range groups {
 		if i > 0 {
@@ -713,36 +714,42 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 
 // breadthRows picks the right breadth presentation for the market
 // state. Closed market reads from tw (MI_INDEX afterTrading TSE
-// totals) and emits one row labelled 漲跌家數. Open market reads
-// from live (per-exchange MIS aggregate) and emits one row per
-// populated exchange labelled 上市 / 上櫃 — TPEx outages can leave
-// only 上市 populated, in which case the 上櫃 row is silently
-// skipped. Returns nil when no source is available.
-func breadthRows(tw twse.MarketData, live twse.LiveBreadth, isClosed bool) []string {
+// totals) and emits one row labelled cat.TWSEAdvDecRow (漲跌家數 /
+// 涨跌家数). Open market reads from live (per-exchange MIS aggregate)
+// and emits one row per populated exchange labelled cat.TWSETSE /
+// cat.TWSEOTC (上市 / 上櫃 in zh-TW; 上市 / 上柜 in zh-CN). TPEx
+// outages can leave only TSE populated, in which case the OTC row is
+// silently skipped. Returns nil when no source is available.
+func breadthRows(tw twse.MarketData, live twse.LiveBreadth, isClosed bool, cat i18n.Catalog) []string {
 	const halfWidth = 10
 	if !isClosed && live.HasBreadth() {
+		// Pad label cell-widths within the open-market group so the
+		// TSE / OTC rows align under AlignLeft regardless of script.
+		// runewidth.StringWidth measures East-Asian-width 2 cells per
+		// CJK glyph; len() would over-pad them.
+		w := maxLabelWidth(cat.TWSETSE, cat.TWSEOTC)
 		var rows []string
 		if live.HasTSEBreadth() {
 			rows = append(rows, breadthRow(
-				"上市",
+				padLabel(cat.TWSETSE, w),
 				live.TSEAdvance, live.TSEDecline, live.TSEUnchanged,
-				halfWidth,
+				halfWidth, cat,
 			))
 		}
 		if live.HasOTCBreadth() {
 			rows = append(rows, breadthRow(
-				"上櫃",
+				padLabel(cat.TWSEOTC, w),
 				live.OTCAdvance, live.OTCDecline, live.OTCUnchanged,
-				halfWidth,
+				halfWidth, cat,
 			))
 		}
 		return rows
 	}
 	if tw.HasBreadth() {
 		return []string{breadthRow(
-			"漲跌家數",
+			cat.TWSEAdvDecRow,
 			tw.AdvanceCount, tw.DeclineCount, tw.UnchangedCount,
-			halfWidth,
+			halfWidth, cat,
 		)}
 	}
 	return nil
@@ -751,23 +758,30 @@ func breadthRows(tw twse.MarketData, live twse.LiveBreadth, isClosed bool) []str
 // breadthRow formats one breadth line: label + SignedBar + counts.
 // Shared shape across the closed-market 漲跌家數 row and the open-
 // market 上市 / 上櫃 split rows so column widths line up under
-// AlignLeft regardless of which path produced them.
-func breadthRow(label string, adv, dec, unc int64, halfWidth int) string {
+// AlignLeft regardless of which path produced them. Counts use the
+// catalog's adv/dec/unch single-character prefixes, which differ
+// between zh-TW (漲) and zh-CN (涨) for the advance label.
+func breadthRow(label string, adv, dec, unc int64, halfWidth int, cat i18n.Catalog) string {
 	moving := adv + dec
 	score := 0.0
 	if moving > 0 {
 		score = float64(adv-dec) / float64(moving)
 	}
 	bar := render.SignedBar(score, 1.0, halfWidth)
-	return fmt.Sprintf("%s  %s  漲 %d 跌 %d 平 %d", label, bar, adv, dec, unc)
+	return fmt.Sprintf("%s  %s  %s %d %s %d %s %d",
+		label, bar,
+		cat.TWSEAdvLabel, adv,
+		cat.TWSEDecLabel, dec,
+		cat.TWSEUnchLabel, unc)
 }
 
 // positioningRows formats the 三大法人 section: 外資籌碼 / 投信籌碼 /
-// 自營籌碼 / 合計籌碼, each with a center-split SignedBar on a shared
-// scale (the largest absolute value across the four), so a glance
-// reveals which participant dominated the day. The 合計 row carries a
-// ▲/▼ arrow matching its sign as the summary cue.
-func positioningRows(tw twse.MarketData) []string {
+// 自營籌碼 / 合計籌碼 (zh-TW; zh-CN uses 外资筹码 / 投信筹码 / 自营筹码 /
+// 合计筹码). Each row carries a center-split SignedBar on a shared scale
+// (the largest absolute value across the four), so a glance reveals which
+// participant dominated the day. The 合計 row carries a ▲/▼ arrow matching
+// its sign as the summary cue.
+func positioningRows(tw twse.MarketData, cat i18n.Catalog) []string {
 	const halfWidth = 10
 	maxF := float64(absMaxInt64(tw.ForeignNet, tw.TrustNet, tw.DealerNet, tw.Net))
 
@@ -776,17 +790,18 @@ func positioningRows(tw twse.MarketData) []string {
 		value int64
 	}
 	rows := []entry{
-		{"外資籌碼", tw.ForeignNet},
-		{"投信籌碼", tw.TrustNet},
-		{"自營籌碼", tw.DealerNet},
-		{"合計籌碼", tw.Net},
+		{cat.TWSEForeignNet, tw.ForeignNet},
+		{cat.TWSETrustNet, tw.TrustNet},
+		{cat.TWSEDealerNet, tw.DealerNet},
+		{cat.TWSETotalNet, tw.Net},
 	}
+	w := maxLabelWidth(rows[0].label, rows[1].label, rows[2].label, rows[3].label)
 
 	out := make([]string, 0, len(rows))
 	for i, r := range rows {
 		bar := render.SignedBar(float64(r.value), maxF, halfWidth)
 		amount := formatNTDBillions(r.value)
-		line := fmt.Sprintf("%s  %s  %s", r.label, bar, amount)
+		line := fmt.Sprintf("%s  %s  %s", padLabel(r.label, w), bar, amount)
 		if i == len(rows)-1 {
 			arrowChar := "▲"
 			if r.value < 0 {
@@ -806,7 +821,7 @@ func positioningRows(tw twse.MarketData) []string {
 // q.Last for visual consistency with the market-wide block. Same
 // row shape as positioningRows so a TW symbol seamlessly switches
 // between per-stock and market-wide presentations.
-func perStockPositioningRows(d twse.StockData, q quote.Quote) []string {
+func perStockPositioningRows(d twse.StockData, q quote.Quote, cat i18n.Catalog) []string {
 	const halfWidth = 10
 	maxF := float64(absMaxInt64(d.ForeignNet, d.TrustNet, d.DealerNet, d.Net))
 	price := q.Last
@@ -816,17 +831,18 @@ func perStockPositioningRows(d twse.StockData, q quote.Quote) []string {
 		shares int64
 	}
 	rows := []entry{
-		{"外資籌碼", d.ForeignNet},
-		{"投信籌碼", d.TrustNet},
-		{"自營籌碼", d.DealerNet},
-		{"合計籌碼", d.Net},
+		{cat.TWSEForeignNet, d.ForeignNet},
+		{cat.TWSETrustNet, d.TrustNet},
+		{cat.TWSEDealerNet, d.DealerNet},
+		{cat.TWSETotalNet, d.Net},
 	}
+	w := maxLabelWidth(rows[0].label, rows[1].label, rows[2].label, rows[3].label)
 
 	out := make([]string, 0, len(rows))
 	for i, r := range rows {
 		bar := render.SignedBar(float64(r.shares), maxF, halfWidth)
 		amount := formatNTDFromShares(r.shares, price)
-		line := fmt.Sprintf("%s  %s  %s", r.label, bar, amount)
+		line := fmt.Sprintf("%s  %s  %s", padLabel(r.label, w), bar, amount)
 		if i == len(rows)-1 {
 			arrowChar := "▲"
 			if r.shares < 0 {
@@ -837,6 +853,36 @@ func perStockPositioningRows(d twse.StockData, q quote.Quote) []string {
 		out = append(out, line)
 	}
 	return out
+}
+
+// maxLabelWidth returns the largest East-Asian-width cell count among
+// the inputs. Used to align row labels within a group: rows with
+// shorter labels get padded to this width so the bar / value column
+// lines up under AlignLeft. runewidth.StringWidth measures CJK glyphs
+// at 2 cells, so two same-character-count labels (e.g. zh-TW 外資籌碼
+// vs zh-CN 外资筹码) report the same width naturally.
+func maxLabelWidth(labels ...string) int {
+	w := 0
+	for _, l := range labels {
+		if rw := runewidth.StringWidth(l); rw > w {
+			w = rw
+		}
+	}
+	return w
+}
+
+// padLabel right-pads label with ASCII spaces so its total cell-width
+// reaches target. No-op when label is already at or beyond target —
+// truncation is never appropriate for a translation longer than the
+// group's longest label, the value column simply shifts right by the
+// extra cells. Padding uses ASCII spaces (1 cell each) — a target
+// unreachable as multiples of 1 is impossible.
+func padLabel(label string, target int) string {
+	pad := target - runewidth.StringWidth(label)
+	if pad <= 0 {
+		return label
+	}
+	return label + strings.Repeat(" ", pad)
 }
 
 // formatNTDFromShares converts a share count + per-share price into a
@@ -881,17 +927,25 @@ func absMaxInt64(vs ...int64) int64 {
 // is the read at a glance); 借券賣出 sits on the same sheet because
 // it's the institutional-facing short balance — together they
 // describe the full standing-short picture for the listing.
-func perStockCreditRows(m twse.StockMargin, l twse.SecuritiesLending) []string {
+func perStockCreditRows(m twse.StockMargin, l twse.SecuritiesLending, cat i18n.Catalog) []string {
+	// Pad the three label cell-widths to a common target so values
+	// align under AlignLeft. zh-TW labels are all four-CJK-character
+	// (8 cells); zh-CN matches; the runewidth-based pad still does
+	// the right thing if a future translation diverges in width.
+	w := maxLabelWidth(cat.TWSEMarginBalance, cat.TWSEShortBalance, cat.TWSESecLending)
 	var rows []string
 	if m.Has() {
 		// MI_MARGN reports 融資/融券 in 張 directly (per-stock 交易單位),
 		// unlike TWT93U which reports 借券 in shares — no /1000 here.
-		rows = append(rows, fmt.Sprintf("融資餘額  %s 張", formatThousands(m.MarginBalance)))
-		rows = append(rows, fmt.Sprintf("融券餘額  %s 張", formatThousands(m.ShortBalance)))
+		rows = append(rows, fmt.Sprintf("%s  %s %s",
+			padLabel(cat.TWSEMarginBalance, w), formatThousands(m.MarginBalance), cat.TWSEUnitZhang))
+		rows = append(rows, fmt.Sprintf("%s  %s %s",
+			padLabel(cat.TWSEShortBalance, w), formatThousands(m.ShortBalance), cat.TWSEUnitZhang))
 	}
 	if l.Has() {
 		lots := l.Balance / 1000
-		rows = append(rows, fmt.Sprintf("借券賣出  %s 張", formatThousands(lots)))
+		rows = append(rows, fmt.Sprintf("%s  %s %s",
+			padLabel(cat.TWSESecLending, w), formatThousands(lots), cat.TWSEUnitZhang))
 	}
 	return rows
 }
@@ -902,17 +956,17 @@ func perStockCreditRows(m twse.StockMargin, l twse.SecuritiesLending) []string {
 // value to two decimals. Either half may be empty when its upstream
 // fetcher is unavailable; in that case the row collapses to whichever
 // signal is present. Callers gate on (pcr.Has() || vix.Has()).
-func marketSentimentRow(p twse.OptionsPCR, v twse.VIX) string {
+func marketSentimentRow(p twse.OptionsPCR, v twse.VIX, cat i18n.Catalog) string {
 	var parts []string
 	if p.Has() {
 		arrow := "▲"
 		if p.OIRatio > 100 {
 			arrow = "▼"
 		}
-		parts = append(parts, fmt.Sprintf("台指選擇  PCR %.1f%%%s", p.OIRatio, arrow))
+		parts = append(parts, fmt.Sprintf("%s  PCR %.1f%%%s", cat.TWSEOptionsPCR, p.OIRatio, arrow))
 	}
 	if v.Has() {
-		parts = append(parts, fmt.Sprintf("波動指數  %.2f", v.Value))
+		parts = append(parts, fmt.Sprintf("%s  %.2f", cat.TWSEVIX, v.Value))
 	}
 	return strings.Join(parts, "  ")
 }
@@ -928,28 +982,29 @@ func marketSentimentRow(p twse.OptionsPCR, v twse.VIX) string {
 // Rows where the upstream had no data (HasMXF / HasTMF false) are
 // silently skipped; the handler caller has already gated on
 // retail.HasAny() so this never returns an empty slice.
-func retailFuturesRows(r twse.RetailFutures) []string {
+func retailFuturesRows(r twse.RetailFutures, cat i18n.Catalog) []string {
 	const halfWidth = 10
 	scale := absMaxInt64(r.MXFNet, r.TMFNet)
 	if scale == 0 {
 		return nil
 	}
+	w := maxLabelWidth(cat.TWSERetailMXF, cat.TWSERetailTMF)
 	out := make([]string, 0, 2)
 	if r.HasMXF() {
-		out = append(out, retailFuturesRow("小台散戶", r.MXFNet, scale, halfWidth))
+		out = append(out, retailFuturesRow(padLabel(cat.TWSERetailMXF, w), r.MXFNet, scale, halfWidth, cat))
 	}
 	if r.HasTMF() {
-		out = append(out, retailFuturesRow("微台散戶", r.TMFNet, scale, halfWidth))
+		out = append(out, retailFuturesRow(padLabel(cat.TWSERetailTMF, w), r.TMFNet, scale, halfWidth, cat))
 	}
 	return out
 }
 
 // retailFuturesRow formats one row: label + SignedBar + signed lot count.
 // The lot count carries a thousands separator so a typical 4–5 digit
-// reading scans cleanly.
-func retailFuturesRow(label string, net, scale int64, halfWidth int) string {
+// reading scans cleanly. Unit suffix (口) flows from the catalog.
+func retailFuturesRow(label string, net, scale int64, halfWidth int, cat i18n.Catalog) string {
 	bar := render.SignedBar(float64(net), float64(scale), halfWidth)
-	return fmt.Sprintf("%s  %s  %s 口", label, bar, formatSignedLots(net))
+	return fmt.Sprintf("%s  %s  %s %s", label, bar, formatSignedLots(net), cat.TWSEUnitKou)
 }
 
 // formatSignedLots returns the lot count with a leading sign and
@@ -967,9 +1022,11 @@ func formatSignedLots(v int64) string {
 // margin is structurally long-biased, so the signal reads as drift-
 // from-baseline rather than absolute sentiment and was not adding
 // glance-value.
-func creditRows(tw twse.MarketData) []string {
-	return []string{fmt.Sprintf("信用餘額  融資 %s   融券 %s",
-		formatTWDInYi(tw.MarginLongTWD), formatLotsInWan(tw.MarginShortLots))}
+func creditRows(tw twse.MarketData, cat i18n.Catalog) []string {
+	return []string{fmt.Sprintf("%s  %s %s   %s %s",
+		cat.TWSEMarginCredit,
+		cat.TWSEMarginShort, formatTWDInYi(tw.MarginLongTWD, cat),
+		cat.TWSEShortShort, formatLotsInWan(tw.MarginShortLots, cat))}
 }
 
 // formatVolumeRow returns the volume caption row: `Vol <shares> ·
@@ -994,17 +1051,19 @@ func formatNTDBillions(v int64) string {
 }
 
 // formatTWDInYi formats raw NTD as `N,NNN億` (1 億 = 1e8). Used by the
-// CN margin caption -- this is the unit Taiwanese readers expect.
-func formatTWDInYi(v int64) string {
+// CN margin caption — this is the unit TW/CN readers expect. The 億 /
+// 亿 suffix flows from the catalog so zh-CN renders simplified.
+func formatTWDInYi(v int64, cat i18n.Catalog) string {
 	yi := v / 100_000_000
-	return fmt.Sprintf("%s億", formatThousands(yi))
+	return fmt.Sprintf("%s%s", formatThousands(yi), cat.TWSEUnitYi)
 }
 
 // formatLotsInWan formats lot count as `NNN萬張` (1 萬 = 10000) so a
-// typical six-digit lot count reads compactly.
-func formatLotsInWan(v int64) string {
+// typical six-digit lot count reads compactly. Unit suffix (萬張 /
+// 万张) flows from the catalog.
+func formatLotsInWan(v int64, cat i18n.Catalog) string {
 	wan := float64(v) / 1e4
-	return fmt.Sprintf("%.1f萬張", wan)
+	return fmt.Sprintf("%.1f%s", wan, cat.TWSEUnitWanZhang)
 }
 
 // formatLargeNumber compacts large integers to `XX.XK / XX.XM / XX.XB / XX.XT`

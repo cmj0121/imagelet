@@ -43,5 +43,7 @@ var catalogEN = Catalog{
 	HelpToggle:  "Toggle help",
 
 	// TWSE-specific labels left empty. service/stock checks the
-	// locale and skips these rows for LocaleEN.
+	// locale and skips these rows for LocaleEN, so these never reach
+	// the renderer — the catalog satisfies the typed-struct invariant
+	// without populating values that have no clean English equivalent.
 }

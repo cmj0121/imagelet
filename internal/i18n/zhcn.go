@@ -1,18 +1,20 @@
 package i18n
 
-// catalogZhCN is the Simplified Chinese (zh-CN) catalog.
+// catalogZhCN is the Simplified Chinese (zh-CN) catalog. Values follow
+// mainland-China financial-news conventions (融资余额, 涨跌家数 — though
+// "家数" reads naturally in both scripts) and use simplified script for
+// every CJK character. Where terminology diverges from Taiwan usage
+// (e.g. 台指選擇 → 台指期权 for the options PCR row label), the zh-CN
+// value uses the mainland term.
 //
-// TODO(H4): replace English placeholder values with real zh-CN
-// translations. Skeleton committed in H1 so the typed-struct compile-
-// time check covers all three locales from day one — H4 edits values,
-// it does not add fields. zh-CN diverges from zh-TW where simplified
-// characters differ (融资/融券/外资 vs 融資/融券/外資).
+// Latin-locked symbols (M5 / M10 markers and the 5↗10 / 5↘10 / ≈ trend
+// glyphs) stay identical to the en / zh-TW catalogs by design.
 var catalogZhCN = Catalog{
-	OHLCOpen:  "O",
-	OHLCHigh:  "H",
-	OHLCLow:   "L",
-	OHLCClose: "C",
-	OHLCPrev:  "P",
+	OHLCOpen:  "开",
+	OHLCHigh:  "高",
+	OHLCLow:   "低",
+	OHLCClose: "收",
+	OHLCPrev:  "昨",
 
 	MA5Marker:     "M5",
 	MA10Marker:    "M10",
@@ -20,44 +22,52 @@ var catalogZhCN = Catalog{
 	MADeathCross:  "5↘10",
 	MAFlat:        "≈",
 
-	YearProgressLabel: "year",
-	StaleTag:          "STALE",
-	ClosedTag:         "CLOSED",
+	YearProgressLabel: "年度",
+	StaleTag:          "旧数据",
+	ClosedTag:         "已收盘",
 	Separator:         "·",
 
-	IndexTagline:               "show you should know in single image",
+	IndexTagline:               "一张图看懂该知道的事",
 	NowOGTitle:                 "imagelet",
-	NowOGDescription:           "Current time and year progress",
+	NowOGDescription:           "当前时间与年度进度",
 	StockOGDescriptionPriceFmt: "%s @ %s (%s)",
-	NotFoundTitle:              "404 Not Found",
+	NotFoundTitle:              "找不到页面",
 
 	Weekdays: [7]string{
-		"Sunday", "Monday", "Tuesday", "Wednesday",
-		"Thursday", "Friday", "Saturday",
+		"星期日", "星期一", "星期二", "星期三",
+		"星期四", "星期五", "星期六",
 	},
 
-	HelpHeading: "Shortcuts",
-	HelpEsc:     "Close help",
-	HelpEscHint: "Press Esc or click outside to close",
-	HelpPrev:    "Previous day",
-	HelpNext:    "Next day",
-	HelpToday:   "Today",
-	HelpToggle:  "Toggle help",
+	HelpHeading: "快捷键",
+	HelpEsc:     "关闭说明",
+	HelpEscHint: "按 Esc 或点击外部关闭",
+	HelpPrev:    "前一天",
+	HelpNext:    "后一天",
+	HelpToday:   "今天",
+	HelpToggle:  "显示／隐藏说明",
 
-	// TWSE-specific labels — H4 will fill with real zh-CN translations.
-	TWSEAdvDecRow:     "AdvDec",
-	TWSEMarginCredit:  "Credit",
-	TWSEMarginBalance: "Margin balance",
-	TWSEShortBalance:  "Short balance",
-	TWSEForeignNet:    "Foreign net",
-	TWSETrustNet:      "Trust net",
-	TWSEDealerNet:     "Dealer net",
-	TWSESecLending:    "Sec lending",
-	TWSETSE:           "TSE",
-	TWSEOTC:           "OTC",
-	TWSEMarginShort:   "M",
-	TWSEShortShort:    "S",
-	TWSEUnitYi:        "100M",
-	TWSEUnitWanZhang:  "10Klots",
-	TWSEUnitZhang:     "lots",
+	TWSEAdvDecRow:     "涨跌家数",
+	TWSEMarginCredit:  "信用余额",
+	TWSEMarginBalance: "融资余额",
+	TWSEShortBalance:  "融券余额",
+	TWSEForeignNet:    "外资筹码",
+	TWSETrustNet:      "投信筹码",
+	TWSEDealerNet:     "自营筹码",
+	TWSETotalNet:      "合计筹码",
+	TWSESecLending:    "借券卖出",
+	TWSETSE:           "上市",
+	TWSEOTC:           "上柜",
+	TWSEMarginShort:   "融资",
+	TWSEShortShort:    "融券",
+	TWSEUnitYi:        "亿",
+	TWSEUnitWanZhang:  "万张",
+	TWSEUnitZhang:     "张",
+	TWSEUnitKou:       "口",
+	TWSEAdvLabel:      "涨",
+	TWSEDecLabel:      "跌",
+	TWSEUnchLabel:     "平",
+	TWSERetailMXF:     "小台散户",
+	TWSERetailTMF:     "微台散户",
+	TWSEOptionsPCR:    "台指期权",
+	TWSEVIX:           "波动指数",
 }
