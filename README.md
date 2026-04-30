@@ -48,6 +48,7 @@ Detailed docs live under [`docs/`](./docs):
 - [`docs/caching.md`](./docs/caching.md) — caching layers and `--cache-dir` disk persistence.
 - [`docs/security.md`](./docs/security.md) — request-size caps, `?date=` clamp, SSRF guards, snapshot decode cap.
 - [`docs/html-view.md`](./docs/html-view.md) — Open Graph meta and `/stock` keyboard shortcuts.
+- [`docs/localization.md`](./docs/localization.md) — locale negotiation, `?lang=` override, Vary policy.
 
 ## Result
 
@@ -120,6 +121,66 @@ path:   /no-such-route
 method: GET
 status: 404
 ```
+
+## Localization
+
+Imagelet renders financial-card output in three locales: English (`en`),
+Traditional Chinese (`zh-TW`), and Simplified Chinese (`zh-CN`). Japanese
+is deferred — the embedded Sarasa Mono SC font has incomplete kana
+coverage, so `?lang=ja` falls back to `en` (NOT `zh-TW`; Japanese readers
+prefer English over the wrong CJK script).
+
+The locale is resolved per request, in this order:
+
+1. `?lang=` query parameter — `en`, `zh`, `zh-TW`, `zh-Hant`, `zh-CN`,
+   `zh-Hans` (case-insensitive). Bare `zh` resolves to `zh-CN` per CLDR
+   convention.
+2. `Accept-Language` request header — parsed via
+   `golang.org/x/text/language.NewMatcher` over the supported set.
+3. `CF-IPCountry` request header — TW / HK / MO → `zh-TW`; CN / SG →
+   `zh-CN`; everything else falls through.
+4. Fallback: `en`.
+
+| Locale              | BCP-47 tag(s) accepted   | Country defaults              |
+| ------------------- | ------------------------ | ----------------------------- |
+| English             | `en`                     | (anything not below; default) |
+| Traditional Chinese | `zh-TW`, `zh-Hant`       | TW, HK, MO                    |
+| Simplified Chinese  | `zh-CN`, `zh-Hans`, `zh` | CN, SG                        |
+
+Bare `zh` collapses onto `zh-CN` because the Unicode CLDR project treats
+simplified as the script-default for ambiguous `zh` inputs. Visitors who
+want traditional must say `zh-TW` or `zh-Hant`.
+
+```bash
+# explicit override
+curl https://imagelet.example.com/stock/2330.TW?lang=zh-TW
+
+# browser-style negotiation
+curl -H 'Accept-Language: zh-TW' https://imagelet.example.com/stock/2330.TW
+
+# CDN geo default
+curl -H 'CF-IPCountry: TW' https://imagelet.example.com/stock/2330.TW
+```
+
+Behavioral notes:
+
+- `en` visitors see only the generic OHLC + MA card. The TWSE-specific
+  enrichment rows (`漲跌家數`, `融資`, `融券`, `外資籌碼`, …) are
+  stripped — there's no clean English vocabulary for several of those
+  business terms, and emitting them transliterated would be worse than
+  omitting them.
+- `zh-TW` and `zh-CN` visitors see the full TWSE enrichment with
+  localized labels (Traditional / Simplified script respectively).
+- `Vary: Accept-Language` is set **only** when `Accept-Language`
+  actually picked the locale. `?lang=` overrides skip the Vary header
+  (the URL itself differentiates), and so do CF-IPCountry-only matches.
+  This bounds CDN cache fragmentation.
+- The HTML response cache key includes the resolved locale, so three
+  locales × URL = at most 3× the working set. The LRU is sized
+  accordingly.
+
+See [`docs/localization.md`](./docs/localization.md) for the full
+behavior spec and the Cloudflare cache-key normalization guidance.
 
 ## Built with
 
