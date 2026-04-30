@@ -1,6 +1,38 @@
 package render
 
-import "bytes"
+import (
+	"bytes"
+	"fmt"
+	"html"
+)
+
+// HelpLabels carries the user-visible strings rendered into the
+// keyboard-shortcut help dialog and the prev/next button aria-labels.
+// Pre-translated by the caller; render keeps no locale of its own.
+type HelpLabels struct {
+	Heading string // h2 inside the modal
+	Esc     string // dd for the Esc shortcut row
+	EscHint string // hint paragraph below the dl
+	Prev    string // dd for ←/h row + prev-button aria-label
+	Next    string // dd for →/l row + next-button aria-label
+	Today   string // dd for t row
+	Toggle  string // dd for ? row
+}
+
+// DefaultHelpLabels returns the English label set used by tests and
+// callers that haven't wired through a locale. Values match
+// internal/i18n/en.go's catalog byte-for-byte.
+func DefaultHelpLabels() HelpLabels {
+	return HelpLabels{
+		Heading: "Shortcuts",
+		Esc:     "Close help",
+		EscHint: "Press Esc or click outside to close",
+		Prev:    "Previous day",
+		Next:    "Next day",
+		Today:   "Today",
+		Toggle:  "Toggle help",
+	}
+}
 
 // HTML wrapper constants. The doc is hand-rolled (no html/template) because
 // the only dynamic part is a pre-rendered, already-XML-safe SVG body and a
@@ -58,29 +90,38 @@ var (
 var navStyleFragment = []byte(`<style>.imagelet-nav-prev,.imagelet-nav-next{position:fixed;top:50%;transform:translateY(-50%);width:48px;height:48px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,0.05);color:` + SVGForeground + `;border:1px solid rgba(255,255,255,0.1);border-radius:8px;font-size:32px;line-height:1;cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;font-family:serif;padding:0}.imagelet-nav-prev:hover,.imagelet-nav-next:hover{background:rgba(255,255,255,0.12)}.imagelet-nav-prev{left:12px}.imagelet-nav-next{right:12px}.imagelet-help{position:fixed;inset:0;background:rgba(0,0,0,0.6);display:none;align-items:center;justify-content:center;z-index:10}.imagelet-help.visible{display:flex}.imagelet-help-content{max-width:360px;width:90%;background:#1f1f1f;color:` + SVGForeground + `;border-radius:10px;padding:1.25rem 1.5rem;box-sizing:border-box}.imagelet-help-content h2{margin:0 0 .75rem;font-size:1.1rem}.imagelet-help-content dl{display:grid;grid-template-columns:auto 1fr;gap:.4rem .75rem;margin:0}.imagelet-help-content dt{display:inline-block;background:#333;color:` + SVGForeground + `;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.85rem;padding:.1rem .45rem;border-radius:4px;justify-self:start}.imagelet-help-content dd{margin:0;align-self:center;font-size:.9rem}.imagelet-help-hint{margin:.9rem 0 0;font-size:.8rem;opacity:.65}.imagelet-pastdate{position:fixed;top:12px;left:50%;transform:translateX(-50%);background:#1f1f1f;color:#e9e9e9;border:1px solid rgba(255,255,255,0.15);border-radius:9999px;padding:.35rem .9rem;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.8rem;z-index:11;box-shadow:0 2px 8px rgba(0,0,0,0.4);display:none}.imagelet-pastdate.visible{display:inline-block}.imagelet-pastdate code{background:rgba(255,255,255,0.1);padding:0 .3rem;border-radius:3px;margin:0 .2rem}@media (max-width: 480px){.imagelet-nav-prev,.imagelet-nav-next{width:36px;height:36px;font-size:24px;top:auto;bottom:12px;transform:none;box-shadow:0 2px 8px rgba(0,0,0,0.4)}.imagelet-nav-prev{left:12px}.imagelet-nav-next{right:12px}.imagelet-pastdate{top:8px;font-size:.75rem;padding:.25rem .7rem}}</style>
 `)
 
-// navBodyFragment is the prev/next chevron buttons, the help modal, and the
-// inline behavior <script>. Spliced immediately before </body> so the SVG
-// stays the first body child and OG injection (which targets </head>)
-// stays untouched.
-var navBodyFragment = []byte(`<div class="imagelet-pastdate" id="imagelet-pastdate" role="status" aria-live="polite"></div>
-<button type="button" class="imagelet-nav-prev" data-imagelet-nav="-1" aria-label="Previous day">‹</button>
-<button type="button" class="imagelet-nav-next" data-imagelet-nav="1" aria-label="Next day">›</button>
+// navBodyDialogFmt is the dialog DOM template. Verbs in placement
+// order: prev aria-label, next aria-label, dialog heading, prev dd,
+// next dd, today dd, toggle dd, esc dd, hint paragraph. All labels
+// flow through html.EscapeString before splicing — defense in depth
+// against a future translator inserting HTML-special chars.
+//
+// Vim and arrow bindings are merged into single rows ("← / h") so the
+// dialog matches the catalog's five functional shortcuts (prev, next,
+// today, toggle, esc) rather than seven keys with English-only "(vim)"
+// parentheticals.
+const navBodyDialogFmt = `<div class="imagelet-pastdate" id="imagelet-pastdate" role="status" aria-live="polite"></div>
+<button type="button" class="imagelet-nav-prev" data-imagelet-nav="-1" aria-label="%s">‹</button>
+<button type="button" class="imagelet-nav-next" data-imagelet-nav="1" aria-label="%s">›</button>
 <div class="imagelet-help" id="imagelet-help" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="imagelet-help-title">
   <div class="imagelet-help-content">
-    <h2 id="imagelet-help-title">Keyboard shortcuts</h2>
+    <h2 id="imagelet-help-title">%s</h2>
     <dl>
-      <dt>←</dt><dd>Previous day</dd>
-      <dt>→</dt><dd>Next day</dd>
-      <dt>h</dt><dd>Previous day (vim)</dd>
-      <dt>l</dt><dd>Next day (vim)</dd>
-      <dt>t</dt><dd>Today (clear date override)</dd>
-      <dt>?</dt><dd>Toggle this help</dd>
-      <dt>Esc</dt><dd>Close help</dd>
+      <dt>← / h</dt><dd>%s</dd>
+      <dt>→ / l</dt><dd>%s</dd>
+      <dt>t</dt><dd>%s</dd>
+      <dt>?</dt><dd>%s</dd>
+      <dt>Esc</dt><dd>%s</dd>
     </dl>
-    <p class="imagelet-help-hint">Press Esc or click outside to close</p>
+    <p class="imagelet-help-hint">%s</p>
   </div>
 </div>
-<script>
+`
+
+// navBodyScriptFragment is the inline behavior <script>. Split from
+// the dialog DOM so the labels-aware splice stays readable; the
+// script itself has no localizable content (DOM-driven).
+var navBodyScriptFragment = []byte(`<script>
 (function () {
   function getCurrentDate() {
     var p = new URLSearchParams(location.search);
@@ -215,8 +256,8 @@ func WrapHTML(svgBody []byte) []byte {
 // Implemented as WrapHTML composed with InjectDateNav so the splice
 // machinery has a single source of truth shared with callers (e.g.
 // /stock) that wrap via render.BannerBoxes and inject after the fact.
-func WrapHTMLWithDateNav(svgBody []byte) []byte {
-	return InjectDateNav(WrapHTML(svgBody))
+func WrapHTMLWithDateNav(svgBody []byte, labels HelpLabels) []byte {
+	return InjectDateNav(WrapHTML(svgBody), labels)
 }
 
 // InjectDateNav splices the date-nav <style> before </head> and the nav
@@ -227,17 +268,36 @@ func WrapHTMLWithDateNav(svgBody []byte) []byte {
 // Composes with InjectOGMeta in either order: this function targets
 // </head> and </body>, while InjectOGMeta only touches </head>; both
 // keep their splice landmarks intact for the other.
-func InjectDateNav(body []byte) []byte {
+func InjectDateNav(body []byte, labels HelpLabels) []byte {
 	headIdx := bytes.Index(body, headCloseTag)
 	bodyIdx := bytes.Index(body, bodyCloseTag)
 	if headIdx < 0 || bodyIdx < 0 {
 		return body
 	}
-	out := make([]byte, 0, len(body)+len(navStyleFragment)+len(navBodyFragment))
+	dialog := buildNavBodyDialog(labels)
+	out := make([]byte, 0, len(body)+len(navStyleFragment)+len(dialog)+len(navBodyScriptFragment))
 	out = append(out, body[:headIdx]...)
 	out = append(out, navStyleFragment...)
 	out = append(out, body[headIdx:bodyIdx]...)
-	out = append(out, navBodyFragment...)
+	out = append(out, dialog...)
+	out = append(out, navBodyScriptFragment...)
 	out = append(out, body[bodyIdx:]...)
 	return out
+}
+
+// buildNavBodyDialog formats the dialog DOM with the supplied labels.
+// All label values flow through html.EscapeString so a stray HTML-
+// special character in a translation can't break the page.
+func buildNavBodyDialog(labels HelpLabels) []byte {
+	return []byte(fmt.Sprintf(navBodyDialogFmt,
+		html.EscapeString(labels.Prev),    // prev-button aria-label
+		html.EscapeString(labels.Next),    // next-button aria-label
+		html.EscapeString(labels.Heading), // h2
+		html.EscapeString(labels.Prev),    // ← / h dd
+		html.EscapeString(labels.Next),    // → / l dd
+		html.EscapeString(labels.Today),   // t dd
+		html.EscapeString(labels.Toggle),  // ? dd
+		html.EscapeString(labels.Esc),     // Esc dd
+		html.EscapeString(labels.EscHint), // hint paragraph
+	))
 }

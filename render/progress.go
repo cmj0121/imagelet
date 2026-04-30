@@ -68,18 +68,21 @@ func SignedBar(value, max float64, halfWidth int) string {
 	return left + "│" + right
 }
 
-// YearProgress returns a fragment in the form `year ██████░░░░░░░░░░░░░░ 32%`
+// YearProgress returns a fragment in the form `<label> ██████░░░░░░░░░░░░░░ 32%`
 // representing how far through the calendar year `t` is. Width is fixed at
 // 20 cells. Day-of-year is taken in `t`'s location so a visitor whose
 // timezone has rolled into Jan 1 sees the new year's progress.
 //
 // The percent is rounded to the nearest whole; day 1 shows 0%, day 365/366
 // shows 100%, and a non-leap year's day 117 (April 27 in 2026) shows 32%.
-func YearProgress(t time.Time) string {
+//
+// `label` is the pre-translated leading word (e.g. "year", "年度");
+// callers without a locale typically pass "year".
+func YearProgress(t time.Time, label string) string {
 	const width = 20
 	daysInYear := time.Date(t.Year(), 12, 31, 0, 0, 0, 0, t.Location()).YearDay()
 	pct := float64(t.YearDay()) / float64(daysInYear)
-	return fmt.Sprintf("year %s %d%%", ProgressBar(pct, width), int(math.Round(pct*100)))
+	return fmt.Sprintf("%s %s %d%%", label, ProgressBar(pct, width), int(math.Round(pct*100)))
 }
 
 // weekdayLetters is the Sunday-first single-letter labels WeekStrip uses.

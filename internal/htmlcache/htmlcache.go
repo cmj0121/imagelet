@@ -48,13 +48,23 @@ const DefaultMaxEntries = 256
 // and the response body. Headers we'd otherwise echo back unchanged
 // (Date, ETag, transfer-coding) are left to gin's default handling on
 // replay so they reflect the serving moment, not the cache-fill moment.
+//
+// localeFn is an optional hook injected via WithLocale. When non-nil,
+// its return value is mixed into the cache key — keeping htmlcache
+// itself locale-agnostic at the type level (no internal/i18n import)
+// while letting the wiring layer differentiate cached responses by
+// locale. The key uses the resolved-locale string (a small bounded
+// set: "en"/"zh-TW"/"zh-CN") rather than the raw Accept-Language
+// header, so cache space stays bounded by locale-count rather than
+// header-format-count.
 type Cache struct {
-	mu     sync.Mutex
-	list   *list.List               // *entry, front = MRU
-	items  map[string]*list.Element // key -> list element
-	flight map[string]chan struct{} // singleflight per key
-	max    int
-	nowFn  func() time.Time
+	mu       sync.Mutex
+	list     *list.List               // *entry, front = MRU
+	items    map[string]*list.Element // key -> list element
+	flight   map[string]chan struct{} // singleflight per key
+	max      int
+	nowFn    func() time.Time
+	localeFn func(*gin.Context) string
 }
 
 // entry holds a single cached response. headers is a defensive copy —
@@ -99,6 +109,22 @@ func (c *Cache) SetNow(now func() time.Time) {
 	c.nowFn = now
 }
 
+// WithLocale registers a per-request locale extractor whose return
+// value participates in the cache key. Returns the receiver so the
+// configuration is chainable at construction time:
+//
+//	cache := htmlcache.NewWithCapacity(1024).WithLocale(i18n.LocaleString)
+//
+// Pass nil to clear the hook. Calling WithLocale on a Cache that's
+// already serving requests is racy — register before installing the
+// middleware.
+func (c *Cache) WithLocale(fn func(*gin.Context) string) *Cache {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.localeFn = fn
+	return c
+}
+
 // Len returns the number of live entries — primarily for tests
 // asserting eviction. Includes entries that may be expired but not
 // yet swept (lazy expiry).
@@ -124,7 +150,7 @@ func (c *Cache) Middleware() gin.HandlerFunc {
 			g.Next()
 			return
 		}
-		key := cacheKey(g)
+		key := c.cacheKey(g)
 		now := c.nowFn()
 
 		if e, ok := c.lookup(key, now); ok {
@@ -379,10 +405,13 @@ func copyHeaders(src http.Header) http.Header {
 //   - User-Agent class — Mozilla vs other (the existing handlers map
 //     Mozilla → HTML, so the bit suffices to separate browsers from
 //     curl/programmatic callers without keying on full UA strings)
+//   - resolved locale string, when WithLocale registered an extractor.
+//     A bounded value space ("en"/"zh-TW"/"zh-CN") keeps cache size
+//     proportional to locale-count rather than to raw-header variants.
 //
 // The string is hashed at the end so the key fits in a map entry
 // without per-request memory blow-up on long URLs.
-func cacheKey(g *gin.Context) string {
+func (c *Cache) cacheKey(g *gin.Context) string {
 	q := g.Request.URL.Query()
 	keys := make([]string, 0, len(q))
 	for k := range q {
@@ -409,6 +438,11 @@ func cacheKey(g *gin.Context) string {
 		sb.WriteString("ua=mozilla")
 	} else {
 		sb.WriteString("ua=other")
+	}
+	if c.localeFn != nil {
+		sb.WriteByte('|')
+		sb.WriteString("loc=")
+		sb.WriteString(c.localeFn(g))
 	}
 	sum := sha256.Sum256([]byte(sb.String()))
 	return hex.EncodeToString(sum[:16])

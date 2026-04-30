@@ -257,6 +257,72 @@ func TestCacheNonGETPassesThrough(t *testing.T) {
 	}
 }
 
+// TestCacheKeyDistinguishesLocale asserts that two requests differing
+// ONLY in the value the WithLocale-injected extractor returns produce
+// distinct cache entries — so a TW visitor and a US visitor hitting
+// the same URL don't share each other's localized HTML.
+func TestCacheKeyDistinguishesLocale(t *testing.T) {
+	c := htmlcache.NewWithCapacity(8)
+	calls := int64(0)
+
+	// Per-test-request locale value — set by the test before each
+	// request, read by the locale extractor closure below.
+	var locale string
+	c.WithLocale(func(_ *gin.Context) string { return locale })
+
+	r := gin.New()
+	r.GET("/x", c.Middleware(), func(g *gin.Context) {
+		atomic.AddInt64(&calls, 1)
+		g.Header("Cache-Control", "max-age=60")
+		g.Data(http.StatusOK, "text/html", []byte("<html/>"))
+	})
+
+	send := func() {
+		req := httptest.NewRequest(http.MethodGet, "/x", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+	}
+
+	locale = "en"
+	send()
+	send() // 2nd en → cache hit, calls stays at 1
+	locale = "zh-TW"
+	send() // different locale → cache miss, calls becomes 2
+	locale = "zh-CN"
+	send() // different locale → cache miss, calls becomes 3
+	locale = "en"
+	send() // back to en → cache hit, calls stays at 3
+
+	if calls != 3 {
+		t.Errorf("calls=%d, want 3 (one per distinct locale)", calls)
+	}
+}
+
+// TestCacheKeyIgnoresLocaleWhenNotConfigured asserts that without
+// WithLocale, the cache behaves as it did before — a single bucket
+// per URL regardless of any per-request state. Guards the
+// "WithLocale is opt-in" property.
+func TestCacheKeyIgnoresLocaleWhenNotConfigured(t *testing.T) {
+	c := htmlcache.NewWithCapacity(8)
+	calls := int64(0)
+	r := gin.New()
+	r.GET("/x", c.Middleware(), func(g *gin.Context) {
+		atomic.AddInt64(&calls, 1)
+		g.Header("Cache-Control", "max-age=60")
+		g.Data(http.StatusOK, "text/html", []byte("<html/>"))
+	})
+
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/x", nil)
+		req.Header.Set("Accept-Language", "zh-TW") // varies per request, must NOT split cache
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+	}
+	if calls != 1 {
+		t.Errorf("calls=%d, want 1 (no WithLocale → cache shared across requests)", calls)
+	}
+}
+
 // TestCacheStampedeCollapsesToSingleHandlerCall asserts that N
 // concurrent cold-cache requests for the same key trigger only ONE
 // downstream handler call — the singleflight gate. The handler holds

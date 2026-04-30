@@ -30,7 +30,7 @@ func TestMAPositionBar_ZeroInputReturnsEmpty(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			top, bar, caption := MAPositionBar(tc.ma10, tc.ma5, tc.price, 0, 30, priceBandScale, fmtPrice)
+			top, bar, caption := MAPositionBar(tc.ma10, tc.ma5, tc.price, 0, 30, priceBandScale, DefaultMALabels(), fmtPrice)
 			if top != "" || bar != "" || caption != "" {
 				t.Errorf("got (%q, %q, %q), want all empty", top, bar, caption)
 			}
@@ -45,7 +45,7 @@ func TestMAPositionBar_ZeroInputReturnsEmpty(t *testing.T) {
 // constrained.
 func TestMAPositionBar_BarRowEqualsWidth(t *testing.T) {
 	width := 41
-	top, bar, _ := MAPositionBar(100, 102, 101, 99.5, width, priceBandScale, fmtPrice)
+	top, bar, _ := MAPositionBar(100, 102, 101, 99.5, width, priceBandScale, DefaultMALabels(), fmtPrice)
 	if l := len([]rune(top)); l != width {
 		t.Errorf("top row width = %d, want %d (%q)", l, width, top)
 	}
@@ -60,7 +60,7 @@ func TestMAPositionBar_BarRowEqualsWidth(t *testing.T) {
 // construction.
 func TestMAPositionBar_PriceAtCenter(t *testing.T) {
 	width := 31
-	_, bar, _ := MAPositionBar(100.5, 99.5, 100, 0, width, priceBandScale, fmtPrice)
+	_, bar, _ := MAPositionBar(100.5, 99.5, 100, 0, width, priceBandScale, DefaultMALabels(), fmtPrice)
 	runes := []rune(bar)
 	centerCol := width / 2
 	if runes[centerCol] != ohlcMarkerClose {
@@ -74,7 +74,7 @@ func TestMAPositionBar_PriceAtCenter(t *testing.T) {
 func TestMAPositionBar_TextMarkersPresent(t *testing.T) {
 	// MA10 -1.5%, MA5 +1.5% from price → both well inside the band.
 	width := 60
-	_, bar, _ := MAPositionBar(98.5, 101.5, 100, 0, width, priceBandScale, fmtPrice)
+	_, bar, _ := MAPositionBar(98.5, 101.5, 100, 0, width, priceBandScale, DefaultMALabels(), fmtPrice)
 	if !strings.Contains(bar, maMarkerMA10) {
 		t.Errorf("bar missing %q marker: %q", maMarkerMA10, bar)
 	}
@@ -89,7 +89,7 @@ func TestMAPositionBar_TextMarkersPresent(t *testing.T) {
 // near-equal, the M10 text survives intact.
 func TestMAPositionBar_M10WinsOverM5(t *testing.T) {
 	// Both MAs equal → both placed at the same column; M10 written last.
-	_, bar, _ := MAPositionBar(99, 99, 100, 0, 31, priceBandScale, fmtPrice)
+	_, bar, _ := MAPositionBar(99, 99, 100, 0, 31, priceBandScale, DefaultMALabels(), fmtPrice)
 	if !strings.Contains(bar, maMarkerMA10) {
 		t.Errorf("bar missing M10 marker (should win on overlap): %q", bar)
 	}
@@ -104,7 +104,7 @@ func TestMAPositionBar_SaturationRight(t *testing.T) {
 	ma5 := 100.0
 	price := 100.0
 	width := 31
-	_, bar, _ := MAPositionBar(ma10, ma5, price, 0, width, priceBandScale, fmtPrice)
+	_, bar, _ := MAPositionBar(ma10, ma5, price, 0, width, priceBandScale, DefaultMALabels(), fmtPrice)
 	runes := []rune(bar)
 	if runes[len(runes)-1] != maClipRight {
 		t.Errorf("right edge = %q, want ▶ in %q", string(runes[len(runes)-1]), bar)
@@ -122,7 +122,7 @@ func TestMAPositionBar_SaturationLeft(t *testing.T) {
 	ma5 := 100.0
 	price := 100.0
 	width := 31
-	_, bar, _ := MAPositionBar(ma10, ma5, price, 0, width, priceBandScale, fmtPrice)
+	_, bar, _ := MAPositionBar(ma10, ma5, price, 0, width, priceBandScale, DefaultMALabels(), fmtPrice)
 	runes := []rune(bar)
 	if runes[0] != maClipLeft {
 		t.Errorf("left edge = %q, want ◀ in %q", string(runes[0]), bar)
@@ -135,11 +135,11 @@ func TestMAPositionBar_SaturationLeft(t *testing.T) {
 // TestMAPositionBar_WidthClamping pins that out-of-range widths clamp
 // to [10, 80] so callers can pass arbitrary values without checking.
 func TestMAPositionBar_WidthClamping(t *testing.T) {
-	_, bar, _ := MAPositionBar(100, 100, 100, 0, 2, priceBandScale, fmtPrice)
+	_, bar, _ := MAPositionBar(100, 100, 100, 0, 2, priceBandScale, DefaultMALabels(), fmtPrice)
 	if l := len([]rune(bar)); l != maBarMinWidth {
 		t.Errorf("width=2 clamped to %d, want %d (%q)", l, maBarMinWidth, bar)
 	}
-	_, bar, _ = MAPositionBar(100, 100, 100, 0, 200, priceBandScale, fmtPrice)
+	_, bar, _ = MAPositionBar(100, 100, 100, 0, 200, priceBandScale, DefaultMALabels(), fmtPrice)
 	if l := len([]rune(bar)); l != maBarMaxWidth {
 		t.Errorf("width=200 clamped to %d, want %d", l, maBarMaxWidth)
 	}
@@ -152,7 +152,7 @@ func TestMAPositionBar_WidthClamping(t *testing.T) {
 func TestMAPositionBar_PrevCloseMarkerOnTop(t *testing.T) {
 	width := 60
 	prev := 99.0 // -1% from price
-	top, _, _ := MAPositionBar(99.5, 100.5, 100, prev, width, priceBandScale, fmtPrice)
+	top, _, _ := MAPositionBar(99.5, 100.5, 100, prev, width, priceBandScale, DefaultMALabels(), fmtPrice)
 	if !strings.Contains(top, string(ohlcMarkerPrev)) {
 		t.Errorf("top row missing ▼ marker: %q", top)
 	}
@@ -162,7 +162,7 @@ func TestMAPositionBar_PrevCloseMarkerOnTop(t *testing.T) {
 // produces a blank top row (the "missing" sentinel) — the figure
 // gracefully degrades when upstream didn't supply prev-close.
 func TestMAPositionBar_PrevCloseZeroOmitsMarker(t *testing.T) {
-	top, _, _ := MAPositionBar(99.5, 100.5, 100, 0, 60, priceBandScale, fmtPrice)
+	top, _, _ := MAPositionBar(99.5, 100.5, 100, 0, 60, priceBandScale, DefaultMALabels(), fmtPrice)
 	if strings.Contains(top, string(ohlcMarkerPrev)) {
 		t.Errorf("top row should be blank when prev=0: %q", top)
 	}
@@ -175,7 +175,7 @@ func TestMAPositionBar_PrevCloseZeroOmitsMarker(t *testing.T) {
 func TestMAPositionBar_CaptionFormat(t *testing.T) {
 	// Price above both MAs → both arrows ▲.
 	// MA5(101) > MA10(100) by ~1% → 5↗10.
-	_, _, caption := MAPositionBar(100, 101, 102, 0, 60, priceBandScale, fmtPrice)
+	_, _, caption := MAPositionBar(100, 101, 102, 0, 60, priceBandScale, DefaultMALabels(), fmtPrice)
 	if !strings.Contains(caption, "M5: ▲"+fmtPrice(101)) {
 		t.Errorf("caption missing M5 part: %q", caption)
 	}
@@ -190,7 +190,7 @@ func TestMAPositionBar_CaptionFormat(t *testing.T) {
 // TestMAPositionBar_CaptionDeathCross pins the bearish trend token:
 // MA5 < MA10 by more than 0.1% → `5↘10`.
 func TestMAPositionBar_CaptionDeathCross(t *testing.T) {
-	_, _, caption := MAPositionBar(101, 100, 99, 0, 60, priceBandScale, fmtPrice)
+	_, _, caption := MAPositionBar(101, 100, 99, 0, 60, priceBandScale, DefaultMALabels(), fmtPrice)
 	if !strings.Contains(caption, "5↘10") {
 		t.Errorf("caption missing 5↘10 trend token: %q", caption)
 	}
@@ -199,7 +199,7 @@ func TestMAPositionBar_CaptionDeathCross(t *testing.T) {
 // TestMAPositionBar_CaptionEqualMAs pins the noise-floor token: when
 // MA5 and MA10 are within ±0.1%, the trend token is `≈`.
 func TestMAPositionBar_CaptionEqualMAs(t *testing.T) {
-	_, _, caption := MAPositionBar(100, 100, 99, 0, 60, priceBandScale, fmtPrice)
+	_, _, caption := MAPositionBar(100, 100, 99, 0, 60, priceBandScale, DefaultMALabels(), fmtPrice)
 	if !strings.Contains(caption, "≈") {
 		t.Errorf("caption missing ≈ trend token for equal MAs: %q", caption)
 	}
@@ -209,7 +209,7 @@ func TestMAPositionBar_CaptionEqualMAs(t *testing.T) {
 // when price sits below an MA, that MA's caption arrow is ▼.
 func TestMAPositionBar_CaptionPriceBelowMA(t *testing.T) {
 	// Price=98 below both MAs.
-	_, _, caption := MAPositionBar(100, 101, 98, 0, 60, priceBandScale, fmtPrice)
+	_, _, caption := MAPositionBar(100, 101, 98, 0, 60, priceBandScale, DefaultMALabels(), fmtPrice)
 	if !strings.Contains(caption, "M5: ▼") {
 		t.Errorf("caption missing M5 ▼ arrow: %q", caption)
 	}

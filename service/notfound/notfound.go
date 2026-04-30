@@ -28,6 +28,7 @@ import (
 	"golang.org/x/image/font/basicfont"
 	"golang.org/x/image/math/fixed"
 
+	"github.com/cmj0121/imagelet/internal/i18n"
 	"github.com/cmj0121/imagelet/middleware"
 	"github.com/cmj0121/imagelet/render"
 )
@@ -106,8 +107,17 @@ func Handler(c *gin.Context) {
 	}
 	if mode == render.ModeHTML {
 		// Banner-only HTML — traceback path stays PNG/ASCII-exclusive
-		// (see package doc).
-		c.Data(http.StatusNotFound, "text/html; charset=utf-8", bannerHTMLBody)
+		// (see package doc). OG title localizes via the catalog so a
+		// chat-preview unfurl reads in the visitor's language even
+		// though the banner glyphs are Latin-only.
+		cat := i18n.CatalogFor(c)
+		og := render.OGMeta{
+			Title:     cat.NotFoundTitle,
+			ImageURL:  middleware.AbsoluteURL(c, "format=png"),
+			ImageType: "image/png",
+			PageURL:   middleware.AbsoluteURL(c, ""),
+		}
+		c.Data(http.StatusNotFound, "text/html; charset=utf-8", render.InjectOGMeta(bannerHTMLBody, og))
 		return
 	}
 

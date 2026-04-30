@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/cmj0121/imagelet/internal/i18n"
 	"github.com/cmj0121/imagelet/middleware"
 	"github.com/cmj0121/imagelet/service/stock"
 	"github.com/cmj0121/imagelet/service/stock/quote"
@@ -126,14 +127,21 @@ func freshQuote() quote.Quote {
 }
 
 // newRouter wires the middlewares the handler depends on (RegionDetector
-// for CF-IPCountry, ClientDetector for UA-driven mode) plus the stock
-// route. Default TWSE provider is the no-op; use newRouterWithTWSE for
-// TW-enrichment tests.
+// for CF-IPCountry, LocaleDetector for ?lang=/Accept-Language, ClientDetector
+// for UA-driven mode) plus the stock route. Default TWSE provider is the
+// no-op; use newRouterWithTWSE for TW-enrichment tests.
+//
+// LocaleDetector is installed AFTER RegionDetector so the CF-IPCountry-
+// based fallback step sees the country code. Tests that need a specific
+// locale set ?lang=… or CF-IPCountry: TW on the individual request —
+// not via a global default — so each test self-documents its locale
+// assumption.
 func newRouter(p quote.Provider) *gin.Engine {
 	r := gin.New()
 	r.Use(middleware.TimezoneDetector())
 	r.Use(middleware.DateOverrideDetector())
 	r.Use(middleware.RegionDetector())
+	r.Use(i18n.LocaleDetector())
 	r.Use(middleware.ClientDetector())
 	stock.Register(r, p, stock.NoopTWSE())
 	return r
@@ -146,6 +154,7 @@ func newRouterWithTWSE(p quote.Provider, tw twse.Provider) *gin.Engine {
 	r.Use(middleware.TimezoneDetector())
 	r.Use(middleware.DateOverrideDetector())
 	r.Use(middleware.RegionDetector())
+	r.Use(i18n.LocaleDetector())
 	r.Use(middleware.ClientDetector())
 	stock.Register(r, p, tw)
 	return r
@@ -673,24 +682,21 @@ func TestFormatPrice(t *testing.T) {
 
 func TestTitleFor(t *testing.T) {
 	cases := []struct {
-		name       string
-		symbol     string
-		shortName  string
-		longName   string
-		useEnglish bool
-		want       string
+		name      string
+		symbol    string
+		shortName string
+		longName  string
+		want      string
 	}{
-		{"name_present_cn_surface", "2330.TW", "台積電", "Taiwan Semiconductor", false, "2330.TW · 台積電"},
-		{"name_present_png_uses_long", "2330.TW", "台積電", "Taiwan Semiconductor", true, "2330.TW · Taiwan Semiconductor"},
-		{"png_falls_back_to_short_when_long_missing", "2330.TW", "台積電", "", true, "2330.TW · 台積電"},
-		{"cn_falls_back_to_long_when_short_missing", "AAPL", "", "Apple Inc.", false, "AAPL · Apple Inc."},
-		{"both_missing_returns_symbol_only", "FOO", "", "", false, "FOO"},
-		{"index_with_short_name", "^GSPC", "S&P 500", "S&P 500", false, "^GSPC · S&P 500"},
+		{"name_present_uses_short", "2330.TW", "台積電", "Taiwan Semiconductor", "2330.TW · 台積電"},
+		{"falls_back_to_long_when_short_missing", "AAPL", "", "Apple Inc.", "AAPL · Apple Inc."},
+		{"both_missing_returns_symbol_only", "FOO", "", "", "FOO"},
+		{"index_with_short_name", "^GSPC", "S&P 500", "S&P 500", "^GSPC · S&P 500"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			q := quote.Quote{Symbol: tc.symbol, Name: tc.shortName, LongName: tc.longName}
-			if got := stock.TitleForTest(tc.symbol, q, tc.useEnglish); got != tc.want {
+			if got := stock.TitleForTest(tc.symbol, q); got != tc.want {
 				t.Errorf("titleFor = %q, want %q", got, tc.want)
 			}
 		})
@@ -742,15 +748,15 @@ func TestServeTWPathIncludesEnrichment(t *testing.T) {
 // TestServeTWPathPNGUsesEnglishLabels pins that the PNG surface for a
 // TW visitor uses ENGLISH labels for the TW block. Pylon's PNG font
 // has zero CJK coverage, so emitting Chinese would render as tofu.
-// Decode the PNG and rely on a heuristic: pylon's PNG font WILL place
-// the EN strings as detectable bitmap rows; a smoke-level check is
-// enough since we already pinned the line content via the ASCII path.
+// Render path: SVG → embedded Sarasa Mono SC subset (see render/png.go),
+// which carries full CJK coverage. There is no separate font path for
+// PNG vs SVG, so the PNG body inherits the same CN labels the SVG path
+// pins via TestServeTWPathSVGUsesChineseLabels.
 //
-// Cheaper: we exercise the full handler, decode that the body is a
-// valid PNG of reasonable size (taller than the ASCII-only path
-// since the TW block adds ~3 rows), and trust the handler's
-// `useEnglish = mode == ModePNG` switch.
-func TestServeTWPathPNGUsesEnglishLabels(t *testing.T) {
+// Cheaper than glyph-extracting the bitmap: we exercise the full
+// handler, confirm the body is a valid PNG of meaningful size, and
+// rely on the SVG-label test to pin the actual label content.
+func TestServeTWPathPNGRendersTWBlock(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	q := freshQuote()
 	q.Symbol = "^TWII"
@@ -758,7 +764,7 @@ func TestServeTWPathPNGUsesEnglishLabels(t *testing.T) {
 	r := newRouterWithTWSE(fakeProvider{q: q}, fakeTWSE{d: freshTW()})
 
 	// Browser UA default is now HTML — the PNG path is reached via
-	// explicit ?format=png. Same EN-label rule still applies.
+	// explicit ?format=png.
 	req := httptest.NewRequest(http.MethodGet, "/stock?format=png", nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 	req.Header.Set("CF-IPCountry", "TW")
@@ -789,9 +795,8 @@ func TestServeTWPathPNGUsesEnglishLabels(t *testing.T) {
 // text/pylon surfaces. Browsers supply CJK glyphs via font fallback,
 // so SVG renders 籌碼面 / 外資 / 投信 / 自營 / 合計 / 信用餘額 /
 // 融資 / 融券 without tofu. Pins the closed-market path so the full
-// TW enrichment is asserted; PNG is the lone EN holdout
-// (basicfont.Face7x13 has zero CJK coverage); see
-// TestServeTWPathPNGUsesEnglishLabels.
+// TW enrichment is asserted; PNG inherits the same labels via the
+// SVG → Sarasa Mono SC raster path (see TestServeTWPathPNGRendersTWBlock).
 func TestServeTWPathSVGUsesChineseLabels(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	q := freshQuote()
@@ -1096,21 +1101,29 @@ func TestServeSymbolTrailingSlashRedirects(t *testing.T) {
 	}
 }
 
-// TestServeSymbolTWEnrichmentBySuffix pins that .TW / .TWO / ^TWII
-// activate the TW enrichment block regardless of CF-IPCountry. The
-// existing TW path-test verifies the rendered labels; here we just
-// pin that the twse provider was called.
+// TestServeSymbolTWEnrichmentBySuffix pins the two-axis gate on the TW
+// enrichment block: (1) the symbol must be TW (`.TW`/`.TWO`/`^TWII`),
+// and (2) the resolved locale must NOT be en (en strips TWSE rows
+// entirely — see service/stock's showTWSEEnrichment policy). Tests
+// set CF-IPCountry explicitly so the locale assumption is part of
+// each row's intent.
 func TestServeSymbolTWEnrichmentBySuffix(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cases := []struct {
 		name        string
 		path        string
-		country     string
+		country     string // drives both region routing and locale fallback
 		wantTWCalls int
 	}{
-		{"tse_suffix", "/stock/2330.tw", "US", 1},
-		{"otc_suffix", "/stock/5274.two", "JP", 1},
-		{"taiex_index", "/stock/%5ETWII", "DE", 1},
+		// TW symbols + TW visitor → enrichment.
+		{"tse_suffix_tw_visitor", "/stock/2330.tw", "TW", 1},
+		{"otc_suffix_tw_visitor", "/stock/5274.two", "TW", 1},
+		{"taiex_index_tw_visitor", "/stock/%5ETWII", "TW", 1},
+		// TW symbols + en visitor → enrichment stripped (locale gate).
+		{"tse_suffix_en_visitor", "/stock/2330.tw", "US", 0},
+		{"otc_suffix_en_visitor", "/stock/5274.two", "JP", 0},
+		{"taiex_index_en_visitor", "/stock/%5ETWII", "DE", 0},
+		// Non-TW symbols → no enrichment regardless of locale.
 		{"non_tw_symbol_in_tw_country", "/stock/aapl", "TW", 0},
 		{"index_us", "/stock/%5EGSPC", "TW", 0},
 	}
@@ -1167,6 +1180,10 @@ func TestServeSymbolPerStockOverlaysMarketWide(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/stock/2330.tw", nil)
 	req.Header.Set("User-Agent", "curl/8.4.0")
+	// Per-stock T86 rows are gated behind the TWSE enrichment block,
+	// which en strips. Set CF-IPCountry: TW so the locale resolves to
+	// zh-TW and the rows render.
+	req.Header.Set("CF-IPCountry", "TW")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
@@ -1209,6 +1226,9 @@ func TestServeSymbolPerStockUpstreamMissFallsBack(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/stock/9999.tw", nil)
 	req.Header.Set("User-Agent", "curl/8.4.0")
+	// TWSE rows are emitted only for non-en locales; pin TW so the
+	// market-wide fallback row actually renders.
+	req.Header.Set("CF-IPCountry", "TW")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 

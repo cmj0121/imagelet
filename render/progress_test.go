@@ -169,7 +169,7 @@ func TestYearProgressBoundaries(t *testing.T) {
 		{time.Date(2024, 12, 31, 12, 0, 0, 0, time.UTC), 100}, // leap year still 100%
 	}
 	for _, tc := range cases {
-		got := render.YearProgress(tc.date)
+		got := render.YearProgress(tc.date, "year")
 		if !strings.HasPrefix(got, "year ") {
 			t.Errorf("YearProgress(%s) = %q, want prefix 'year '", tc.date, got)
 		}

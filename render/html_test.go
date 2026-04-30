@@ -31,7 +31,7 @@ func TestWrapHTML_StillBaseline(t *testing.T) {
 // The keydown listener is the spec's central hook so we pin the literal
 // substring rather than a looser match.
 func TestWrapHTMLWithDateNav_HasScript(t *testing.T) {
-	out := WrapHTMLWithDateNav([]byte("<svg/>"))
+	out := WrapHTMLWithDateNav([]byte("<svg/>"), DefaultHelpLabels())
 	s := string(out)
 	if !strings.Contains(s, "<script>") {
 		t.Errorf("date-nav wrapper missing <script> block")
@@ -44,7 +44,7 @@ func TestWrapHTMLWithDateNav_HasScript(t *testing.T) {
 // TestWrapHTMLWithDateNav_HasNavButtons asserts both chevron buttons are
 // emitted with the data-imagelet-nav delta the script reads.
 func TestWrapHTMLWithDateNav_HasNavButtons(t *testing.T) {
-	out := WrapHTMLWithDateNav([]byte("<svg/>"))
+	out := WrapHTMLWithDateNav([]byte("<svg/>"), DefaultHelpLabels())
 	s := string(out)
 	for _, want := range []string{
 		`data-imagelet-nav="-1"`,
@@ -60,7 +60,7 @@ func TestWrapHTMLWithDateNav_HasNavButtons(t *testing.T) {
 // (id, role) and a couple of shortcut entries that act as a canary that
 // the <dl> survived editing.
 func TestWrapHTMLWithDateNav_HasHelpDialog(t *testing.T) {
-	out := WrapHTMLWithDateNav([]byte("<svg/>"))
+	out := WrapHTMLWithDateNav([]byte("<svg/>"), DefaultHelpLabels())
 	s := string(out)
 	for _, want := range []string{
 		`id="imagelet-help"`,
@@ -78,7 +78,7 @@ func TestWrapHTMLWithDateNav_HasHelpDialog(t *testing.T) {
 // keeps its </head> splice target intact and that OG insertion does not
 // truncate the trailing nav/script block.
 func TestWrapHTMLWithDateNav_OGInjectionStillWorks(t *testing.T) {
-	body := WrapHTMLWithDateNav([]byte("<svg/>"))
+	body := WrapHTMLWithDateNav([]byte("<svg/>"), DefaultHelpLabels())
 	out := InjectOGMeta(body, OGMeta{Title: "x", Description: "y"})
 	s := string(out)
 	for _, want := range []string{
@@ -99,7 +99,7 @@ func TestWrapHTMLWithDateNav_OGInjectionStillWorks(t *testing.T) {
 // dialog id, and the literal nav CSS class so a regression in either
 // fragment is caught.
 func TestInjectDateNav_AddsScriptAndStyle(t *testing.T) {
-	out := InjectDateNav(WrapHTML([]byte("<svg/>")))
+	out := InjectDateNav(WrapHTML([]byte("<svg/>")), DefaultHelpLabels())
 	s := string(out)
 	for _, want := range []string{
 		"<script>",
@@ -118,7 +118,7 @@ func TestInjectDateNav_AddsScriptAndStyle(t *testing.T) {
 // must survive any future "minify the CSS" pass. We pin only the literal
 // breakpoint string — the exact rules can evolve without breaking the test.
 func TestInjectDateNav_HasMobileMediaQuery(t *testing.T) {
-	out := InjectDateNav(WrapHTML([]byte("<svg/>")))
+	out := InjectDateNav(WrapHTML([]byte("<svg/>")), DefaultHelpLabels())
 	if !strings.Contains(string(out), "@media (max-width: 480px)") {
 		t.Errorf("InjectDateNav output missing mobile @media block:\n%s", out)
 	}
@@ -129,7 +129,7 @@ func TestInjectDateNav_HasMobileMediaQuery(t *testing.T) {
 // byte unchanged so callers can splice blindly without an HTML check.
 func TestInjectDateNav_NoOpWithoutTags(t *testing.T) {
 	in := []byte("plain text")
-	out := InjectDateNav(in)
+	out := InjectDateNav(in, DefaultHelpLabels())
 	if !bytes.Equal(in, out) {
 		t.Errorf("InjectDateNav mutated tag-less input:\nin:  %q\nout: %q", in, out)
 	}
@@ -139,7 +139,7 @@ func TestInjectDateNav_NoOpWithoutTags(t *testing.T) {
 // stack: nav DOM via InjectDateNav then OG meta via InjectOGMeta both
 // land in the final document with all splice targets intact.
 func TestInjectDateNav_ComposesWithOGMeta(t *testing.T) {
-	body := InjectDateNav(WrapHTML([]byte("<svg/>")))
+	body := InjectDateNav(WrapHTML([]byte("<svg/>")), DefaultHelpLabels())
 	out := InjectOGMeta(body, OGMeta{Title: "x", Description: "y"})
 	s := string(out)
 	for _, want := range []string{
@@ -158,7 +158,7 @@ func TestInjectDateNav_ComposesWithOGMeta(t *testing.T) {
 // refreshPastDatePill function name must all reach the rendered output so
 // the pill becomes visible client-side when ?date= is set.
 func TestInjectDateNav_HasPastDatePill(t *testing.T) {
-	out := InjectDateNav(WrapHTML([]byte("<svg/>")))
+	out := InjectDateNav(WrapHTML([]byte("<svg/>")), DefaultHelpLabels())
 	s := string(out)
 	for _, want := range []string{
 		`id="imagelet-pastdate"`,
@@ -175,7 +175,7 @@ func TestInjectDateNav_HasPastDatePill(t *testing.T) {
 // reaches the response so the pill never flashes for users without a
 // ?date= override. We pin the literal `display:none` in the style block.
 func TestInjectDateNav_PastDatePillStartsHidden(t *testing.T) {
-	out := InjectDateNav(WrapHTML([]byte("<svg/>")))
+	out := InjectDateNav(WrapHTML([]byte("<svg/>")), DefaultHelpLabels())
 	if !strings.Contains(string(out), "display:none") {
 		t.Errorf("InjectDateNav output missing display:none hint for pastdate pill:\n%s", out)
 	}
@@ -186,7 +186,7 @@ func TestInjectDateNav_PastDatePillStartsHidden(t *testing.T) {
 // the injected DOM, where InjectOGMeta and any future enrichment expect it.
 func TestWrapHTMLWithDateNav_PreservesSVG(t *testing.T) {
 	marker := []byte(`<svg id="probe"/>`)
-	out := WrapHTMLWithDateNav(marker)
+	out := WrapHTMLWithDateNav(marker, DefaultHelpLabels())
 
 	headEnd := bytes.Index(out, []byte("</head>"))
 	if headEnd < 0 {
