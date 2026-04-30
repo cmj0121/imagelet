@@ -6,8 +6,8 @@
     <path d="M 110 18 H 90 V 24 H 104 V 38 H 110 Z"/>
     <path d="M 18 110 H 38 V 104 H 24 V 90 H 18 Z"/>
     <path d="M 110 110 H 90 V 104 H 104 V 90 H 110 Z"/>
-    <rect x="46" y="46" width="36" height="9"/>
-    <rect x="59" y="55" width="10" height="18"/>
-    <rect x="46" y="73" width="36" height="9"/>
+    <rect x="44" y="28" width="40" height="8"/>
+    <rect x="56" y="36" width="16" height="56"/>
+    <rect x="44" y="92" width="40" height="8"/>
   </g>
 </svg>
