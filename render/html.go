@@ -74,6 +74,8 @@ var (
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>imagelet</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="alternate icon" type="image/x-icon" href="/favicon.ico">
 <style>html,body{margin:0;height:100%}body{display:flex;align-items:center;justify-content:center;background:` + SVGBackground + `;color:` + SVGForeground + `;padding:1rem;box-sizing:border-box}svg{width:100%;max-width:600px;height:auto}</style>
 </head>
 <body>

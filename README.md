@@ -40,6 +40,8 @@ Flags:
 | ------ | ---------------- | -------------------------------------------------------------------------- |
 | `GET`  | `/`              | `IMAGELET` banner with tagline and `<repo> · <version>` caption.           |
 | `GET`  | `/healthz`       | Returns `200 No Content`. Liveness probe — never renders, never allocates. |
+| `GET`  | `/favicon.ico`   | Multi-resolution (16/32/48) ICO of the brand mark, baked into the binary.  |
+| `GET`  | `/favicon.svg`   | SVG brand mark; referenced by `<link rel="icon">` in HTML responses.       |
 | `GET`  | `/now`           | Banner-rendered current time with date / weekday / zone caption.           |
 | `GET`  | `/stock`         | Banner-rendered regional stock-index quote.                                |
 | `GET`  | `/stock/:symbol` | Banner-rendered quote for a caller-specified Yahoo symbol.                 |

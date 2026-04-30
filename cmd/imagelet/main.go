@@ -25,6 +25,7 @@ import (
 	"github.com/cmj0121/imagelet/internal/i18n"
 	"github.com/cmj0121/imagelet/logger"
 	"github.com/cmj0121/imagelet/server"
+	"github.com/cmj0121/imagelet/service/favicon"
 	"github.com/cmj0121/imagelet/service/index"
 	"github.com/cmj0121/imagelet/service/notfound"
 	"github.com/cmj0121/imagelet/service/now"
@@ -96,6 +97,7 @@ func main() {
 	// supported locales × the existing per-symbol working set leaves
 	// headroom for hot routes without LRU thrash.
 	r.Use(htmlcache.NewWithCapacity(1024).WithLocale(i18n.LocaleString).Middleware())
+	favicon.Register(r)
 	index.Register(r, version)
 	now.Register(r)
 
