@@ -98,10 +98,6 @@ const (
 	// constant remains the fallback for tests and ad-hoc invocations.
 	priceBandScale = 0.03
 
-	// minPriceBand floors the adaptive band so a degenerate input
-	// (all markers equal to price) still yields a usable bar instead
-	// of dividing by zero.
-	minPriceBand = 0.005
 	// maxPriceBand caps the adaptive band so a single far-off marker
 	// (typically MA10 in a strongly trending stock) doesn't widen the
 	// scale enough to cluster every other marker at the center.
@@ -273,10 +269,12 @@ func priceOffsetCol(value, price float64, width int, band PriceBand) (col int, c
 // PriceBandFor returns an adaptive PriceBand fitted to `values`
 // relative to `price`: each side independently fit to its widest
 // abs offset × 1.10 (a 10% padding margin so the widest marker on
-// that side doesn't sit at the very edge). Floored at minPriceBand
-// per side (so degenerate all-equal-to-price inputs still yield a
-// usable bar) and capped at maxPriceBand per side (values beyond
-// the cap clip to the edge with ▶ / ◀).
+// that side doesn't sit at the very edge). Capped at maxPriceBand
+// per side — values beyond the cap clip to the edge with ▶ / ◀.
+// No floor: the band shrinks to fit even tight days, so a 0.1% high
+// lands near the right edge instead of clustering near center.
+// Sides with no values fall through `priceOffsetCol`'s zero-band
+// fallback to priceBandScale.
 //
 // Splitting per side keeps the bar visually balanced when the data
 // is asymmetric — e.g. a gap-down day where low / open are far
@@ -307,18 +305,16 @@ func PriceBandFor(price float64, values ...float64) PriceBand {
 		}
 	}
 	return PriceBand{
-		Lower: clampSide(maxLower * 1.10),
-		Upper: clampSide(maxUpper * 1.10),
+		Lower: capSide(maxLower * 1.10),
+		Upper: capSide(maxUpper * 1.10),
 	}
 }
 
-// clampSide applies the per-side floor / ceiling to a fitted band
-// value. Shared between PriceBandFor's two sides so the bounding
-// rules stay in lockstep.
-func clampSide(band float64) float64 {
-	if band < minPriceBand {
-		return minPriceBand
-	}
+// capSide caps a fitted band side at maxPriceBand so a single far-
+// off marker still triggers the ▶ / ◀ saturation sentinel instead of
+// silently widening the scale. Values <= 0 pass through; the caller
+// (priceOffsetCol) folds zero-band sides into priceBandScale.
+func capSide(band float64) float64 {
 	if band > maxPriceBand {
 		return maxPriceBand
 	}

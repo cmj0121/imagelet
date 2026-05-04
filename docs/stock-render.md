@@ -12,14 +12,15 @@ center column = the value the headline caption is reporting), with
 each bar's per-side band fitted independently to its own markers —
 so each half of the bar fills the width regardless of how lopsided
 the data is. The OHLC bar's band tracks open / high / low; the MA
-bar's band tracks MA5 / MA10. Lower / upper sides are each floored
-at ±0.5% (so a degenerate all-equal-to-price input still draws a
-usable bar) and capped at ±5% (anything past that clips to the edge
-with the `▶` / `◀` saturation sentinels). On a gap-down day where
-low and open sit near `-5%` while high is only modestly above
-price, the left side stretches to fit the open / low pair and the
-right side stretches independently to fit the high — both halves
-use the bar's full width.
+bar's band tracks MA5 / MA10. Lower / upper sides are each capped
+at ±5% (anything past that clips to the edge with the `▶` / `◀`
+saturation sentinels); there is no floor — the band shrinks to fit
+even tight days, so a 0.1% high lands near the right edge instead
+of clustering near center. On a gap-down day where low and open
+sit near `-5%` while high is only modestly above price, the left
+side stretches to fit the open / low pair and the right side
+stretches independently to fit the high — both halves use the
+bar's full width.
 
 ```text
                                 ▼
