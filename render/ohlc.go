@@ -314,8 +314,12 @@ func overlayPrevGlyph(top string, prevCol, width int) string {
 // Saturation: when an offset exceeds ±band, the marker bumps
 // one column inward and the edge column carries `◀` / `▶` so the
 // reader sees both the marker AND the off-screen indicator. Marker
-// priority on shared columns: `O` / `C` win over `L` / `H` — open and
-// close are the load-bearing OHLC values; L / H only bound the wick.
+// priority on shared columns is closed-state dependent. Closed:
+// `O` / `C` win over `L` / `H` — body fill carries the day's range,
+// the OC pair carries the more important read. Open: `L` / `H` win
+// over `O` because there is no body fill to frame the range, and a
+// hidden `L` would leave the `⟦` bracket pointing at nothing; the
+// `O` value stays readable from the OCP data row.
 func ohlcBarRow(openCol, centerCol, lowCol, highCol int, hasRange, closed, bullish, openClipL, openClipR, lowClipL, highClipR bool, width int) string {
 	body := ohlcBodyBull
 	if !bullish {
@@ -347,49 +351,56 @@ func ohlcBarRow(openCol, centerCol, lowCol, highCol int, hasRange, closed, bulli
 		}
 	}
 
-	// Range brackets. When the session is closed (body is drawn),
-	// L / H render only when they sit OUTSIDE the OC body span — the
-	// body fill at an interior column is itself the visual cue that
-	// L / H falls within open..close, so an explicit letter would be
-	// noise. When the session is still open, no body is drawn, so an
-	// interior L / H would otherwise vanish into wick — render them
-	// always, and frame the day's range with `⟦` / `⟧` just outside
-	// each marker so the L..H span reads as a bracketed unit. O still
-	// wins on shared columns because it's written after this block.
-	// Saturated sides skip the frame bracket: the ◀ / ▶ sentinel at
-	// the bar edge already carries the off-screen signal and there is
-	// no column to spare for the bracket.
+	lowBarCol, highBarCol := lowCol, highCol
 	if hasRange {
-		lowBarCol, highBarCol := lowCol, highCol
 		if lowClipL {
 			lowBarCol = 1
 		}
 		if highClipR {
 			highBarCol = width - 2
 		}
-		if !closed || lowBarCol < leftCol {
+	}
+
+	// Closed-market range markers: L / H render only when they sit
+	// OUTSIDE the OC body span — the body fill at an interior column
+	// is itself the visual cue that L / H falls within open..close,
+	// so an explicit letter would be noise. Drawn before O so O wins
+	// on any (rare) shared column.
+	if closed && hasRange {
+		if lowBarCol < leftCol {
 			runes[lowBarCol] = ohlcMarkerLow
 		}
-		if !closed || highBarCol > rightCol {
+		if highBarCol > rightCol {
 			runes[highBarCol] = ohlcMarkerHigh
-		}
-		if !closed {
-			if !lowClipL && lowBarCol-1 >= 0 {
-				runes[lowBarCol-1] = ohlcRangeOpen
-			}
-			if !highClipR && highBarCol+1 < width {
-				runes[highBarCol+1] = ohlcRangeClose
-			}
 		}
 	}
 
-	// O / C markers (top priority — written last). C is suppressed
-	// when the session is still open.
+	// O / C markers. C is suppressed when the session is still open.
 	if closed {
 		runes[centerCol] = ohlcMarkerClose
 	}
 	if openBarCol != centerCol {
 		runes[openBarCol] = ohlcMarkerOpen
+	}
+
+	// Open-market range markers + ⟦ / ⟧ frame. Written AFTER O so
+	// L / H take priority on shared columns (otherwise an L coincident
+	// with O would vanish, leaving the ⟦ bracket pointing at the O —
+	// the user reads the open value from the OCP row). Saturated sides
+	// skip the bracket since the ◀ / ▶ sentinel already carries the
+	// off-screen signal. Each bracket also skips when its target column
+	// would clobber O (interior L / H one cell from O): O is the more
+	// important read and the missing bracket on that side is preferable
+	// to silently erasing the open marker.
+	if !closed && hasRange {
+		runes[lowBarCol] = ohlcMarkerLow
+		runes[highBarCol] = ohlcMarkerHigh
+		if !lowClipL && lowBarCol-1 >= 0 && lowBarCol-1 != openBarCol {
+			runes[lowBarCol-1] = ohlcRangeOpen
+		}
+		if !highClipR && highBarCol+1 < width && highBarCol+1 != openBarCol {
+			runes[highBarCol+1] = ohlcRangeClose
+		}
 	}
 
 	// Saturation sentinels at the bar edges.

@@ -348,6 +348,32 @@ func TestOHLCBarClosedSessionInteriorLowSkipped(t *testing.T) {
 	}
 }
 
+// TestOHLCBarOpenSessionLowAtOpenStaysVisible pins the L-vs-O priority
+// inversion on the open-market path: when low and open land on the
+// same column (very common — gap-down bars where the day's low IS the
+// open, or strong rallies where the open and low are minutes apart),
+// the L letter must still be visible. Closed-market priority writes O
+// last so O wins; that would leave ⟦ pointing at the O column with no
+// L letter for the reader. Open-market priority inverts: L / H draw
+// AFTER O, so L wins on the shared column. Open's value remains in
+// the OCP data row.
+//
+// Fixture: Last=100, Open=98 (-2%, openCol=3), Low=98 (same as open,
+// lowCol=3), High=101 (+1%, highCol=17). With closed=false the col-3
+// cell must read `L`, not `O`.
+func TestOHLCBarOpenSessionLowAtOpenStaysVisible(t *testing.T) {
+	_, bar, _, _ := OHLCBar(98, 101, 98, 100, 0, false, 21, priceBandScale, DefaultOHLCLabels(), plain)
+	runes := []rune(bar)
+	if runes[3] != ohlcMarkerLow {
+		t.Errorf("col 3 should be L (must win over O on shared col when market is open), got %q in %q",
+			string(runes[3]), bar)
+	}
+	if runes[2] != ohlcRangeOpen {
+		t.Errorf("col 2 should be `⟦` even when L coincides with O, got %q in %q",
+			string(runes[2]), bar)
+	}
+}
+
 // TestOHLCBarOpenSessionRangeBrackets pins the open-market bracket
 // frame: when closed=false, `⟦` lands one column to the left of L
 // and `⟧` one column to the right of H, so the L..H span reads as a
