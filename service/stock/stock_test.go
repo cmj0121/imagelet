@@ -867,11 +867,16 @@ func TestServeTWPathOpenMarketHidesEndOfDay(t *testing.T) {
 	}
 	body := rec.Body.String()
 
-	// OHLC bar (Yahoo intra-day source) must still render.
-	for _, want := range []string{"O", "C"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("open-market body missing OHLC token %q\n--- body ---\n%s", want, body)
-		}
+	// OHLC bar (Yahoo intra-day source) must still render. The `O`
+	// marker stays at today's open offset, but the `C` glyph and its
+	// price string are suppressed because the close hasn't finalized
+	// — the OCP row now carries `收: -` (zh-TW close label) in place
+	// of a live price.
+	if !strings.Contains(body, "O") {
+		t.Errorf("open-market body missing OHLC `O` marker\n--- body ---\n%s", body)
+	}
+	if !strings.Contains(body, "收: -") {
+		t.Errorf("open-market body should suppress close price as `收: -`\n--- body ---\n%s", body)
 	}
 	// All TW enrichment labels must be absent — every row sources from
 	// an end-of-day TWSE endpoint.
