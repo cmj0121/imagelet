@@ -9,13 +9,18 @@ the 5- and 10-day moving averages, and the four institutional rows
 
 Both bars are centered on the current price (`C` glyph at the
 center column = the value the headline caption is reporting), with
-each bar's half-width pct band fitted to its own markers — so quiet
-days fill the bar instead of clustering near center. The OHLC bar's
-band tracks open / high / low / prev-close; the MA bar's band
-tracks MA5 / MA10 / prev-close. Bands are floored at ±0.5% (so a
-degenerate all-equal-to-price input still draws a usable bar) and
-capped at ±5% (anything past that clips to the edge with the
-`▶` / `◀` saturation sentinels):
+each bar's per-side band fitted independently to its own markers —
+so each half of the bar fills the width regardless of how lopsided
+the data is. The OHLC bar's band tracks open / high / low; the MA
+bar's band tracks MA5 / MA10. Lower / upper sides are each capped
+at ±5% (anything past that clips to the edge with the `▶` / `◀`
+saturation sentinels); there is no floor — the band shrinks to fit
+even tight days, so a 0.1% high lands near the right edge instead
+of clustering near center. On a gap-down day where low and open
+sit near `-5%` while high is only modestly above price, the left
+side stretches to fit the open / low pair and the right side
+stretches independently to fit the high — both halves use the
+bar's full width.
 
 ```text
                                 ▼
@@ -46,6 +51,12 @@ Markers past the fitted band edge clip to the bar edge with `▶`
 (right-clip) / `◀` (left-clip) saturation sentinels, with the marker
 glyph itself bumped one column inward so both stay visible.
 
+When today's open rounds to the same column as the current price
+(near-doji: a quiet day where `open ≈ last`), the `O` glyph wins on
+the shared column. The close value is still readable from the OCP
+data row, so showing today's open on the bar is the more useful
+read.
+
 ## Captions
 
 Both bars carry left-anchored data rows beneath them: the OHLC bar
@@ -64,17 +75,21 @@ When the market is open, today's intraday close is excluded from the
 MA so the price-vs-MA arrow stays meaningful (otherwise the price
 would be partly comparing against itself).
 
-Both bars also suppress the day's close while the session is still
+The OHLC bar suppresses the day's close while the session is still
 open — the trading day hasn't finalized so there is no real close
 yet. The `C` glyph drops from the OHLC bar (the center column stays
 as wick `─`), the bullish/bearish body fill drops with it, and the
-OCP data row renders `C: -` in place of the price. The MA bar
-applies the same rule at its own center column; the `M5: ▲ … M10:
-▲ … <trend>` caption is unaffected (it doesn't carry a close field).
-`O`, `H`, `L`, the `▼` previous-close marker, and the M5 / M10
-markers all keep their values — they remain valid intraday. Both
-bars still mathematically center on the live price, so every
-surviving marker stays positioned correctly relative to it.
+OCP data row renders `C: -` in place of the price. `O`, `H`, `L`,
+and the `▼` previous-close marker all keep their values — they
+remain valid intraday. The bar still mathematically centers on the
+live price, so every surviving marker stays positioned correctly
+relative to it.
+
+The MA bar keeps its `C` glyph at the center column regardless of
+market state. The MA bar's `C` is purely positional — the OHLC bar
+above already carries `C: -` to signal that the close hasn't
+finalized — and without it the bar collapses to floating MA labels
+when both M5 / M10 cluster on the same side of price.
 
 With the body fill gone, the OHLC bar gains a `⟦` / `⟧` frame just
 outside the L and H markers so the day's range still reads as a
