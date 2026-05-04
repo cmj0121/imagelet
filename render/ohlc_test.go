@@ -23,7 +23,7 @@ func plain(v float64) string {
 // fills cols 8-9 with `█` and the wick `─` spans the rest (legacy
 // fallback when high/low are 0).
 func TestOHLCBarBullish(t *testing.T) {
-	top, bar, ocp, hl := OHLCBar(99, 0, 0, 100, 0, 21, priceBandScale, DefaultOHLCLabels(), plain)
+	top, bar, ocp, hl := OHLCBar(99, 0, 0, 100, 0, true, 21, priceBandScale, DefaultOHLCLabels(), plain)
 	wantBar := "───────O██C──────────"
 	if bar != wantBar {
 		t.Errorf("bar:\n got %q\nwant %q", bar, wantBar)
@@ -51,7 +51,7 @@ func TestOHLCBarBullish(t *testing.T) {
 // glyphs (not literal `[` / `]`) avoid conflicting with pylon's
 // framed-box parser.
 func TestOHLCBarHLBrackets(t *testing.T) {
-	_, bar, _, hl := OHLCBar(99, 102, 98, 100, 0, 21, priceBandScale, DefaultOHLCLabels(), plain)
+	_, bar, _, hl := OHLCBar(99, 102, 98, 100, 0, true, 21, priceBandScale, DefaultOHLCLabels(), plain)
 	wantBar := "───L───O██C──────H───"
 	if bar != wantBar {
 		t.Errorf("bar:\n got %q\nwant %q", bar, wantBar)
@@ -67,7 +67,7 @@ func TestOHLCBarHLBrackets(t *testing.T) {
 // carries `◀` / `▶`. Last=100, Open=100 (doji at center), High=110
 // (+10%), Low=90 (-10%).
 func TestOHLCBarHLBracketsClipped(t *testing.T) {
-	_, bar, _, _ := OHLCBar(100, 110, 90, 100, 0, 21, priceBandScale, DefaultOHLCLabels(), plain)
+	_, bar, _, _ := OHLCBar(100, 110, 90, 100, 0, true, 21, priceBandScale, DefaultOHLCLabels(), plain)
 	runes := []rune(bar)
 	if runes[0] != maClipLeft {
 		t.Errorf("col 0 = %q, want ◀", string(runes[0]))
@@ -88,7 +88,7 @@ func TestOHLCBarHLBracketsClipped(t *testing.T) {
 // sits to the left of Open on the price axis.
 func TestOHLCBarBearish(t *testing.T) {
 	// Last=100, Open=101 (+1%) → openCol=13, body cols 11-12 hollow.
-	_, bar, _, _ := OHLCBar(101, 0, 0, 100, 0, 21, priceBandScale, DefaultOHLCLabels(), plain)
+	_, bar, _, _ := OHLCBar(101, 0, 0, 100, 0, true, 21, priceBandScale, DefaultOHLCLabels(), plain)
 	wantBar := "──────────C░░O───────"
 	if bar != wantBar {
 		t.Errorf("bar:\n got %q\nwant %q", bar, wantBar)
@@ -100,7 +100,7 @@ func TestOHLCBarBearish(t *testing.T) {
 // (open and close coincide), and the OCP row carries both values
 // (numerically identical here).
 func TestOHLCBarDoji(t *testing.T) {
-	_, bar, ocp, _ := OHLCBar(100, 0, 0, 100, 0, 21, priceBandScale, DefaultOHLCLabels(), plain)
+	_, bar, ocp, _ := OHLCBar(100, 0, 0, 100, 0, true, 21, priceBandScale, DefaultOHLCLabels(), plain)
 	// Center col 10 holds C; rest is wicks. No `O` glyph because open
 	// and close share the same column.
 	wantBar := "──────────C──────────"
@@ -117,7 +117,7 @@ func TestOHLCBarDoji(t *testing.T) {
 // and the upstream gate (quote.HasOHLC) should already exclude this
 // case, but the helper still fails closed.
 func TestOHLCBarLastNonPositive(t *testing.T) {
-	top, bar, ocp, hl := OHLCBar(100, 0, 0, 0, 0, 21, priceBandScale, DefaultOHLCLabels(), plain)
+	top, bar, ocp, hl := OHLCBar(100, 0, 0, 0, 0, true, 21, priceBandScale, DefaultOHLCLabels(), plain)
 	if top != "" || bar != "" || ocp != "" || hl != "" {
 		t.Errorf("last<=0 should return empties, got %q / %q / %q / %q", top, bar, ocp, hl)
 	}
@@ -126,7 +126,7 @@ func TestOHLCBarLastNonPositive(t *testing.T) {
 // TestOHLCBarTooNarrow rejects widths under 8 — there is not enough
 // room for the markers + at least one wick column on each side.
 func TestOHLCBarTooNarrow(t *testing.T) {
-	top, bar, ocp, hl := OHLCBar(99, 0, 0, 100, 0, 7, priceBandScale, DefaultOHLCLabels(), plain)
+	top, bar, ocp, hl := OHLCBar(99, 0, 0, 100, 0, true, 7, priceBandScale, DefaultOHLCLabels(), plain)
 	if top != "" || bar != "" || ocp != "" || hl != "" {
 		t.Errorf("narrow width should return empties, got %q / %q / %q / %q", top, bar, ocp, hl)
 	}
@@ -139,7 +139,7 @@ func TestOHLCBarTooNarrow(t *testing.T) {
 // 2 to centerCol-1 with bullish fill.
 func TestOHLCBarOpenSaturatesLeft(t *testing.T) {
 	// Open=90 → -10%, well below the -3% band.
-	_, bar, _, _ := OHLCBar(90, 0, 0, 100, 0, 21, priceBandScale, DefaultOHLCLabels(), plain)
+	_, bar, _, _ := OHLCBar(90, 0, 0, 100, 0, true, 21, priceBandScale, DefaultOHLCLabels(), plain)
 	runes := []rune(bar)
 	if runes[0] != maClipLeft {
 		t.Errorf("left edge = %q, want ◀ in %q", string(runes[0]), bar)
@@ -158,7 +158,7 @@ func TestOHLCBarOpenSaturatesLeft(t *testing.T) {
 // at col width-1 and the `O` marker bumps inward to col width-2.
 func TestOHLCBarOpenSaturatesRight(t *testing.T) {
 	// Open=110 → +10%, well above the +3% band.
-	_, bar, _, _ := OHLCBar(110, 0, 0, 100, 0, 21, priceBandScale, DefaultOHLCLabels(), plain)
+	_, bar, _, _ := OHLCBar(110, 0, 0, 100, 0, true, 21, priceBandScale, DefaultOHLCLabels(), plain)
 	runes := []rune(bar)
 	if runes[20] != maClipRight {
 		t.Errorf("right edge = %q, want ▶ in %q", string(runes[20]), bar)
@@ -175,7 +175,7 @@ func TestOHLCBarOpenSaturatesRight(t *testing.T) {
 // SVG render align the rows visually. OCP / HL are left-anchored
 // data rows and not width-padded.
 func TestOHLCBarBarRowEqualWidth(t *testing.T) {
-	top, bar, _, _ := OHLCBar(21180, 0, 0, 21234, 0, 45, priceBandScale, DefaultOHLCLabels(), plain)
+	top, bar, _, _ := OHLCBar(21180, 0, 0, 21234, 0, true, 45, priceBandScale, DefaultOHLCLabels(), plain)
 	if got := runeLen(top); got != 45 {
 		t.Errorf("top row width = %d, want 45 (%q)", got, top)
 	}
@@ -190,7 +190,7 @@ func TestOHLCBarBarRowEqualWidth(t *testing.T) {
 // The marker sits at column 18; the numeric value lives on the OCP
 // row as `P: 99` (no longer alongside the glyph).
 func TestOHLCBarPrevCloseMarker(t *testing.T) {
-	top, _, ocp, _ := OHLCBar(99, 0, 0, 100, 99.5, 45, priceBandScale, DefaultOHLCLabels(), plain)
+	top, _, ocp, _ := OHLCBar(99, 0, 0, 100, 99.5, true, 45, priceBandScale, DefaultOHLCLabels(), plain)
 	if !strings.Contains(top, string(ohlcMarkerPrev)) {
 		t.Errorf("top row missing ▼ marker: %q", top)
 	}
@@ -203,7 +203,7 @@ func TestOHLCBarPrevCloseMarker(t *testing.T) {
 // "missing" sentinel) renders a blank top row — no ▼ overlay — and
 // drops the `P:` field from the OCP row.
 func TestOHLCBarPrevCloseZeroSkipsMarker(t *testing.T) {
-	top, _, ocp, _ := OHLCBar(99, 0, 0, 100, 0, 45, priceBandScale, DefaultOHLCLabels(), plain)
+	top, _, ocp, _ := OHLCBar(99, 0, 0, 100, 0, true, 45, priceBandScale, DefaultOHLCLabels(), plain)
 	if strings.Contains(top, string(ohlcMarkerPrev)) {
 		t.Errorf("top row should have no ▼ when prev=0: %q", top)
 	}
@@ -220,7 +220,7 @@ func TestOHLCBarPrevCloseZeroSkipsMarker(t *testing.T) {
 // The ▼ glyph still appears on the top row.
 func TestOHLCBarPrevCloseSaturates(t *testing.T) {
 	// Prev=110 → +10%, way past the +3% band → clips to col width-1.
-	top, _, _, _ := OHLCBar(99, 0, 0, 100, 110, 45, priceBandScale, DefaultOHLCLabels(), plain)
+	top, _, _, _ := OHLCBar(99, 0, 0, 100, 110, true, 45, priceBandScale, DefaultOHLCLabels(), plain)
 	if !strings.Contains(top, string(ohlcMarkerPrev)) {
 		t.Errorf("clipped prev should still draw ▼: %q", top)
 	}
@@ -230,9 +230,66 @@ func TestOHLCBarPrevCloseSaturates(t *testing.T) {
 // the top row only — the bar row is unaffected even when prevClose
 // would land on the body fill column.
 func TestOHLCBarPrevCloseInsideBody(t *testing.T) {
-	_, bar, _, _ := OHLCBar(99, 0, 0, 100, 99.5, 45, priceBandScale, DefaultOHLCLabels(), plain)
+	_, bar, _, _ := OHLCBar(99, 0, 0, 100, 99.5, true, 45, priceBandScale, DefaultOHLCLabels(), plain)
 	if strings.Contains(bar, string(ohlcMarkerPrev)) {
 		t.Errorf("bar row must not carry ▼: %q", bar)
+	}
+}
+
+// TestOHLCBarOpenSessionSuppressesClose pins the open-market path:
+// when closed=false, the OCP row renders `C: -` instead of the live
+// price (the trading session hasn't finalized so the close doesn't
+// exist yet). The other fields (`O:`, `P:`) keep their numeric values.
+func TestOHLCBarOpenSessionSuppressesClose(t *testing.T) {
+	_, _, ocp, _ := OHLCBar(99, 0, 0, 100, 99.5, false, 21, priceBandScale, DefaultOHLCLabels(), plain)
+	if !strings.Contains(ocp, "C: -") {
+		t.Errorf("ocp should render `C: -` when market is open, got: %q", ocp)
+	}
+	if strings.Contains(ocp, "C: 100") {
+		t.Errorf("ocp must not carry the live close price when market is open: %q", ocp)
+	}
+	if !strings.Contains(ocp, "O: 99") {
+		t.Errorf("ocp should still carry `O:` value when market is open: %q", ocp)
+	}
+	if !strings.Contains(ocp, "P: 99") {
+		t.Errorf("ocp should still carry `P:` value when market is open: %q", ocp)
+	}
+}
+
+// TestOHLCBarOpenSessionSuppressesBarC pins the bar-side suppression:
+// when closed=false the C glyph at centerCol and the bullish/bearish
+// body fill are both suppressed (centerCol stays as wick `─`). O / H /
+// L and the ▼ overlay still render at their offset columns. Last=100,
+// Open=99 (-1%, openCol=7), High=102 (+2%, highCol=17), Low=98 (-2%,
+// lowCol=3), prev=99.5 (-0.5%, prevCol≈8). With closed=false there is
+// no `C` and no `█` body between cols 7 and 10.
+func TestOHLCBarOpenSessionSuppressesBarC(t *testing.T) {
+	top, bar, _, _ := OHLCBar(99, 102, 98, 100, 99.5, false, 21, priceBandScale, DefaultOHLCLabels(), plain)
+	runes := []rune(bar)
+	if runes[10] != ohlcWick {
+		t.Errorf("centerCol should be wick `─` when market is open, got %q in %q",
+			string(runes[10]), bar)
+	}
+	if strings.ContainsRune(bar, ohlcMarkerClose) {
+		t.Errorf("bar must not carry C glyph when market is open: %q", bar)
+	}
+	if strings.ContainsRune(bar, ohlcBodyBull) || strings.ContainsRune(bar, ohlcBodyBear) {
+		t.Errorf("bar must not carry body fill when market is open: %q", bar)
+	}
+	if runes[7] != ohlcMarkerOpen {
+		t.Errorf("col 7 should still be O when market is open, got %q in %q",
+			string(runes[7]), bar)
+	}
+	if runes[3] != ohlcMarkerLow {
+		t.Errorf("col 3 should still be L when market is open, got %q in %q",
+			string(runes[3]), bar)
+	}
+	if runes[17] != ohlcMarkerHigh {
+		t.Errorf("col 17 should still be H when market is open, got %q in %q",
+			string(runes[17]), bar)
+	}
+	if !strings.ContainsRune(top, ohlcMarkerPrev) {
+		t.Errorf("top row should still carry ▼ when market is open: %q", top)
 	}
 }
 

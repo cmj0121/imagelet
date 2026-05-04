@@ -141,7 +141,15 @@ const (
 // production callers compute an adaptive band via PriceBandFor so
 // markers fill the bar on quiet days. Non-positive band falls back
 // to priceBandScale.
-func OHLCBar(open, high, low, last, prevClose float64, width int, band float64, labels OHLCLabels, format func(float64) string) (top, bar, ocp, hl string) {
+//
+// `closed` reports whether the trading session is finalized. When
+// false (market still open), the close hasn't actually happened yet:
+// the `C` glyph and the bullish/bearish body fill are suppressed
+// from the bar, and the OCP row renders `C: -` in place of the
+// price. The bar still mathematically centers on `last` (so O / H /
+// L / ▼ stay positioned correctly relative to the live price); only
+// the visual close marker disappears.
+func OHLCBar(open, high, low, last, prevClose float64, closed bool, width int, band float64, labels OHLCLabels, format func(float64) string) (top, bar, ocp, hl string) {
 	if last <= 0 || width < 8 {
 		return "", "", "", ""
 	}
@@ -156,7 +164,7 @@ func OHLCBar(open, high, low, last, prevClose float64, width int, band float64, 
 		highCol, _, highClipR = priceOffsetCol(high, last, width, band)
 	}
 
-	bar = ohlcBarRow(openCol, centerCol, lowCol, highCol, hasRange,
+	bar = ohlcBarRow(openCol, centerCol, lowCol, highCol, hasRange, closed,
 		last >= open, openClipL, openClipR, lowClipL, highClipR, width)
 
 	top = strings.Repeat(" ", width)
@@ -166,7 +174,7 @@ func OHLCBar(open, high, low, last, prevClose float64, width int, band float64, 
 	}
 
 	sep := " " + labels.Sep + " "
-	ocp = formatOCPRow(open, last, prevClose, labels, sep, format)
+	ocp = formatOCPRow(open, last, prevClose, closed, labels, sep, format)
 	if hasRange {
 		hl = labels.High + ": " + format(high) + sep + labels.Low + ": " + format(low)
 	}
@@ -177,8 +185,16 @@ func OHLCBar(open, high, low, last, prevClose float64, width int, band float64, 
 // drops silently when prevClose is 0 — upstream didn't supply a
 // previous close (typical for newly-listed symbols or when the chart
 // range was too short to walk back to a prior session).
-func formatOCPRow(open, last, prevClose float64, labels OHLCLabels, sep string, format func(float64) string) string {
-	row := labels.Open + ": " + format(open) + sep + labels.Close + ": " + format(last)
+//
+// When closed is false, the close field renders `<Close>: -` instead
+// of the live price — the trading session hasn't finalized so there
+// is no real close yet.
+func formatOCPRow(open, last, prevClose float64, closed bool, labels OHLCLabels, sep string, format func(float64) string) string {
+	closeStr := format(last)
+	if !closed {
+		closeStr = "-"
+	}
+	row := labels.Open + ": " + format(open) + sep + labels.Close + ": " + closeStr
 	if prevClose > 0 {
 		row += sep + labels.Prev + ": " + format(prevClose)
 	}
@@ -267,20 +283,27 @@ func overlayPrevGlyph(top string, prevCol, width int) string {
 	return string(runes)
 }
 
-// ohlcBarRow builds the bar string. The close glyph (`C`) is always at
-// `centerCol`; `O` sits at the open's offset column. Plain letters
-// are used for L/H instead of `[...]` because pylon parses literal
-// brackets as a framed box and would re-frame the row.
+// ohlcBarRow builds the bar string. The close glyph (`C`) sits at
+// `centerCol` when the session is closed; `O` sits at the open's
+// offset column. Plain letters are used for L/H instead of `[...]`
+// because pylon parses literal brackets as a framed box and would
+// re-frame the row.
 //
 // On doji (openCol == centerCol) the row shows a single `C` glyph —
 // O and C coincide; the OCP data row still carries both identities.
+//
+// When closed is false the C glyph and the bullish/bearish body fill
+// are suppressed: the close hasn't happened yet, so the visual marker
+// would assert a value the data doesn't carry. The bar still uses
+// `last` for centering, so O / H / L / ▼ remain positioned relative
+// to the live price.
 //
 // Saturation: when an offset exceeds ±band, the marker bumps
 // one column inward and the edge column carries `◀` / `▶` so the
 // reader sees both the marker AND the off-screen indicator. Marker
 // priority on shared columns: `O` / `C` win over `L` / `H` — open and
 // close are the load-bearing OHLC values; L / H only bound the wick.
-func ohlcBarRow(openCol, centerCol, lowCol, highCol int, hasRange, bullish, openClipL, openClipR, lowClipL, highClipR bool, width int) string {
+func ohlcBarRow(openCol, centerCol, lowCol, highCol int, hasRange, closed, bullish, openClipL, openClipR, lowClipL, highClipR bool, width int) string {
 	body := ohlcBodyBull
 	if !bullish {
 		body = ohlcBodyBear
@@ -305,8 +328,10 @@ func ohlcBarRow(openCol, centerCol, lowCol, highCol int, hasRange, bullish, open
 	if openBarCol > centerCol {
 		leftCol, rightCol = centerCol, openBarCol
 	}
-	for i := leftCol + 1; i < rightCol; i++ {
-		runes[i] = body
+	if closed {
+		for i := leftCol + 1; i < rightCol; i++ {
+			runes[i] = body
+		}
 	}
 
 	// Range brackets — only drawn when they sit OUTSIDE the OC body
@@ -328,8 +353,11 @@ func ohlcBarRow(openCol, centerCol, lowCol, highCol int, hasRange, bullish, open
 		}
 	}
 
-	// O / C markers (top priority — written last).
-	runes[centerCol] = ohlcMarkerClose
+	// O / C markers (top priority — written last). C is suppressed
+	// when the session is still open.
+	if closed {
+		runes[centerCol] = ohlcMarkerClose
+	}
 	if openBarCol != centerCol {
 		runes[openBarCol] = ohlcMarkerOpen
 	}

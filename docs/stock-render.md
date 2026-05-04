@@ -63,3 +63,13 @@ returns fewer than 5 closed sessions (newly listed stocks).
 When the market is open, today's intraday close is excluded from the
 MA so the price-vs-MA arrow stays meaningful (otherwise the price
 would be partly comparing against itself).
+
+The OHLC bar also suppresses the day's close while the session is
+still open — the trading day hasn't finalized so there is no real
+close yet. The `C` glyph drops from the bar (the center column stays
+as wick `─`), the bullish/bearish body fill drops with it, and the
+OCP data row renders `C: -` in place of the price. `O`, `H`, `L`,
+and the `▼` previous-close marker keep their values; they remain
+valid intraday. The bar still mathematically centers on the live
+price, so all surviving markers stay positioned correctly relative
+to it.
