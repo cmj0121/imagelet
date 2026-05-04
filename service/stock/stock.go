@@ -640,7 +640,7 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 			Flat:        cat.MAFlat,
 			Sep:         cat.Separator,
 		}
-		top, bar, caption := render.MAPositionBar(q.MA10, q.MA5, q.Last, q.PrevClose, ohlcWidth, maBand, maLabels, formatPrice)
+		top, bar, caption := render.MAPositionBar(q.MA10, q.MA5, q.Last, q.PrevClose, q.IsClosed, ohlcWidth, maBand, maLabels, formatPrice)
 		if bar != "" {
 			if len(bs.ohlc) == 0 {
 				bs.ohlc = append(bs.ohlc, blankRow)

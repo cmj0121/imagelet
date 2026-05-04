@@ -64,12 +64,30 @@ When the market is open, today's intraday close is excluded from the
 MA so the price-vs-MA arrow stays meaningful (otherwise the price
 would be partly comparing against itself).
 
-The OHLC bar also suppresses the day's close while the session is
-still open — the trading day hasn't finalized so there is no real
-close yet. The `C` glyph drops from the bar (the center column stays
+Both bars also suppress the day's close while the session is still
+open — the trading day hasn't finalized so there is no real close
+yet. The `C` glyph drops from the OHLC bar (the center column stays
 as wick `─`), the bullish/bearish body fill drops with it, and the
-OCP data row renders `C: -` in place of the price. `O`, `H`, `L`,
-and the `▼` previous-close marker keep their values; they remain
-valid intraday. The bar still mathematically centers on the live
-price, so all surviving markers stay positioned correctly relative
-to it.
+OCP data row renders `C: -` in place of the price. The MA bar
+applies the same rule at its own center column; the `M5: ▲ … M10:
+▲ … <trend>` caption is unaffected (it doesn't carry a close field).
+`O`, `H`, `L`, the `▼` previous-close marker, and the M5 / M10
+markers all keep their values — they remain valid intraday. Both
+bars still mathematically center on the live price, so every
+surviving marker stays positioned correctly relative to it.
+
+With the body fill gone, the OHLC bar gains a `⟦` / `⟧` frame just
+outside the L and H markers so the day's range still reads as a
+single bracketed span. The frame uses U+27E6 / U+27E7 (mathematical
+white square brackets) — visually equivalent to literal `[` / `]`
+but pylon-safe; literal brackets would re-frame the bar row as a
+nested element. Saturated sides (where ◀ / ▶ already signal
+"value off-screen") skip the bracket since there's no column for it
+to occupy without erasing the sentinel.
+
+```text
+                                ▼
+────────────────⟦L───O────────────H⟧────────────────────────
+O: 4,460.00 · C: - · P: 4,450.00
+H: 4,520.00 · L: 4,440.00
+```

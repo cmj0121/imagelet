@@ -81,6 +81,16 @@ const (
 	ohlcMarkerLow  = 'L'
 	ohlcMarkerHigh = 'H'
 
+	// Range-frame brackets used on the open-market path, where the
+	// bullish/bearish body fill is suppressed: `⟦` and `⟧` (U+27E6 /
+	// U+27E7, mathematical white square brackets) hug the L / H markers
+	// to make the day's range visually unambiguous. Literal `[` / `]`
+	// would work here too but pylon parses them as a framed-box element
+	// and would re-frame the bar row; the white-square pair is
+	// indistinguishable to a reader and pylon-safe.
+	ohlcRangeOpen  = '⟦'
+	ohlcRangeClose = '⟧'
+
 	// priceBandScale is a conservative default half-width (±3%) for
 	// callers that don't compute an adaptive band via PriceBandFor.
 	// Production callers (service/stock) pass an adaptive band fitted
@@ -147,8 +157,11 @@ const (
 // the `C` glyph and the bullish/bearish body fill are suppressed
 // from the bar, and the OCP row renders `C: -` in place of the
 // price. The bar still mathematically centers on `last` (so O / H /
-// L / ▼ stay positioned correctly relative to the live price); only
-// the visual close marker disappears.
+// L / ▼ stay positioned correctly relative to the live price). With
+// no body fill to frame the day's range, the L / H markers gain
+// `⟦` / `⟧` brackets at the columns immediately outside them so the
+// session range reads as a single bracketed span; the brackets are
+// pylon-safe substitutes for literal `[` / `]`.
 func OHLCBar(open, high, low, last, prevClose float64, closed bool, width int, band float64, labels OHLCLabels, format func(float64) string) (top, bar, ocp, hl string) {
 	if last <= 0 || width < 8 {
 		return "", "", "", ""
@@ -334,9 +347,18 @@ func ohlcBarRow(openCol, centerCol, lowCol, highCol int, hasRange, closed, bulli
 		}
 	}
 
-	// Range brackets — only drawn when they sit OUTSIDE the OC body
-	// span; otherwise the O/C marker covers the same column and wins
-	// (the OC pair carries the more important read).
+	// Range brackets. When the session is closed (body is drawn),
+	// L / H render only when they sit OUTSIDE the OC body span — the
+	// body fill at an interior column is itself the visual cue that
+	// L / H falls within open..close, so an explicit letter would be
+	// noise. When the session is still open, no body is drawn, so an
+	// interior L / H would otherwise vanish into wick — render them
+	// always, and frame the day's range with `⟦` / `⟧` just outside
+	// each marker so the L..H span reads as a bracketed unit. O still
+	// wins on shared columns because it's written after this block.
+	// Saturated sides skip the frame bracket: the ◀ / ▶ sentinel at
+	// the bar edge already carries the off-screen signal and there is
+	// no column to spare for the bracket.
 	if hasRange {
 		lowBarCol, highBarCol := lowCol, highCol
 		if lowClipL {
@@ -345,11 +367,19 @@ func ohlcBarRow(openCol, centerCol, lowCol, highCol int, hasRange, closed, bulli
 		if highClipR {
 			highBarCol = width - 2
 		}
-		if lowBarCol < leftCol {
+		if !closed || lowBarCol < leftCol {
 			runes[lowBarCol] = ohlcMarkerLow
 		}
-		if highBarCol > rightCol {
+		if !closed || highBarCol > rightCol {
 			runes[highBarCol] = ohlcMarkerHigh
+		}
+		if !closed {
+			if !lowClipL && lowBarCol-1 >= 0 {
+				runes[lowBarCol-1] = ohlcRangeOpen
+			}
+			if !highClipR && highBarCol+1 < width {
+				runes[highBarCol+1] = ohlcRangeClose
+			}
 		}
 	}
 

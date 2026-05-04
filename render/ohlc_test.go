@@ -293,6 +293,126 @@ func TestOHLCBarOpenSessionSuppressesBarC(t *testing.T) {
 	}
 }
 
+// TestOHLCBarOpenSessionInteriorLowAndHigh pins that L / H still draw
+// when their offset columns fall INSIDE the would-be O..C body span
+// while the session is open. The closed-market path skips L / H here
+// because the body fill at the same column is itself the visual cue
+// that low/high sits within the day's range; with no body fill in the
+// open-market path, the letters are the only signal.
+//
+// Fixture: Last=100, Open=99 (-1%, openCol=7), Low=99.5 (-0.5%,
+// lowCol=8 — between openCol=7 and centerCol=10), High=100.5 (+0.5%,
+// highCol=12 — between centerCol=10 and right edge). With closed=false
+// the body span [openCol+1..centerCol-1] = cols 8-9 stays as wick `─`,
+// but L / H must still write themselves at cols 8 / 12. O still wins
+// on its own column because it is written after L/H.
+func TestOHLCBarOpenSessionInteriorLowAndHigh(t *testing.T) {
+	_, bar, _, _ := OHLCBar(99, 100.5, 99.5, 100, 0, false, 21, priceBandScale, DefaultOHLCLabels(), plain)
+	runes := []rune(bar)
+	if runes[7] != ohlcMarkerOpen {
+		t.Errorf("col 7 should still be O when market is open, got %q in %q",
+			string(runes[7]), bar)
+	}
+	if runes[8] != ohlcMarkerLow {
+		t.Errorf("col 8 should be L (interior low must render with closed=false), got %q in %q",
+			string(runes[8]), bar)
+	}
+	if runes[12] != ohlcMarkerHigh {
+		t.Errorf("col 12 should be H (interior high must render with closed=false), got %q in %q",
+			string(runes[12]), bar)
+	}
+	if runes[10] != ohlcWick {
+		t.Errorf("centerCol should remain wick when market is open, got %q in %q",
+			string(runes[10]), bar)
+	}
+	if strings.ContainsRune(bar, ohlcBodyBull) || strings.ContainsRune(bar, ohlcBodyBear) {
+		t.Errorf("bar must not carry body fill when market is open: %q", bar)
+	}
+}
+
+// TestOHLCBarClosedSessionInteriorLowSkipped pins the legacy gating:
+// when the session is closed and L falls inside the body span, the
+// body fill at that column is the visual signal — an explicit `L`
+// letter would be noise, so it is omitted. Mirrors the open-session
+// interior test as a regression guard so the closed-session contract
+// stays intact.
+func TestOHLCBarClosedSessionInteriorLowSkipped(t *testing.T) {
+	_, bar, _, _ := OHLCBar(99, 100.5, 99.5, 100, 0, true, 21, priceBandScale, DefaultOHLCLabels(), plain)
+	runes := []rune(bar)
+	if runes[8] == ohlcMarkerLow {
+		t.Errorf("interior low should be hidden by body fill when closed=true, got L at col 8 in %q", bar)
+	}
+	if runes[8] != ohlcBodyBull {
+		t.Errorf("col 8 should carry bullish body fill when closed=true, got %q in %q",
+			string(runes[8]), bar)
+	}
+}
+
+// TestOHLCBarOpenSessionRangeBrackets pins the open-market bracket
+// frame: when closed=false, `⟦` lands one column to the left of L
+// and `⟧` one column to the right of H, so the L..H span reads as a
+// bracketed range. Fixture: Last=100, Open=99 (-1%, openCol=7), High=
+// 102 (+2%, highCol=17), Low=98 (-2%, lowCol=3), prevClose=99.5.
+// Expected bracket positions: col 2 = ⟦, col 18 = ⟧.
+func TestOHLCBarOpenSessionRangeBrackets(t *testing.T) {
+	_, bar, _, _ := OHLCBar(99, 102, 98, 100, 99.5, false, 21, priceBandScale, DefaultOHLCLabels(), plain)
+	runes := []rune(bar)
+	if runes[2] != ohlcRangeOpen {
+		t.Errorf("col 2 should be `⟦` framing low, got %q in %q",
+			string(runes[2]), bar)
+	}
+	if runes[3] != ohlcMarkerLow {
+		t.Errorf("col 3 should be L (bracket must not displace marker), got %q in %q",
+			string(runes[3]), bar)
+	}
+	if runes[17] != ohlcMarkerHigh {
+		t.Errorf("col 17 should be H, got %q in %q", string(runes[17]), bar)
+	}
+	if runes[18] != ohlcRangeClose {
+		t.Errorf("col 18 should be `⟧` framing high, got %q in %q",
+			string(runes[18]), bar)
+	}
+}
+
+// TestOHLCBarClosedSessionNoBrackets pins that the closed-market path
+// does NOT carry the `⟦` / `⟧` frame — the body fill itself plays the
+// "this is the day's range" role there, so brackets would be visual
+// noise.
+func TestOHLCBarClosedSessionNoBrackets(t *testing.T) {
+	_, bar, _, _ := OHLCBar(99, 102, 98, 100, 99.5, true, 21, priceBandScale, DefaultOHLCLabels(), plain)
+	if strings.ContainsRune(bar, ohlcRangeOpen) {
+		t.Errorf("closed-market bar must not carry `⟦` frame: %q", bar)
+	}
+	if strings.ContainsRune(bar, ohlcRangeClose) {
+		t.Errorf("closed-market bar must not carry `⟧` frame: %q", bar)
+	}
+}
+
+// TestOHLCBarOpenSessionBracketsSkippedOnSaturation pins that when L
+// or H clip the band edge, the corresponding bracket is omitted —
+// the ◀ / ▶ saturation sentinel at col 0 / width-1 already conveys
+// "value off-screen" and the bracket has no column to occupy without
+// erasing it.
+func TestOHLCBarOpenSessionBracketsSkippedOnSaturation(t *testing.T) {
+	// Low=90 (-10%) clips left; High=110 (+10%) clips right.
+	_, bar, _, _ := OHLCBar(99, 110, 90, 100, 0, false, 21, priceBandScale, DefaultOHLCLabels(), plain)
+	runes := []rune(bar)
+	if runes[0] != maClipLeft {
+		t.Errorf("left edge should remain ◀ when low clips, got %q in %q",
+			string(runes[0]), bar)
+	}
+	if runes[20] != maClipRight {
+		t.Errorf("right edge should remain ▶ when high clips, got %q in %q",
+			string(runes[20]), bar)
+	}
+	if strings.ContainsRune(bar, ohlcRangeOpen) {
+		t.Errorf("clipped low should not carry `⟦` frame: %q", bar)
+	}
+	if strings.ContainsRune(bar, ohlcRangeClose) {
+		t.Errorf("clipped high should not carry `⟧` frame: %q", bar)
+	}
+}
+
 func runeLen(s string) int {
 	n := 0
 	for range s {
