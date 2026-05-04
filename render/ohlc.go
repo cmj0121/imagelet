@@ -75,19 +75,14 @@ const (
 	ohlcMarkerPrev  = '▼'
 	// Letter glyphs at the session-low / session-high offset columns —
 	// self-identifying like `O` / `C`, so the reader doesn't need a
-	// separate label row to disambiguate them. Pylon's `[...]` framed-
-	// box parser ruled out literal `[` / `]` brackets; plain letters
-	// have no special meaning in pylon source either.
+	// separate label row. Pylon parses literal `[...]` as a framed-box
+	// element, so plain letters and the U+27E6 / U+27E7 brackets below
+	// are used in their place throughout the bar row.
 	ohlcMarkerLow  = 'L'
 	ohlcMarkerHigh = 'H'
 
-	// Range-frame brackets used on the open-market path, where the
-	// bullish/bearish body fill is suppressed: `⟦` and `⟧` (U+27E6 /
-	// U+27E7, mathematical white square brackets) hug the L / H markers
-	// to make the day's range visually unambiguous. Literal `[` / `]`
-	// would work here too but pylon parses them as a framed-box element
-	// and would re-frame the bar row; the white-square pair is
-	// indistinguishable to a reader and pylon-safe.
+	// Range-frame brackets for the open-market path, where the body
+	// fill is suppressed and the L..H span needs visual framing.
 	ohlcRangeOpen  = '⟦'
 	ohlcRangeClose = '⟧'
 
@@ -336,30 +331,13 @@ func overlayPrevGlyph(top string, prevCol, width int) string {
 	return string(runes)
 }
 
-// ohlcBarRow builds the bar string. The close glyph (`C`) sits at
-// `centerCol` when the session is closed; `O` sits at the open's
-// offset column. Plain letters are used for L/H instead of `[...]`
-// because pylon parses literal brackets as a framed box and would
-// re-frame the row.
-//
-// On doji (openCol == centerCol) the row shows a single `C` glyph —
-// O and C coincide; the OCP data row still carries both identities.
-//
-// When closed is false the C glyph and the bullish/bearish body fill
-// are suppressed: the close hasn't happened yet, so the visual marker
-// would assert a value the data doesn't carry. The bar still uses
-// `last` for centering, so O / H / L / ▼ remain positioned relative
-// to the live price.
-//
-// Saturation: when an offset exceeds ±band, the marker bumps
-// one column inward and the edge column carries `◀` / `▶` so the
-// reader sees both the marker AND the off-screen indicator. Marker
-// priority on shared columns is closed-state dependent. Closed:
-// `O` / `C` win over `L` / `H` — body fill carries the day's range,
-// the OC pair carries the more important read. Open: `L` / `H` win
-// over `O` because there is no body fill to frame the range, and a
-// hidden `L` would leave the `⟦` bracket pointing at nothing; the
-// `O` value stays readable from the OCP data row.
+// ohlcBarRow builds the bar string. Marker priority on shared columns
+// is closed-state dependent. Closed: `O` / `C` win over `L` / `H` —
+// body fill already carries the day's range, the OC pair carries the
+// more important read. Open: `L` / `H` win over `O` so a hidden `L`
+// doesn't leave the `⟦` bracket pointing at nothing; the `O` value
+// stays readable from the OCP data row. On doji (openCol == centerCol)
+// the row shows a single `O` (O wins over C on the shared column).
 func ohlcBarRow(openCol, centerCol, lowCol, highCol int, hasRange, closed, bullish, openClipL, openClipR, lowClipL, highClipR bool, width int) string {
 	body := ohlcBodyBull
 	if !bullish {
@@ -401,11 +379,8 @@ func ohlcBarRow(openCol, centerCol, lowCol, highCol int, hasRange, closed, bulli
 		}
 	}
 
-	// Closed-market range markers: L / H render only when they sit
-	// OUTSIDE the OC body span — the body fill at an interior column
-	// is itself the visual cue that L / H falls within open..close,
-	// so an explicit letter would be noise. Drawn before O so O wins
-	// on any (rare) shared column.
+	// Closed-market: L / H draw only OUTSIDE the OC body span — the
+	// body fill is itself the cue that L / H sits within open..close.
 	if closed && hasRange {
 		if lowBarCol < leftCol {
 			runes[lowBarCol] = ohlcMarkerLow
@@ -415,27 +390,14 @@ func ohlcBarRow(openCol, centerCol, lowCol, highCol int, hasRange, closed, bulli
 		}
 	}
 
-	// O / C markers. C is suppressed when the session is still open.
-	// O is always drawn — including at centerCol — so the reader can
-	// see today's open even when it rounds to the same column as the
-	// current price (a near-doji on the closed-market path, or any
-	// quiet day where open ≈ price). When O and C land on the same
-	// column the O glyph wins; the close value is still readable
-	// from the OCP data row.
 	if closed {
 		runes[centerCol] = ohlcMarkerClose
 	}
 	runes[openBarCol] = ohlcMarkerOpen
 
-	// Open-market range markers + ⟦ / ⟧ frame. Written AFTER O so
-	// L / H take priority on shared columns (otherwise an L coincident
-	// with O would vanish, leaving the ⟦ bracket pointing at the O —
-	// the user reads the open value from the OCP row). Saturated sides
-	// skip the bracket since the ◀ / ▶ sentinel already carries the
-	// off-screen signal. Each bracket also skips when its target column
-	// would clobber O (interior L / H one cell from O): O is the more
-	// important read and the missing bracket on that side is preferable
-	// to silently erasing the open marker.
+	// Open-market: no body fill, so L / H always draw and gain a
+	// `⟦` / `⟧` frame to mark the day's range. Brackets skip when
+	// they'd land on a saturation sentinel or clobber O.
 	if !closed && hasRange {
 		runes[lowBarCol] = ohlcMarkerLow
 		runes[highBarCol] = ohlcMarkerHigh

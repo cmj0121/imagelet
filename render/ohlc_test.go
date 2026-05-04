@@ -111,16 +111,13 @@ func TestOHLCBarDoji(t *testing.T) {
 	}
 }
 
-// TestOHLCBarClosedNearDojiKeepsO pins the closed-market regression
-// the user reported on `/stock?region=tw`: when today's open is close
-// enough to current price that openCol rounds to centerCol, the prior
-// gate skipped the O glyph entirely. The fix always draws O; in this
-// near-doji case O lands at the same column as the implicit C, but
-// the operator still reads "today's open is here" from the bar
-// (closed value remains in the OCP row).
+// TestOHLCBarClosedNearDojiKeepsO pins that O always draws even when
+// today's open rounds to the same column as the live price — the C
+// value remains in the OCP row, but the bar must still carry an O
+// glyph so the reader sees today's open position.
 func TestOHLCBarClosedNearDojiKeepsO(t *testing.T) {
-	// Open=99.999 (offset −0.001%); with a 5% band it rounds to col 10
-	// (center). C is also written at col 10; O wins via write order.
+	// Open=99.999 (offset −0.001%) → rounds to col 10. C is written
+	// first; O wins on the shared column via write order.
 	_, bar, _, _ := OHLCBar(99.999, 0, 0, 100, 0, true, 21, SymmetricBand(priceBandScale), DefaultOHLCLabels(), plain)
 	runes := []rune(bar)
 	if runes[10] != ohlcMarkerOpen {
@@ -273,13 +270,10 @@ func TestOHLCBarOpenSessionSuppressesClose(t *testing.T) {
 	}
 }
 
-// TestOHLCBarOpenSessionSuppressesBarC pins the bar-side suppression:
-// when closed=false the C glyph at centerCol and the bullish/bearish
-// body fill are both suppressed (centerCol stays as wick `─`). O / H /
-// L and the ▼ overlay still render at their offset columns. Last=100,
-// Open=99 (-1%, openCol=7), High=102 (+2%, highCol=17), Low=98 (-2%,
-// lowCol=3), prev=99.5 (-0.5%, prevCol≈8). With closed=false there is
-// no `C` and no `█` body between cols 7 and 10.
+// TestOHLCBarOpenSessionSuppressesBarC pins the bar-side suppression
+// when closed=false: C glyph and body fill drop, centerCol stays as
+// wick. O / H / L and the ▼ overlay still render. Fixture columns:
+// openCol=7, lowCol=3, highCol=17 under SymmetricBand(0.03) at width 21.
 func TestOHLCBarOpenSessionSuppressesBarC(t *testing.T) {
 	top, bar, _, _ := OHLCBar(99, 102, 98, 100, 99.5, false, 21, SymmetricBand(priceBandScale), DefaultOHLCLabels(), plain)
 	runes := []rune(bar)
