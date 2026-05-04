@@ -98,17 +98,19 @@ func DefaultMALabels() MALabels {
 // `prevClose` is the previous trading day's close. Pass 0 to omit
 // the ▼ overlay.
 //
-// `band` is the half-width pct window of the price axis (e.g. 0.03
-// = ±3%). When stacking the MA bar under an OHLCBar pass the same
-// band to both so the columns align. Non-positive band falls back
-// to priceBandScale.
+// `band` is the per-side half-width window of the price axis (e.g.
+// `SymmetricBand(0.03)` for ±3%). Production callers compute an
+// asymmetric band via PriceBandFor so each half of the bar fits its
+// own widest marker independently. Non-positive sides fall back to
+// priceBandScale.
 //
-// `closed` reports whether the trading session is finalized. When
-// false (market still open), the close hasn't actually happened yet
-// and the `C` glyph at the center column is suppressed — same rule
-// the OHLCBar follows. The bar still uses `price` for centering, so
-// M5 / M10 / ▼ stay positioned correctly relative to the live price.
-func MAPositionBar(ma10, ma5, price, prevClose float64, closed bool, width int, band float64, labels MALabels, format func(float64) string) (top, bar, caption string) {
+// The `C` glyph at the center column anchors the bar visually to the
+// current price. Drawn even on the open-market path: the MA bar's `C`
+// is purely positional — the OHLC bar above already carries `C: -` in
+// its OCP row to signal that the close hasn't finalized — and without
+// it the bar collapses to floating text markers when both MAs land on
+// the same side of price.
+func MAPositionBar(ma10, ma5, price, prevClose float64, width int, band PriceBand, labels MALabels, format func(float64) string) (top, bar, caption string) {
 	if ma10 <= 0 || ma5 <= 0 || price <= 0 {
 		return "", "", ""
 	}
@@ -132,19 +134,14 @@ func MAPositionBar(ma10, ma5, price, prevClose float64, closed bool, width int, 
 	// Place text markers in priority order: M5 first (lowest priority),
 	// then M10 (overwrites M5 on overlap — the more stable, longer-term
 	// reference takes precedence in tight clusters), then C at center
-	// (always wins when written; the price reference is the load-bearing
-	// read). C is suppressed when the session is still open — the close
-	// hasn't happened yet, so no marker claims the center column and
-	// any M10 / M5 that lands there keeps it.
+	// (always wins; the price reference is the load-bearing read).
 	ma5Start := textMarkerStart(ma5Col, len(labels.M5), ma5ClipL, ma5ClipR, width)
 	writeRunes(barRunes, labels.M5, ma5Start)
 
 	ma10Start := textMarkerStart(ma10Col, len(labels.M10), ma10ClipL, ma10ClipR, width)
 	writeRunes(barRunes, labels.M10, ma10Start)
 
-	if closed {
-		barRunes[centerCol] = ohlcMarkerClose
-	}
+	barRunes[centerCol] = ohlcMarkerClose
 
 	// Saturation sentinels — only when at least one MA clipped. Bumping
 	// inside textMarkerStart already ensures the text doesn't sit on

@@ -109,6 +109,25 @@ const (
 	maxPriceBand = 0.05
 )
 
+// PriceBand is the per-side half-width of the bar's price axis,
+// expressed as a fractional offset from `last`. `Lower` covers values
+// below `last` (open / low / negative-side MAs); `Upper` covers values
+// above (high / positive-side MAs). Splitting the band per side lets
+// each half of the bar fit its own widest marker, so a gap-down day
+// (low far below, high modestly above) uses the bar's full width on
+// both sides instead of compressing the smaller side toward center.
+type PriceBand struct {
+	Lower float64
+	Upper float64
+}
+
+// SymmetricBand returns a PriceBand with the same half-width on both
+// sides. Useful for tests and ad-hoc invocations that don't care about
+// per-side fit.
+func SymmetricBand(b float64) PriceBand {
+	return PriceBand{Lower: b, Upper: b}
+}
+
 // OHLCBar renders a price-relative range bar as four equal-width
 // strings:
 //
@@ -146,11 +165,12 @@ const (
 // `high` / `low` (when both > 0 with low <= high) drive the bracket
 // markers and the HL data row. Pass 0 for either to omit.
 //
-// `band` is the half-width pct window of the bar's price axis (e.g.
-// 0.03 = ±3%). Pass priceBandScale for the legacy fixed window;
-// production callers compute an adaptive band via PriceBandFor so
-// markers fill the bar on quiet days. Non-positive band falls back
-// to priceBandScale.
+// `band` is the per-side half-width window of the bar's price axis
+// (e.g. `SymmetricBand(0.03)` for ±3%). Production callers compute
+// an asymmetric band via PriceBandFor so each half of the bar fits
+// its own widest marker — gap-style days no longer compress the
+// quieter side toward center. A non-positive side falls back to
+// priceBandScale.
 //
 // `closed` reports whether the trading session is finalized. When
 // false (market still open), the close hasn't actually happened yet:
@@ -162,7 +182,7 @@ const (
 // `⟦` / `⟧` brackets at the columns immediately outside them so the
 // session range reads as a single bracketed span; the brackets are
 // pylon-safe substitutes for literal `[` / `]`.
-func OHLCBar(open, high, low, last, prevClose float64, closed bool, width int, band float64, labels OHLCLabels, format func(float64) string) (top, bar, ocp, hl string) {
+func OHLCBar(open, high, low, last, prevClose float64, closed bool, width int, band PriceBand, labels OHLCLabels, format func(float64) string) (top, bar, ocp, hl string) {
 	if last <= 0 || width < 8 {
 		return "", "", "", ""
 	}
@@ -223,18 +243,23 @@ func formatOCPRow(open, last, prevClose float64, closed bool, labels OHLCLabels,
 // Non-positive `price` returns the center column with no clipping —
 // the caller is expected to gate on `price > 0` before drawing, but
 // this conservative fallback keeps the helper from dividing by zero
-// on a degenerate input. Non-positive `band` falls back to the
-// priceBandScale default.
-func priceOffsetCol(value, price float64, width int, band float64) (col int, clipLeft, clipRight bool) {
+// on a degenerate input. The relevant side of `band` (Lower for
+// values below price, Upper for values above) is consulted; a non-
+// positive side falls back to the priceBandScale default.
+func priceOffsetCol(value, price float64, width int, band PriceBand) (col int, clipLeft, clipRight bool) {
 	centerCol := width / 2
 	if price <= 0 {
 		return centerCol, false, false
 	}
-	if band <= 0 {
-		band = priceBandScale
-	}
 	pctOffset := (value - price) / price
-	raw := float64(centerCol) + pctOffset/band*float64(centerCol)
+	side := band.Upper
+	if pctOffset < 0 {
+		side = band.Lower
+	}
+	if side <= 0 {
+		side = priceBandScale
+	}
+	raw := float64(centerCol) + pctOffset/side*float64(centerCol)
 	col = int(math.Round(raw))
 	if col < 0 {
 		return 0, true, false
@@ -245,33 +270,52 @@ func priceOffsetCol(value, price float64, width int, band float64) (col int, cli
 	return col, false, false
 }
 
-// PriceBandFor returns an adaptive half-width pct band fitted to
-// `values` relative to `price`: the largest absolute pct offset
-// across the non-zero values, plus a 10% padding margin so the
-// widest marker doesn't sit at the very edge. Floored at minPriceBand
-// (so degenerate all-equal-to-price inputs still yield a usable bar)
-// and capped at maxPriceBand (so a single far-off MA doesn't widen
-// the scale enough to cluster every other marker at center; values
-// beyond the cap clip to the edge with ▶ / ◀).
+// PriceBandFor returns an adaptive PriceBand fitted to `values`
+// relative to `price`: each side independently fit to its widest
+// abs offset × 1.10 (a 10% padding margin so the widest marker on
+// that side doesn't sit at the very edge). Floored at minPriceBand
+// per side (so degenerate all-equal-to-price inputs still yield a
+// usable bar) and capped at maxPriceBand per side (values beyond
+// the cap clip to the edge with ▶ / ◀).
+//
+// Splitting per side keeps the bar visually balanced when the data
+// is asymmetric — e.g. a gap-down day where low / open are far
+// below `last` but high is only modestly above. Each half of the
+// bar uses its full width independently. Columns are no longer
+// linear in price across the whole bar, but each half is internally
+// linear, and the bar is visually anchored at the center column =
+// `last`.
 //
 // Pass the values that should drive the spread — typically the
-// union of OHLC + prev-close + MA markers when sharing the band
-// across stacked bars so they decode column-by-column.
-func PriceBandFor(price float64, values ...float64) float64 {
+// non-`last` OHLC + MA markers per bar.
+func PriceBandFor(price float64, values ...float64) PriceBand {
 	if price <= 0 {
-		return priceBandScale
+		return PriceBand{Lower: priceBandScale, Upper: priceBandScale}
 	}
-	var maxAbs float64
+	var maxLower, maxUpper float64
 	for _, v := range values {
 		if v <= 0 {
 			continue
 		}
-		abs := math.Abs((v - price) / price)
-		if abs > maxAbs {
-			maxAbs = abs
+		offset := (v - price) / price
+		if offset < 0 {
+			if abs := -offset; abs > maxLower {
+				maxLower = abs
+			}
+		} else if offset > maxUpper {
+			maxUpper = offset
 		}
 	}
-	band := maxAbs * 1.10
+	return PriceBand{
+		Lower: clampSide(maxLower * 1.10),
+		Upper: clampSide(maxUpper * 1.10),
+	}
+}
+
+// clampSide applies the per-side floor / ceiling to a fitted band
+// value. Shared between PriceBandFor's two sides so the bounding
+// rules stay in lockstep.
+func clampSide(band float64) float64 {
 	if band < minPriceBand {
 		return minPriceBand
 	}
@@ -376,12 +420,16 @@ func ohlcBarRow(openCol, centerCol, lowCol, highCol int, hasRange, closed, bulli
 	}
 
 	// O / C markers. C is suppressed when the session is still open.
+	// O is always drawn — including at centerCol — so the reader can
+	// see today's open even when it rounds to the same column as the
+	// current price (a near-doji on the closed-market path, or any
+	// quiet day where open ≈ price). When O and C land on the same
+	// column the O glyph wins; the close value is still readable
+	// from the OCP data row.
 	if closed {
 		runes[centerCol] = ohlcMarkerClose
 	}
-	if openBarCol != centerCol {
-		runes[openBarCol] = ohlcMarkerOpen
-	}
+	runes[openBarCol] = ohlcMarkerOpen
 
 	// Open-market range markers + ⟦ / ⟧ frame. Written AFTER O so
 	// L / H take priority on shared columns (otherwise an L coincident
