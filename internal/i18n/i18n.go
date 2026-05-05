@@ -56,7 +56,10 @@ const (
 	LocaleZhTW
 	// LocaleZhCN is the Simplified Chinese (zh-CN) catalog. Default
 	// for CF-IPCountry ∈ {CN, SG}; matches Accept-Language zh-Hans and
-	// bare zh.
+	// (via the CLDR matcher) bare Accept-Language: zh. ?lang= callers
+	// must use "zh-CN" or "zh-Hans" — bare ?lang=zh routes to LocaleZhTW
+	// to keep the explicit-override path on the deployment's native
+	// script.
 	LocaleZhCN
 )
 
@@ -222,18 +225,22 @@ func resolveLocale(c *gin.Context) (Locale, bool) {
 // (LocaleEN, false) so the caller can fall through to the next
 // negotiation step rather than silently defaulting.
 //
-// Bare "zh" maps to LocaleZhCN per CLDR convention — the Unicode
-// project treats simplified as the script-default for ambiguous "zh"
-// inputs. Users wanting traditional must say "zh-TW" or "zh-Hant".
+// Bare "zh" maps to LocaleZhTW. imagelet's primary CJK audience reads
+// traditional script (TW market focus); a deliberate `?lang=zh`
+// override lands on the deployment's native script as the
+// least-surprising outcome. This diverges from CLDR's bare-zh →
+// simplified default — explicit user intent ranks above CLDR
+// canonical script. Callers who want simplified must say "zh-CN"
+// or "zh-Hans".
 func parseLocaleQuery(s string) (Locale, bool) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "":
 		return LocaleEN, false
 	case "en":
 		return LocaleEN, true
-	case "zh", "zh-cn", "zh-hans":
+	case "zh-cn", "zh-hans":
 		return LocaleZhCN, true
-	case "zh-tw", "zh-hant":
+	case "zh", "zh-tw", "zh-hant":
 		return LocaleZhTW, true
 	}
 	return LocaleEN, false

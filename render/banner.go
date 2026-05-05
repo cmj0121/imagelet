@@ -17,9 +17,12 @@ import (
 // Empty-headline normalization lives in BannerSource.
 //
 // SVG output is post-processed through PaintSVG so the rendered surface
-// uses the GitHub-dark palette by default (background rect + ink swap).
-// HTML mode wraps the painted SVG, so its inline figure inherits the same
-// theme.
+// uses the GitHub-dark palette by default (background rect + ink swap),
+// then through CoalesceSVGText so each row's fragmented <text> siblings
+// merge into one <text> with <tspan> children — Chromium's clipboard
+// serializer otherwise breaks rows across newlines on copy. HTML mode
+// wraps the painted, coalesced SVG, so its inline figure inherits the
+// same theme and copies cleanly.
 //
 // PNG rendering can fail (font init, encode error). Callers should branch
 // on err and fall back to ASCII to keep the response from 5xx-ing on a
@@ -43,11 +46,18 @@ func renderAST(ast pylon.AST, mode Mode) ([]byte, error) {
 		// font (JetBrains Mono); rasterizing the SVG gives us a
 		// single CJK-capable surface that matches the SVG view
 		// byte-for-byte in content.
+		//
+		// CoalesceSVGText is intentionally skipped on this path:
+		// the rasterizer reads <text> bodies via xml.Decoder which
+		// drops chardata once a child element appears, so tspan-
+		// wrapped runs would render as empty text. The PNG output
+		// never reaches a clipboard paste, so the Chromium-newline
+		// motivation doesn't apply here.
 		return RasterizeSVG(PaintSVG([]byte(pylon.RenderSVG(ast))))
 	case ModeSVG:
-		return PaintSVG([]byte(pylon.RenderSVG(ast))), nil
+		return CoalesceSVGText(PaintSVG([]byte(pylon.RenderSVG(ast)))), nil
 	case ModeHTML:
-		return WrapHTML(PaintSVG([]byte(pylon.RenderSVG(ast)))), nil
+		return WrapHTML(CoalesceSVGText(PaintSVG([]byte(pylon.RenderSVG(ast))))), nil
 	default:
 		return []byte(pylon.RenderASCII(ast) + "\n"), nil
 	}

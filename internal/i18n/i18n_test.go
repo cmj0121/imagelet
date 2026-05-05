@@ -193,9 +193,9 @@ func TestLocaleDetectorPrecedence(t *testing.T) {
 			wantLocale: "zh-CN",
 		},
 		{
-			name:       "lang-query-bare-zh-maps-to-cn",
+			name:       "lang-query-bare-zh-maps-to-tw",
 			url:        "/echo?lang=zh",
-			wantLocale: "zh-CN",
+			wantLocale: "zh-TW",
 		},
 		{
 			name:       "lang-query-zh-Hant",
@@ -454,7 +454,7 @@ func TestParseLocaleQueryEdgeCases(t *testing.T) {
 		{"   ", "en"}, // whitespace → empty after trim
 		{"en", "en"},
 		{"EN", "en"},
-		{"zh", "zh-CN"},
+		{"zh", "zh-TW"},
 		{"zh-CN", "zh-CN"},
 		{"zh-cn", "zh-CN"},
 		{"zh-Hans", "zh-CN"},
