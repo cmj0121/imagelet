@@ -20,12 +20,6 @@ reads traditional script (TW market focus), so a deliberate
 least-surprising outcome. Callers wanting simplified must say
 `?lang=zh-CN` or `?lang=zh-Hans` explicitly.
 
-Note: the `Accept-Language` matcher (step 2 below) still follows
-CLDR — `Accept-Language: zh` resolves to `zh-CN`. The divergence is
-intentional: `?lang=` is explicit user intent, where the deployment's
-audience overrides script-default convention; `Accept-Language` is
-browser-driven and where CLDR conventions are widely understood.
-
 HK and MO default to `zh-TW` because traditional script is the
 prevailing written form there. Cantonese-Mandarin terminology drift
 (financial-news vocabulary) is real but defensible at this granularity;
@@ -39,22 +33,31 @@ The `LocaleDetector` middleware resolves the request locale via:
    forms: `en`, `zh`, `zh-TW`, `zh-Hant`, `zh-CN`, `zh-Hans`,
    case-insensitive. Unrecognized values (including `ja`, `jp`, `fr`,
    garbage) are ignored and the chain proceeds.
-2. **`Accept-Language` header** — parsed through
-   `golang.org/x/text/language.NewMatcher` over
-   `[English, TraditionalChinese, SimplifiedChinese]`. The matcher's
-   confidence-aware routing keeps `zh-CN` → `zh-Hans` and `zh-TW` →
-   `zh-Hant` from collapsing onto the wrong script. No-confidence
-   matches (e.g. `Accept-Language: ja`, `*`, malformed) fall through.
-3. **`CF-IPCountry` header** — set by Cloudflare or whichever upstream
+2. **`CF-IPCountry` header** — set by Cloudflare or whichever upstream
    fronts the deployment. Two-letter ISO 3166-1 alpha-2 country codes:
    TW / HK / MO → `zh-TW`; CN / SG → `zh-CN`; everything else,
    including JP and US, falls through.
-4. **Fallback** — `en`.
+3. **Fallback** — `en`.
 
 `?lang=ja` is treated like an unrecognized value: the chain falls
 through to step 2, then step 3, and likely lands on `en`. Falling
 through to `zh-TW` would be wrong — Japanese readers prefer English
 over the wrong CJK script.
+
+### Why Accept-Language is not consulted
+
+A TW visitor on an English-UI browser sends
+`Accept-Language: en-US,en;q=0.9`. A CLDR matcher would lock that to
+`en` with high confidence and never reach `CF-IPCountry`, defeating
+the geo-default this service is built around. Trusting Cloudflare's
+geo signal over the browser's UI language matches the deployment's
+TW-market focus; users who want a different locale say so explicitly
+via `?lang=`.
+
+This is an intentional divergence from RFC 7231 content negotiation.
+The trade-off is that a Japanese tourist on a TW IP gets `zh-TW` UI
+unless they append `?lang=en` — accepted in exchange for the local
+audience getting the right script by default.
 
 ## Examples
 
@@ -63,12 +66,6 @@ over the wrong CJK script.
 curl https://imagelet.example.com/stock/2330.TW?lang=zh-TW
 curl https://imagelet.example.com/stock/2330.TW?lang=zh-CN
 curl https://imagelet.example.com/stock/2330.TW?lang=en
-
-# Browser-style negotiation
-curl -H 'Accept-Language: zh-TW,zh;q=0.9,en;q=0.5' \
-     https://imagelet.example.com/stock/2330.TW
-curl -H 'Accept-Language: zh-CN' \
-     https://imagelet.example.com/stock/2330.TW
 
 # CDN geo default
 curl -H 'CF-IPCountry: TW' https://imagelet.example.com/stock/2330.TW
@@ -119,14 +116,11 @@ locale fragment (`loc=en`, `loc=zh-TW`, `loc=zh-CN`). Three locales ×
 URL = at most 3× the per-URL working set; the LRU is sized 1024 to
 absorb the fan-out with headroom.
 
-`Vary: Accept-Language` is appended **only** when `Accept-Language`
-actually picked the locale (step 2 of negotiation). `?lang=` overrides
-skip Vary entirely — the URL itself differentiates the cache entry —
-and CF-IPCountry-only matches skip it too. This keeps the Vary
-contract minimal and bounds CDN cache fragmentation.
-
-The middleware owns the Vary header in a single post-`c.Next()` hook.
-Handlers do not need to remember to call it; new routes Just Work.
+`Vary: Accept-Language` is **not** emitted. The locale only varies
+with `?lang=` (which is part of the URL and so already keys the cache
+distinctly) and `CF-IPCountry` (which is geo-sticky per visitor and
+so doesn't need browser-level Vary). Skipping the header avoids
+fragmenting CDN edge caches by raw `Accept-Language` value.
 
 ### Upstream concurrency under multi-locale load
 
@@ -138,25 +132,6 @@ is **2–3×** baseline (en + zh-TW dominate; zh-CN is rare). The 4h
 provider-level cache TTL inside `service/stock/quote/cached` bounds
 the blast radius — only the first concurrent burst per locale per TTL
 window pays the cost.
-
-### Cloudflare normalization
-
-`Vary: Accept-Language` on Cloudflare fragments the edge cache by raw
-header value unless the zone is configured to normalize the header.
-Without normalization, every distinct browser `Accept-Language` string
-(including weight-list permutations) becomes its own cache entry, even
-though our matcher would resolve dozens of variants to the same locale.
-
-Configure the Cloudflare zone to:
-
-- Strip `Accept-Language` from the cache key for routes that don't
-  need locale-specific responses (e.g. `/healthz`, static assets), or
-- Apply a Cache Rule that normalizes `Accept-Language` to the matched
-  base locale (`zh-Hant`, `zh-Hans`, or `en`) before keying.
-
-The simpler operational stance is to honor `Vary: Accept-Language` only
-on `/stock`, `/stock/:symbol`, `/now`, and `/` — the routes that emit
-locale-aware HTML — and to bypass the header on `/healthz` entirely.
 
 ## Implementation map
 

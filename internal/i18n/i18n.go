@@ -20,28 +20,21 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
-	"golang.org/x/text/language"
 
 	"github.com/cmj0121/imagelet/middleware"
 )
 
-// localeKey and alInfluencedKey are the gin-context keys under which
-// LocaleDetector stores the resolved Locale and the
-// "Accept-Language influenced the choice" boolean. The "imagelet."
-// prefix namespaces them so they cannot collide with keys set by other
-// middlewares running on the same engine.
-const (
-	localeKey       = "imagelet.i18n.locale"
-	alInfluencedKey = "imagelet.i18n.al-influenced"
-)
+// localeKey is the gin-context key under which LocaleDetector stores
+// the resolved Locale. The "imagelet." prefix namespaces it so it
+// cannot collide with keys set by other middlewares running on the
+// same engine.
+const localeKey = "imagelet.i18n.locale"
 
-// HTTP header names this package reads or writes. Centralized so a
-// rename or audit grep finds every site at once.
-const (
-	headerAcceptLanguage  = "Accept-Language"
-	headerVary            = "Vary"
-	headerXImageletLocale = "X-Imagelet-Locale"
-)
+// headerXImageletLocale is the response header LocaleDetector writes
+// so operators can verify staged-rollout behavior with `curl -I` and
+// access logs can extract the resolved locale without re-parsing the
+// request.
+const headerXImageletLocale = "X-Imagelet-Locale"
 
 // Locale is the canonical identifier for a supported imagelet locale.
 // LocaleEN is the zero value and the safe fallback for unknown inputs.
@@ -52,14 +45,12 @@ const (
 	// step picks a CJK locale; also the fallback for ?lang=ja (deferred).
 	LocaleEN Locale = iota
 	// LocaleZhTW is the Traditional Chinese (zh-TW) catalog. Default
-	// for CF-IPCountry ∈ {TW, HK, MO}; matches Accept-Language zh-Hant.
+	// for CF-IPCountry ∈ {TW, HK, MO}; also the target of bare
+	// ?lang=zh / ?lang=zh-Hant.
 	LocaleZhTW
 	// LocaleZhCN is the Simplified Chinese (zh-CN) catalog. Default
-	// for CF-IPCountry ∈ {CN, SG}; matches Accept-Language zh-Hans and
-	// (via the CLDR matcher) bare Accept-Language: zh. ?lang= callers
-	// must use "zh-CN" or "zh-Hans" — bare ?lang=zh routes to LocaleZhTW
-	// to keep the explicit-override path on the deployment's native
-	// script.
+	// for CF-IPCountry ∈ {CN, SG}; also the target of ?lang=zh-CN /
+	// ?lang=zh-Hans.
 	LocaleZhCN
 )
 
@@ -100,20 +91,6 @@ func GetLocale(c *gin.Context) Locale {
 	return loc
 }
 
-// AcceptLanguageInfluenced reports whether the resolved Locale was
-// chosen via the Accept-Language header (rather than ?lang= or
-// CF-IPCountry). LocaleDetector reads this flag in its post-c.Next()
-// hook to decide whether to append "Accept-Language" to the Vary
-// header. Exported primarily for tests.
-func AcceptLanguageInfluenced(c *gin.Context) bool {
-	v, ok := c.Get(alInfluencedKey)
-	if !ok {
-		return false
-	}
-	flag, ok := v.(bool)
-	return ok && flag
-}
-
 // countryToLocale maps the visitor's ISO 3166-1 alpha-2 country code
 // (resolved by middleware.RegionDetector from CF-IPCountry) to a
 // default Locale. Only countries with a non-en preferred locale are
@@ -133,24 +110,6 @@ var countryToLocale = map[string]Locale{
 	"CN": LocaleZhCN, "SG": LocaleZhCN,
 }
 
-// matcher resolves an Accept-Language header value to one of the
-// supported locales. Built once at init from the canonical script
-// tags (zh-Hant / zh-Hans) so Accept-Language: zh-CN routes to
-// LocaleZhCN and Accept-Language: zh-TW routes to LocaleZhTW without
-// either accidentally collapsing onto the wrong script.
-//
-// matcherTags and matcherIndexToLocale are kept in lock-step: tag at
-// index i maps to locale at the same index in matcherIndexToLocale.
-var (
-	matcherTags = []language.Tag{
-		language.English,            // 0 → LocaleEN
-		language.TraditionalChinese, // 1 → LocaleZhTW (zh-Hant)
-		language.SimplifiedChinese,  // 2 → LocaleZhCN (zh-Hans)
-	}
-	matcherIndexToLocale = [...]Locale{LocaleEN, LocaleZhTW, LocaleZhCN}
-	matcher              = language.NewMatcher(matcherTags)
-)
-
 // LocaleDetector returns a gin middleware that resolves the request's
 // Locale and stashes it on the gin context. Must be installed AFTER
 // middleware.RegionDetector — the CF-IPCountry-based fallback step
@@ -160,64 +119,48 @@ var (
 //
 //  1. ?lang= query parameter — explicit user override. Recognized
 //     forms: en, zh, zh-TW, zh-Hant, zh-CN, zh-Hans (case-insensitive).
-//     Bare "zh" maps to zh-CN per CLDR convention. Unrecognized values
+//     Bare "zh" maps to zh-TW (TW market focus). Unrecognized values
 //     (including ja, jp) are ignored and the chain proceeds.
-//  2. Accept-Language header via golang.org/x/text/language.NewMatcher.
-//     Records al-influenced=true on success; this is the ONLY step
-//     that flips the flag.
-//  3. CF-IPCountry → countryToLocale lookup. TW/HK/MO → zh-TW;
+//  2. CF-IPCountry → countryToLocale lookup. TW/HK/MO → zh-TW;
 //     CN/SG → zh-CN; everything else falls through.
-//  4. LocaleEN.
+//  3. LocaleEN.
 //
-// After c.Next() returns, the middleware appends "Accept-Language" to
-// the response's Vary header IFF al-influenced was set. The Vary write
-// is wrapped in a defer so that even if a downstream handler panics
-// (and gin.Recovery converts it to a 500), the cache-correctness
-// contract still holds — the recovered response carries Vary just like
-// a normal one. Owning Vary here (rather than per-handler) keeps the
-// contract in one place — new routes and existing routes alike Just Work.
+// Accept-Language is intentionally NOT consulted. A TW visitor on an
+// English-UI browser sends Accept-Language: en-US,en;q=0.9 — the CLDR
+// matcher would lock that to LocaleEN with high confidence and never
+// reach CF-IPCountry, defeating the geo-default this service is built
+// around. Trusting Cloudflare's geo signal over the browser's UI
+// language matches the deployment's TW-market focus; users who want a
+// different locale say so explicitly via ?lang=.
 //
-// X-Imagelet-Locale is set unconditionally BEFORE c.Next() so handlers
-// can observe (and, in a hypothetical future, override) it. The header
-// value is bounded to the {"en","zh-TW","zh-CN"} enum from
-// Locale.String() — no PII, safe to log and to expose to operators
-// running `curl -I` against staged-rollout deployments.
+// X-Imagelet-Locale is set unconditionally so handlers can observe
+// (and, in a hypothetical future, override) it. The header value is
+// bounded to the {"en","zh-TW","zh-CN"} enum from Locale.String() —
+// no PII, safe to log and to expose to operators running `curl -I`
+// against staged-rollout deployments.
 func LocaleDetector() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		loc, alInfluenced := resolveLocale(c)
+		loc := resolveLocale(c)
 		c.Set(localeKey, loc)
-		c.Set(alInfluencedKey, alInfluenced)
 		c.Writer.Header().Set(headerXImageletLocale, loc.String())
 		if e := log.Debug(); e.Enabled() {
-			e.Stringer("locale", loc).Bool("al_influenced", alInfluenced).Msg("locale resolved")
+			e.Stringer("locale", loc).Msg("locale resolved")
 		}
-
-		defer func() {
-			if alInfluenced {
-				c.Writer.Header().Add(headerVary, headerAcceptLanguage)
-			}
-		}()
-
 		c.Next()
 	}
 }
 
-// resolveLocale runs the four-step negotiation. Split out from
+// resolveLocale runs the three-step negotiation. Split out from
 // LocaleDetector so unit tests can exercise the resolution logic
 // without spinning up a router.
-func resolveLocale(c *gin.Context) (Locale, bool) {
+func resolveLocale(c *gin.Context) Locale {
 	if loc, ok := parseLocaleQuery(c.Query("lang")); ok {
-		return loc, false
-	}
-	if al := c.GetHeader(headerAcceptLanguage); al != "" {
-		if loc, matched := matchAcceptLanguage(al); matched {
-			return loc, true
-		}
+		return loc
 	}
 	if loc, ok := countryToLocale[middleware.GetCountry(c)]; ok {
-		return loc, false
+		return loc
 	}
-	return LocaleEN, false
+	return LocaleEN
 }
 
 // parseLocaleQuery interprets a ?lang= value. Recognized forms below;
@@ -228,10 +171,8 @@ func resolveLocale(c *gin.Context) (Locale, bool) {
 // Bare "zh" maps to LocaleZhTW. imagelet's primary CJK audience reads
 // traditional script (TW market focus); a deliberate `?lang=zh`
 // override lands on the deployment's native script as the
-// least-surprising outcome. This diverges from CLDR's bare-zh →
-// simplified default — explicit user intent ranks above CLDR
-// canonical script. Callers who want simplified must say "zh-CN"
-// or "zh-Hans".
+// least-surprising outcome. Callers who want simplified must say
+// "zh-CN" or "zh-Hans".
 func parseLocaleQuery(s string) (Locale, bool) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "":
@@ -244,26 +185,6 @@ func parseLocaleQuery(s string) (Locale, bool) {
 		return LocaleZhTW, true
 	}
 	return LocaleEN, false
-}
-
-// matchAcceptLanguage runs the Accept-Language header through the
-// package matcher. Returns matched=false on parse error, empty input,
-// or no-confidence match (ja, fr, *, etc. with no zh/en signal) — so
-// the caller can fall through to CF-IPCountry rather than silently
-// resolving to LocaleEN.
-func matchAcceptLanguage(al string) (Locale, bool) {
-	tags, _, err := language.ParseAcceptLanguage(al)
-	if err != nil || len(tags) == 0 {
-		return LocaleEN, false
-	}
-	_, idx, conf := matcher.Match(tags...)
-	if conf == language.No {
-		return LocaleEN, false
-	}
-	if idx < 0 || idx >= len(matcherIndexToLocale) {
-		return LocaleEN, false
-	}
-	return matcherIndexToLocale[idx], true
 }
 
 // For returns the Catalog for the requested locale. Unknown locales

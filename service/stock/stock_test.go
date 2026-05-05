@@ -127,9 +127,9 @@ func freshQuote() quote.Quote {
 }
 
 // newRouter wires the middlewares the handler depends on (RegionDetector
-// for CF-IPCountry, LocaleDetector for ?lang=/Accept-Language, ClientDetector
-// for UA-driven mode) plus the stock route. Default TWSE provider is the
-// no-op; use newRouterWithTWSE for TW-enrichment tests.
+// for CF-IPCountry, LocaleDetector for ?lang=/CF-IPCountry-driven locale,
+// ClientDetector for UA-driven mode) plus the stock route. Default TWSE
+// provider is the no-op; use newRouterWithTWSE for TW-enrichment tests.
 //
 // LocaleDetector is installed AFTER RegionDetector so the CF-IPCountry-
 // based fallback step sees the country code. Tests that need a specific

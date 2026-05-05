@@ -71,9 +71,6 @@ func TestGetLocaleWithoutMiddleware(t *testing.T) {
 	if loc := i18n.GetLocale(c); loc != i18n.LocaleEN {
 		t.Errorf("GetLocale(no middleware) = %s, want en", loc)
 	}
-	if got := i18n.AcceptLanguageInfluenced(c); got {
-		t.Errorf("AcceptLanguageInfluenced(no middleware) = true, want false")
-	}
 	if s := i18n.LocaleString(c); s != "en" {
 		t.Errorf("LocaleString(no middleware) = %q, want \"en\"", s)
 	}
@@ -81,16 +78,13 @@ func TestGetLocaleWithoutMiddleware(t *testing.T) {
 
 // makeRouter assembles the production-shaped middleware chain
 // (RegionDetector → LocaleDetector) plus an echo handler that exposes
-// the resolved locale and AL-influenced flag for assertion.
+// the resolved locale for assertion.
 func makeRouter() *gin.Engine {
 	r := gin.New()
 	r.Use(middleware.RegionDetector())
 	r.Use(i18n.LocaleDetector())
 	r.GET("/echo", func(c *gin.Context) {
 		c.Header("X-Locale", i18n.GetLocale(c).String())
-		if i18n.AcceptLanguageInfluenced(c) {
-			c.Header("X-AL-Influenced", "yes")
-		}
 		c.Status(http.StatusOK)
 	})
 	return r
@@ -107,15 +101,16 @@ func send(r *gin.Engine, url string, headers map[string]string) *httptest.Respon
 }
 
 func TestLocaleDetectorPrecedence(t *testing.T) {
-	// ?lang= wins over Accept-Language wins over CF-IPCountry wins
-	// over the en default. Each row tightens the inputs from the row
-	// above to confirm the expected step picked the locale.
+	// ?lang= wins over CF-IPCountry wins over the en default. Each
+	// row tightens the inputs from the row above to confirm the
+	// expected step picked the locale. Accept-Language is no longer
+	// consulted — pin that explicitly with cases that set AL but
+	// expect CF-IPCountry to decide.
 	cases := []struct {
-		name             string
-		url              string
-		headers          map[string]string
-		wantLocale       string
-		wantALInfluenced bool
+		name       string
+		url        string
+		headers    map[string]string
+		wantLocale string
 	}{
 		{
 			name:       "default-en (no inputs)",
@@ -153,38 +148,22 @@ func TestLocaleDetectorPrecedence(t *testing.T) {
 			wantLocale: "en",
 		},
 		{
-			name:             "accept-language-zh-tw",
-			url:              "/echo",
-			headers:          map[string]string{"Accept-Language": "zh-TW"},
-			wantLocale:       "zh-TW",
-			wantALInfluenced: true,
-		},
-		{
-			name:             "accept-language-zh-cn",
-			url:              "/echo",
-			headers:          map[string]string{"Accept-Language": "zh-CN"},
-			wantLocale:       "zh-CN",
-			wantALInfluenced: true,
-		},
-		{
-			name:             "accept-language-en",
-			url:              "/echo",
-			headers:          map[string]string{"Accept-Language": "en"},
-			wantLocale:       "en",
-			wantALInfluenced: true,
-		},
-		{
-			name:             "accept-language-overrides-cf-ipcountry",
-			url:              "/echo",
-			headers:          map[string]string{"CF-IPCountry": "TW", "Accept-Language": "en"},
-			wantLocale:       "en",
-			wantALInfluenced: true,
-		},
-		{
-			name:       "accept-language-ja-falls-through-to-cf",
+			name:       "accept-language-ignored-zh-tw",
 			url:        "/echo",
-			headers:    map[string]string{"CF-IPCountry": "TW", "Accept-Language": "ja"},
-			wantLocale: "zh-TW", // matcher returns no-confidence on ja, falls to CF=TW
+			headers:    map[string]string{"Accept-Language": "zh-TW"},
+			wantLocale: "en", // AL no longer routes; no CF, no ?lang= → en
+		},
+		{
+			name:       "accept-language-ignored-en-with-cf-tw",
+			url:        "/echo",
+			headers:    map[string]string{"CF-IPCountry": "TW", "Accept-Language": "en-US,en;q=0.9"},
+			wantLocale: "zh-TW", // CF-IPCountry decides; en AL is ignored — the bug fix
+		},
+		{
+			name:       "accept-language-ignored-zh-cn-with-cf-tw",
+			url:        "/echo",
+			headers:    map[string]string{"CF-IPCountry": "TW", "Accept-Language": "zh-CN"},
+			wantLocale: "zh-TW", // CF wins; AL doesn't override geo
 		},
 		{
 			name:       "lang-query-overrides-everything",
@@ -236,25 +215,6 @@ func TestLocaleDetectorPrecedence(t *testing.T) {
 			headers:    map[string]string{"CF-IPCountry": "HK"},
 			wantLocale: "zh-TW",
 		},
-		{
-			name:       "accept-language-empty-falls-through",
-			url:        "/echo",
-			headers:    map[string]string{"CF-IPCountry": "TW", "Accept-Language": ""},
-			wantLocale: "zh-TW",
-		},
-		{
-			name:       "accept-language-malformed-falls-through",
-			url:        "/echo",
-			headers:    map[string]string{"CF-IPCountry": "TW", "Accept-Language": "zh-TW;q=invalid;;"},
-			wantLocale: "zh-TW",
-		},
-		{
-			name:             "accept-language-multi-tag",
-			url:              "/echo",
-			headers:          map[string]string{"Accept-Language": "fr-FR, ja;q=0.7, zh-TW;q=0.5"},
-			wantLocale:       "zh-TW",
-			wantALInfluenced: true,
-		},
 	}
 
 	r := makeRouter()
@@ -264,112 +224,37 @@ func TestLocaleDetectorPrecedence(t *testing.T) {
 			if got := w.Header().Get("X-Locale"); got != tc.wantLocale {
 				t.Errorf("X-Locale = %q, want %q", got, tc.wantLocale)
 			}
-			gotInfluenced := w.Header().Get("X-AL-Influenced") == "yes"
-			if gotInfluenced != tc.wantALInfluenced {
-				t.Errorf("AL-influenced = %v, want %v", gotInfluenced, tc.wantALInfluenced)
-			}
 		})
 	}
 }
 
-func TestLocaleDetectorVaryHeader(t *testing.T) {
-	// Vary: Accept-Language must appear iff the response was
-	// influenced by Accept-Language. Skipped for ?lang= (URL itself
-	// differentiates) and for CF-IPCountry-only paths (geo-derived
-	// default isn't AL-driven).
+func TestLocaleDetector_NoVaryAcceptLanguage(t *testing.T) {
+	// Accept-Language no longer influences the resolved locale, so
+	// LocaleDetector must NEVER append "Accept-Language" to the
+	// response Vary header. Regression guard against re-introducing
+	// AL-driven fragmentation of the CDN cache.
 	cases := []struct {
-		name     string
-		url      string
-		headers  map[string]string
-		wantVary bool
+		name    string
+		url     string
+		headers map[string]string
 	}{
-		{
-			name:     "default-en — no Vary",
-			url:      "/echo",
-			wantVary: false,
-		},
-		{
-			name:     "cf-ipcountry-only — no Vary",
-			url:      "/echo",
-			headers:  map[string]string{"CF-IPCountry": "TW"},
-			wantVary: false,
-		},
-		{
-			name:     "lang-query — no Vary",
-			url:      "/echo?lang=zh-TW",
-			wantVary: false,
-		},
-		{
-			name:     "lang-query-overrides-AL — no Vary",
-			url:      "/echo?lang=en",
-			headers:  map[string]string{"Accept-Language": "zh-TW"},
-			wantVary: false,
-		},
-		{
-			name:     "accept-language-only — Vary set",
-			url:      "/echo",
-			headers:  map[string]string{"Accept-Language": "zh-TW"},
-			wantVary: true,
-		},
-		{
-			name:     "accept-language-overrides-cf — Vary set",
-			url:      "/echo",
-			headers:  map[string]string{"CF-IPCountry": "TW", "Accept-Language": "en"},
-			wantVary: true,
-		},
+		{name: "default-en", url: "/echo"},
+		{name: "cf-ipcountry-only", url: "/echo", headers: map[string]string{"CF-IPCountry": "TW"}},
+		{name: "lang-query", url: "/echo?lang=zh-TW"},
+		{name: "accept-language-set", url: "/echo", headers: map[string]string{"Accept-Language": "zh-TW"}},
+		{name: "accept-language-and-cf", url: "/echo", headers: map[string]string{"CF-IPCountry": "TW", "Accept-Language": "en"}},
 	}
 
 	r := makeRouter()
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := send(r, tc.url, tc.headers)
-			vary := w.Header().Values("Vary")
-			has := false
-			for _, v := range vary {
+			for _, v := range w.Header().Values("Vary") {
 				if v == "Accept-Language" {
-					has = true
-					break
+					t.Errorf("Vary contains Accept-Language; want absent (full Vary=%v)", w.Header().Values("Vary"))
 				}
 			}
-			if has != tc.wantVary {
-				t.Errorf("Vary contains Accept-Language = %v, want %v (full Vary=%v)", has, tc.wantVary, vary)
-			}
 		})
-	}
-}
-
-func TestLocaleDetector_VaryHeaderSurvivesPanic(t *testing.T) {
-	// If a downstream handler panics, gin.Recovery catches it and
-	// ships a 500. The Vary: Accept-Language hook must still fire on
-	// the recovered response — wrapping it in a defer (placed BEFORE
-	// c.Next()) is what makes that work. Regression guard for the
-	// post-c.Next() form, where panic skipped the Vary write entirely.
-	r := gin.New()
-	r.Use(gin.Recovery()) // installed first so it can catch downstream panics
-	r.Use(middleware.RegionDetector())
-	r.Use(i18n.LocaleDetector())
-	r.GET("/boom", func(c *gin.Context) {
-		panic("simulated handler failure")
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/boom", nil)
-	req.Header.Set("Accept-Language", "zh-TW")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500 from gin.Recovery, got %d", w.Code)
-	}
-	vary := w.Header().Values("Vary")
-	has := false
-	for _, v := range vary {
-		if v == "Accept-Language" {
-			has = true
-			break
-		}
-	}
-	if !has {
-		t.Errorf("Vary: Accept-Language missing on recovered 500 response (full Vary=%v)", vary)
 	}
 }
 
@@ -403,16 +288,10 @@ func TestLocaleDetector_XImageletLocaleHeader(t *testing.T) {
 			want:    "zh-CN",
 		},
 		{
-			name:    "accept-language-zh-tw",
+			name:    "accept-language-ignored",
 			url:     "/echo",
 			headers: map[string]string{"Accept-Language": "zh-TW"},
-			want:    "zh-TW",
-		},
-		{
-			name:    "accept-language-zh-cn",
-			url:     "/echo",
-			headers: map[string]string{"Accept-Language": "zh-CN"},
-			want:    "zh-CN",
+			want:    "en", // AL no longer routes
 		},
 		{
 			name: "lang-query-zh-tw",
