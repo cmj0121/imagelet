@@ -8,15 +8,23 @@ English (`en`), Traditional Chinese (`zh-TW`), and Simplified Chinese
 
 ## Supported locales
 
-| Locale              | BCP-47 tag(s) accepted   | Country defaults              | Script      |
-| ------------------- | ------------------------ | ----------------------------- | ----------- |
-| English             | `en`                     | (anything not below; default) | Latin       |
-| Traditional Chinese | `zh-TW`, `zh-Hant`       | TW, HK, MO                    | Traditional |
-| Simplified Chinese  | `zh-CN`, `zh-Hans`, `zh` | CN, SG                        | Simplified  |
+| Locale              | BCP-47 tag(s) accepted (via `?lang=`) | Country defaults              | Script      |
+| ------------------- | ------------------------------------- | ----------------------------- | ----------- |
+| English             | `en`                                  | (anything not below; default) | Latin       |
+| Traditional Chinese | `zh-TW`, `zh-Hant`, `zh`              | TW, HK, MO                    | Traditional |
+| Simplified Chinese  | `zh-CN`, `zh-Hans`                    | CN, SG                        | Simplified  |
 
-Bare `zh` resolves to `zh-CN` per Unicode CLDR convention — the project
-treats simplified as the script-default for ambiguous `zh` inputs.
-Callers wanting traditional must say `zh-TW` or `zh-Hant` explicitly.
+Bare `?lang=zh` resolves to `zh-TW`. imagelet's primary CJK audience
+reads traditional script (TW market focus), so a deliberate
+`?lang=zh` override lands on the deployment's native script as the
+least-surprising outcome. Callers wanting simplified must say
+`?lang=zh-CN` or `?lang=zh-Hans` explicitly.
+
+Note: the `Accept-Language` matcher (step 2 below) still follows
+CLDR — `Accept-Language: zh` resolves to `zh-CN`. The divergence is
+intentional: `?lang=` is explicit user intent, where the deployment's
+audience overrides script-default convention; `Accept-Language` is
+browser-driven and where CLDR conventions are widely understood.
 
 HK and MO default to `zh-TW` because traditional script is the
 prevailing written form there. Cantonese-Mandarin terminology drift
