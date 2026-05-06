@@ -61,3 +61,61 @@ which:
 - wraps response bodies in `MaxBytesReader` — 1 MiB for Yahoo, 8
   MiB for TWSE / TAIFEX — so a hostile or misbehaving upstream
   can't exhaust memory.
+
+## `/github/*`
+
+A public unauthenticated `/github/*` route plus an optional
+5000-req/hr `GITHUB_TOKEN` is, by construction, a GitHub-data
+exfiltration tool by proxy. The mitigations below are the deployed
+posture; tune in code if your topology disagrees.
+
+### Per-IP rate limit
+
+`/github/*` is wrapped by a token-bucket middleware
+(`middleware/iplimit`) at **30 requests/min/IP**, burst 30, refill
+1 token every 2s. When a bucket empties, the middleware short-circuits
+to the same deterministic banner the upstream-rate-limited path emits
+— status `200`, `Cache-Control: public, max-age=60`, body containing
+`RATE LIMITED`. The two paths are intentionally indistinguishable to
+the caller; only an internal log line distinguishes per-IP from
+upstream.
+
+The IP source is, in order:
+
+1. `CF-Connecting-IP` request header (the trusted-proxy header
+   Cloudflare sets and strips on inbound).
+2. The TCP peer's `RemoteAddr` host portion.
+
+The middleware does **not** call `c.ClientIP()`. Gin's default
+`TrustedProxies` is `[0.0.0.0/0]`, which walks every value in
+`X-Forwarded-For` — that makes the gin-derived client IP spoofable by
+any caller setting the header. `server.New` does not call
+`SetTrustedProxies`, so the permissive default is in force; the
+limiter sidesteps it entirely. `RemoteAddr` is the unspoofable TCP
+peer, so the bare-deploy case is also covered.
+
+### Private-repo guard
+
+`/github/:user/:repo` returns `404 Not Found` for any repo whose
+upstream payload carries `private: true`, regardless of HTTP status
+or what the configured `GITHUB_TOKEN` could see. The public route
+never leaks private repo data even when the token is issued in the
+configurer's own organization. Treat the configured token as
+least-privileged read-only public.
+
+### `robots.txt`
+
+`GET /robots.txt` serves `User-agent: *` / `Disallow: /github/`.
+High-frequency crawlers honour it; the Disallow dissuades drive-by
+SEO enumeration of GitHub login space. The body is hardcoded in
+`server/server.go`; there is no static directory.
+
+### `GITHUB_TOKEN` handling
+
+The token is sourced **only** from the environment, never a CLI flag
+— a flag value would land in `ps -ef` and shell history. Outbound
+debug logs go through a `redactedHeaders` helper that blanks
+`Authorization` and `Cookie` before any header dump, so a
+`-vv` run on a misbehaving upstream does not leak the token. The
+startup log records the resolved mode (authed / unauthed) at info
+level.

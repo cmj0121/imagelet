@@ -23,9 +23,14 @@ import (
 
 	"github.com/cmj0121/imagelet/internal/htmlcache"
 	"github.com/cmj0121/imagelet/internal/i18n"
+	"github.com/cmj0121/imagelet/internal/safehttp"
 	"github.com/cmj0121/imagelet/logger"
+	"github.com/cmj0121/imagelet/middleware/iplimit"
 	"github.com/cmj0121/imagelet/server"
 	"github.com/cmj0121/imagelet/service/favicon"
+	"github.com/cmj0121/imagelet/service/github"
+	githubprofile "github.com/cmj0121/imagelet/service/github/profile"
+	githubcached "github.com/cmj0121/imagelet/service/github/profile/cached"
 	"github.com/cmj0121/imagelet/service/index"
 	"github.com/cmj0121/imagelet/service/notfound"
 	"github.com/cmj0121/imagelet/service/now"
@@ -119,6 +124,36 @@ func main() {
 	}
 	stock.Register(r, quoteProvider, twseProvider)
 
+	// Lifecycle ctx — created BEFORE the github wiring so the cached
+	// providers' LogHourly goroutines bind to a context that drains on
+	// SIGINT/SIGTERM (no goroutine leak). Nothing between stock.Register
+	// above and the cancellation block below reads ctx, so the move-up
+	// is benign.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// /github routes — shared upstream Client + per-route Providers,
+	// wrapped by per-IP rate limit middleware (R10). The rate-limited
+	// branch shares the same banner shape as the upstream-rate-limited
+	// path so /github callers see one consistent throttle UX.
+	githubClient := githubprofile.New(safehttp.NewClient(5*time.Second), os.Getenv("GITHUB_TOKEN"))
+	if githubClient.IsAuthed() {
+		log.Info().Msg("github: token mode authed (5000 req/hr)")
+	} else {
+		log.Info().Msg("github: token mode unauthed (60 req/hr)")
+	}
+	userCache := githubcached.NewUser(githubprofile.NewUserProvider(githubClient))
+	repoCache := githubcached.NewRepo(githubprofile.NewRepoProvider(githubClient))
+	go userCache.LogHourly(ctx)
+	go repoCache.LogHourly(ctx)
+	// Empty group prefix: github.Register adds the /github/... segment itself,
+	// so prefixing the group would produce /github/github/.... The middleware
+	// only attaches to the routes registered on this group, so per-IP rate
+	// limiting still applies exclusively to /github/* — no other routes are
+	// throttled.
+	githubGroup := r.Group("", iplimit.New30PerMin().Middleware(github.RateLimitedHandler))
+	github.Register(githubGroup, userCache, repoCache)
+
 	// NoRoute fallback — must be installed last so every other route had
 	// a chance to claim its path first.
 	notfound.Register(r)
@@ -133,9 +168,6 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 14, // 16 KiB — caps client header floods.
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	errCh := make(chan error, 1)
 	go func() {
