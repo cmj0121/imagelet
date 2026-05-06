@@ -9,6 +9,7 @@ require (
 	github.com/mattn/go-isatty v0.0.21
 	github.com/mattn/go-runewidth v0.0.23
 	github.com/rs/zerolog v1.35.1
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	golang.org/x/image v0.39.0
 	golang.org/x/net v0.51.0
 	golang.org/x/sync v0.20.0
