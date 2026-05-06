@@ -29,6 +29,7 @@ import (
 	"github.com/cmj0121/imagelet/service/index"
 	"github.com/cmj0121/imagelet/service/notfound"
 	"github.com/cmj0121/imagelet/service/now"
+	"github.com/cmj0121/imagelet/service/qr"
 	"github.com/cmj0121/imagelet/service/stock"
 	"github.com/cmj0121/imagelet/service/stock/quote/cached"
 	"github.com/cmj0121/imagelet/service/stock/quote/yahoo"
@@ -100,6 +101,7 @@ func main() {
 	favicon.Register(r)
 	index.Register(r, version)
 	now.Register(r)
+	qr.Register(r)
 
 	// Build the cached Yahoo provider once so the in-memory cache (and its
 	// singleflight stampede control) is shared across all /stock requests;
