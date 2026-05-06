@@ -65,6 +65,7 @@ func New() *gin.Engine {
 	r.Use(middleware.RegionDetector())
 	r.Use(i18n.LocaleDetector())
 	r.GET("/healthz", healthzHandler)
+	r.GET("/robots.txt", robotsHandler)
 	return r
 }
 
@@ -75,4 +76,19 @@ func New() *gin.Engine {
 // probes.
 func healthzHandler(c *gin.Context) {
 	c.Status(http.StatusOK)
+}
+
+// robotsBody is the static crawler policy returned by GET /robots.txt.
+// Disallows /github/* so high-frequency crawlers don't help convert the
+// public route into a GitHub-data exfiltration tool by proxy (R10).
+// Other routes are not listed — the default for `User-agent: *` is to
+// allow what isn't explicitly disallowed.
+const robotsBody = "User-agent: *\nDisallow: /github/\n"
+
+// robotsHandler returns the static robots.txt body with text/plain
+// content-type. Hardcoded body, no file IO, deterministic — if a
+// future feature needs a real static directory, swap to
+// r.StaticFile then.
+func robotsHandler(c *gin.Context) {
+	c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(robotsBody))
 }

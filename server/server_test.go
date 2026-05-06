@@ -30,6 +30,29 @@ func TestHealthzReturns200Empty(t *testing.T) {
 	}
 }
 
+// TestRobotsTxt pins the abuse-posture decision (DESIGN.md §9): /github/* is
+// disallowed for crawlers so unfurl bots and SEO scrapers don't burn the
+// upstream rate-limit budget enumerating GitHub via imagelet.
+func TestRobotsTxt(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := server.New()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/robots.txt", nil)
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	for _, sub := range []string{"User-agent: *", "Disallow: /github/"} {
+		if !strings.Contains(body, sub) {
+			t.Errorf("body missing %q\n--- body ---\n%s", sub, body)
+		}
+	}
+}
+
 // TestNewInstallsClientDetector pins that server.New preinstalls the
 // content-negotiation middleware: a probe handler reading middleware.GetMode
 // must observe the mode chosen by ClientDetector based on the request UA.
