@@ -394,6 +394,34 @@ func TestRepoCard_PNG(t *testing.T) {
 	}
 }
 
+// TestRepoCard_HeadlineIsNameOnly pins that the repo card uses only the
+// repo NAME as headline (owner moves to a caption row) so the rendered
+// banner stays the same visual width as the user-card banner. Pixel
+// width on the headline glyphs determines per-glyph apparent size when
+// the viewer fits the figure to width — a long OWNER/NAME headline
+// shrinks the whole figure and the body rows read smaller.
+func TestRepoCard_HeadlineIsNameOnly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := newRouter(&fakeUser{}, &fakeRepo{r: freshRepo()})
+	rec := do(r, http.MethodGet, "/github/octocat/Hello-World?format=svg", map[string]string{
+		"User-Agent": "curl/8.4.0",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	// Owner appears as a caption row (literal text), NOT joined into a
+	// headline string.
+	if !strings.Contains(body, "octocat") {
+		t.Errorf("body missing owner caption row\n--- body (first 1500) ---\n%.1500s", body)
+	}
+	// The combined OWNER/NAME headline form must NOT appear — that's
+	// the regression the test guards against.
+	if strings.Contains(body, "OCTOCAT/HELLO-WORLD") || strings.Contains(body, "octocat/Hello-World") {
+		t.Errorf("body still carries combined OWNER/NAME headline — should be NAME only")
+	}
+}
+
 func TestRepoCard_PylonUnsupported(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := newRouter(&fakeUser{}, &fakeRepo{r: freshRepo()})

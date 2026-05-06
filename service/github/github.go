@@ -251,20 +251,37 @@ func (h *handler) renderUser(c *gin.Context, login string, p profile.Profile, er
 	}
 }
 
-// renderRepo dispatches on err and builds the repo-card banner.
+// renderRepo dispatches on err and builds the repo-card banner. The
+// headline is the repo NAME only (without owner) so the rendered banner
+// stays the same visual width as the user-card banner — viewers that
+// fit-to-width otherwise shrink the wider OWNER/NAME headline and the
+// glyphs read smaller. The owner is emitted as the first caption row
+// so the affiliation is still visible.
 func (h *handler) renderRepo(c *gin.Context, fullName string, r profile.Repo, err error) {
-	headline := strings.ToUpper(fullName)
+	owner, name, ok := strings.Cut(fullName, "/")
+	if !ok {
+		// Fallback for an unexpected fullName shape — keep the original
+		// headline behavior so the path stays renderable.
+		owner, name = "", fullName
+	}
+	headline := strings.ToUpper(name)
+	captions := func(base []string) []string {
+		if owner == "" {
+			return base
+		}
+		return append([]string{owner}, base...)
+	}
 	switch {
 	case err == nil:
-		writeBanner(c, headline, repoCaptions(r), http.StatusOK, repoMaxAge)
+		writeBanner(c, headline, captions(repoCaptions(r)), http.StatusOK, repoMaxAge)
 	case errors.Is(err, profile.ErrNotFound):
 		renderNotFound(c, fullName)
 	case errors.Is(err, profile.ErrRateLimited):
 		renderRateLimited(c)
 	default:
 		if r.FullName != "" {
-			captions := append(repoCaptions(r), "( stale data )")
-			writeBanner(c, headline, captions, http.StatusOK, rateLimitMaxAge)
+			rows := append(captions(repoCaptions(r)), "( stale data )")
+			writeBanner(c, headline, rows, http.StatusOK, rateLimitMaxAge)
 			return
 		}
 		log.Warn().Err(err).Str("path", c.Request.URL.Path).Msg("github upstream failed")

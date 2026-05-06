@@ -52,7 +52,11 @@ count already convey reach.
 
 **Repo card** (rows in order, each conditional on a non-empty value):
 
-- Headline — `OWNER/NAME`, uppercased.
+- Headline — repo NAME only, uppercased. Owner moves to the first
+  caption row so the rendered banner stays the same visual width as
+  the user-card banner; viewers that fit-to-width otherwise shrink a
+  longer `OWNER/NAME` headline and the body rows read smaller.
+- Owner login.
 - Description.
 - `★ <stars>  ⎇ <forks>  ⚠ <open_issues>` — always rendered.
 - `<language> · <license> · <default_branch>` — joined with U+00B7;
