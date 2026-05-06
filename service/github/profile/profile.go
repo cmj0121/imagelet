@@ -22,13 +22,19 @@ import (
 // (Bio == "", Location == "", JoinedAt.IsZero()) are gracefully omitted
 // by the renderer; absent is not an error.
 type Profile struct {
-	Login       string    // canonical login from upstream (`octocat`)
-	Name        string    // display name; "" when upstream returns null
-	Bio         string    // 60-char-budget caption candidate; "" allowed
-	Location    string    // free-form; sanitized before render
-	PublicRepos int       // public_repos
-	Followers   int       // followers
-	JoinedAt    time.Time // created_at
+	Login            string    // canonical login from upstream (`octocat`)
+	Name             string    // display name; "" when upstream returns null
+	Bio              string    // 60-char-budget caption candidate; "" allowed
+	Company          string    // free-form; "" allowed; sanitized before render
+	Blog             string    // homepage URL; "" allowed; scheme stripped before render
+	Location         string    // free-form; sanitized before render
+	TwitterUsername  string    // bare handle (no `@`); "" allowed
+	PublicRepos      int       // public_repos
+	PublicGists      int       // public_gists
+	Followers        int       // followers
+	Following        int       // following
+	IsOrganization   bool      // upstream `type` == "Organization"
+	JoinedAt         time.Time // created_at
 }
 
 // Repo is the value type rendered by GET /github/:user/:repo. License

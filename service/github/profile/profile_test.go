@@ -98,6 +98,46 @@ func TestUserProvider_OK(t *testing.T) {
 	if y := p.JoinedAt.Year(); y != 2011 {
 		t.Errorf("JoinedAt.Year() = %d, want 2011", y)
 	}
+	if p.Company != "@github" {
+		t.Errorf("Company = %q, want @github", p.Company)
+	}
+	if p.Blog != "https://github.blog" {
+		t.Errorf("Blog = %q, want https://github.blog", p.Blog)
+	}
+	// twitter_username is null in the fixture — must deref to "" without panic.
+	if p.TwitterUsername != "" {
+		t.Errorf("TwitterUsername = %q, want empty (fixture has null)", p.TwitterUsername)
+	}
+	if p.PublicGists != 8 {
+		t.Errorf("PublicGists = %d, want 8", p.PublicGists)
+	}
+	if p.Following != 9 {
+		t.Errorf("Following = %d, want 9", p.Following)
+	}
+	if p.IsOrganization {
+		t.Errorf("IsOrganization = true, want false (fixture type=User)")
+	}
+}
+
+// TestUserProvider_Organization pins that upstream `type` == "Organization"
+// flips IsOrganization, so the handler can render the org badge row.
+func TestUserProvider_Organization(t *testing.T) {
+	srv := newServer(t, route{
+		path: "/users/github",
+		handler: func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"login":"github","type":"Organization","public_repos":500,"followers":42000,"created_at":"2008-05-11T04:37:31Z"}`))
+		},
+	})
+	defer srv.Close()
+
+	p, err := NewUserProvider(newClient(srv, "")).User(context.Background(), "github")
+	if err != nil {
+		t.Fatalf("User: %v", err)
+	}
+	if !p.IsOrganization {
+		t.Errorf("IsOrganization = false, want true")
+	}
 }
 
 func TestUserProvider_NotFound(t *testing.T) {

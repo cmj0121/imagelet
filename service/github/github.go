@@ -332,7 +332,36 @@ func userCaptions(p profile.Profile) []string {
 	if s := sanitize(p.Bio); s != "" {
 		out = append(out, s)
 	}
-	out = append(out, fmt.Sprintf("★ %d  ⌥ %d", p.Followers, p.PublicRepos))
+	if p.IsOrganization {
+		out = append(out, "Organization")
+	}
+	// Stats row uses safe glyphs (★, ⌥ confirmed by the banner-font
+	// pre-flight) for the existing fields and `·` for separators (already
+	// in the font — used by /index's "repo · version" caption).
+	out = append(out, fmt.Sprintf("★ %d followers · ⌥ %d repos · %d following · %d gists",
+		p.Followers, p.PublicRepos, p.Following, p.PublicGists))
+	// Company values from GitHub frequently start with `@` (the form
+	// people type when linking to an org account). pylon parses a
+	// caption that starts with `@` as a directive, so the literal value
+	// "@github" renders as a pylon error. Strip the leading `@` before
+	// rendering — the surrounding rows (org badge, blog URL) carry the
+	// affiliation context anyway.
+	if c := strings.TrimPrefix(strings.TrimSpace(p.Company), "@"); c != "" {
+		if s := sanitize(c); s != "" {
+			out = append(out, s)
+		}
+	}
+	if s := sanitizeBlog(p.Blog); s != "" {
+		out = append(out, s)
+	}
+	// Twitter rebranded to X; render the handle as a bare x.com URL so
+	// it visually distinguishes from a free-text company row and avoids
+	// pylon's leading-`@` directive parse.
+	if t := strings.TrimPrefix(strings.TrimSpace(p.TwitterUsername), "@"); t != "" {
+		if s := sanitize(t); s != "" {
+			out = append(out, "x.com/"+s)
+		}
+	}
 	if s := sanitize(p.Location); s != "" {
 		out = append(out, s)
 	}
@@ -340,6 +369,17 @@ func userCaptions(p profile.Profile) []string {
 		out = append(out, "joined "+p.JoinedAt.Format("Jan 2006"))
 	}
 	return out
+}
+
+// sanitizeBlog strips http(s):// scheme from a homepage URL so the
+// banner-font `:`→`;` substitution (which would render as "https;//...")
+// doesn't disfigure the row. The bare host+path passes through sanitize
+// for the remaining substitutions and the rune-budget truncation.
+func sanitizeBlog(blog string) string {
+	s := strings.TrimSpace(blog)
+	s = strings.TrimPrefix(s, "https://")
+	s = strings.TrimPrefix(s, "http://")
+	return sanitize(s)
 }
 
 // repoCaptions assembles the per-row caption slice for a Repo. Same

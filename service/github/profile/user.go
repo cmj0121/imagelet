@@ -11,13 +11,19 @@ import (
 // Pointer-typed scalars accept JSON null cleanly (e.g. "name": null,
 // "bio": null) without forcing the parser into a string-or-null union.
 type userResponse struct {
-	Login       string  `json:"login"`
-	Name        *string `json:"name"`
-	Bio         *string `json:"bio"`
-	Location    *string `json:"location"`
-	PublicRepos int     `json:"public_repos"`
-	Followers   int     `json:"followers"`
-	CreatedAt   string  `json:"created_at"`
+	Login           string  `json:"login"`
+	Type            string  `json:"type"`
+	Name            *string `json:"name"`
+	Bio             *string `json:"bio"`
+	Company         *string `json:"company"`
+	Blog            *string `json:"blog"`
+	Location        *string `json:"location"`
+	TwitterUsername *string `json:"twitter_username"`
+	PublicRepos     int     `json:"public_repos"`
+	PublicGists     int     `json:"public_gists"`
+	Followers       int     `json:"followers"`
+	Following       int     `json:"following"`
+	CreatedAt       string  `json:"created_at"`
 }
 
 // userPath returns the /users/:login URL path.
@@ -62,12 +68,18 @@ func (p *UserProviderImpl) User(ctx context.Context, login string) (Profile, err
 	}
 
 	out := Profile{
-		Login:       raw.Login,
-		Name:        derefString(raw.Name),
-		Bio:         derefString(raw.Bio),
-		Location:    derefString(raw.Location),
-		PublicRepos: raw.PublicRepos,
-		Followers:   raw.Followers,
+		Login:           raw.Login,
+		Name:            derefString(raw.Name),
+		Bio:             derefString(raw.Bio),
+		Company:         derefString(raw.Company),
+		Blog:            derefString(raw.Blog),
+		Location:        derefString(raw.Location),
+		TwitterUsername: derefString(raw.TwitterUsername),
+		PublicRepos:     raw.PublicRepos,
+		PublicGists:     raw.PublicGists,
+		Followers:       raw.Followers,
+		Following:       raw.Following,
+		IsOrganization:  raw.Type == "Organization",
 	}
 	if raw.CreatedAt != "" {
 		if t, err := time.Parse(time.RFC3339, raw.CreatedAt); err == nil {

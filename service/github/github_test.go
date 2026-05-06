@@ -57,13 +57,18 @@ func (f *fakeRepo) Repo(_ context.Context, _, _ string) (profile.Repo, error) {
 // populated so caption-row assertions don't depend on optional fields.
 func freshProfile() profile.Profile {
 	return profile.Profile{
-		Login:       "octocat",
-		Name:        "The Octocat",
-		Bio:         "interactive demos and tutorials",
-		Location:    "San Francisco",
-		PublicRepos: 8,
-		Followers:   1234,
-		JoinedAt:    time.Date(2008, 4, 1, 0, 0, 0, 0, time.UTC),
+		Login:           "octocat",
+		Name:            "The Octocat",
+		Bio:             "interactive demos and tutorials",
+		Company:         "@github",
+		Blog:            "https://github.blog",
+		Location:        "San Francisco",
+		TwitterUsername: "github",
+		PublicRepos:     8,
+		PublicGists:     3,
+		Followers:       1234,
+		Following:       9,
+		JoinedAt:        time.Date(2008, 4, 1, 0, 0, 0, 0, time.UTC),
 	}
 }
 
@@ -139,6 +144,82 @@ func TestUserCard_SVG(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "<svg") {
 		t.Errorf("SVG body missing <svg root\n--- body (first 200) ---\n%.200s", rec.Body.String())
 	}
+}
+
+// TestUserCard_CaptionRows pins the prettier-card layout: the SVG body
+// carries each caption row as literal text, so we can assert the new
+// fields (org badge, expanded stats line with all four counts, company,
+// blog with stripped scheme, twitter handle prefixed with @) appear.
+// Caption rows are line-of-defense against silent regressions where a
+// renderer change drops a field; the body-text invariant is checked
+// here rather than via a brittle pixel-diff on the PNG path.
+func TestUserCard_CaptionRows(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	t.Run("user_full", func(t *testing.T) {
+		r := newRouter(&fakeUser{p: freshProfile()}, &fakeRepo{})
+		rec := do(r, http.MethodGet, "/github/octocat?format=svg", map[string]string{
+			"User-Agent": "curl/8.4.0",
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		body := rec.Body.String()
+		// Each row in the caption slice ends up as a <text> element in
+		// the SVG. Assert every new field renders.
+		wants := []string{
+			"The Octocat",                                              // name
+			"interactive demos and tutorials",                          // bio
+			"★ 1234 followers · ⌥ 8 repos · 9 following · 3 gists",     // stats
+			"github",                                                   // company (leading @ stripped — pylon directive collision)
+			"github.blog",                                              // blog (scheme stripped)
+			"x.com/github",                                             // twitter handle as x.com URL
+			"San Francisco",                                            // location
+			"joined Apr 2008",                                          // joined
+		}
+		for _, w := range wants {
+			if !strings.Contains(body, w) {
+				t.Errorf("body missing caption row %q\n--- body (first 1500) ---\n%.1500s", w, body)
+			}
+		}
+		// The user fixture is not an Organization — the badge MUST NOT render.
+		if strings.Contains(body, "Organization") {
+			t.Errorf("body unexpectedly contains Organization badge for non-org account")
+		}
+	})
+
+	t.Run("organization_badge", func(t *testing.T) {
+		p := freshProfile()
+		p.IsOrganization = true
+		r := newRouter(&fakeUser{p: p}, &fakeRepo{})
+		rec := do(r, http.MethodGet, "/github/github?format=svg", map[string]string{
+			"User-Agent": "curl/8.4.0",
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "Organization") {
+			t.Errorf("body missing Organization badge for org account\n--- body (first 1500) ---\n%.1500s", rec.Body.String())
+		}
+	})
+
+	t.Run("optional_rows_drop", func(t *testing.T) {
+		// Empty Company / Blog / TwitterUsername → those rows DROP rather
+		// than render as blank. Mirrors the existing Bio/Location behavior.
+		p := freshProfile()
+		p.Company = ""
+		p.Blog = ""
+		p.TwitterUsername = ""
+		r := newRouter(&fakeUser{p: p}, &fakeRepo{})
+		rec := do(r, http.MethodGet, "/github/octocat?format=svg", map[string]string{
+			"User-Agent": "curl/8.4.0",
+		})
+		body := rec.Body.String()
+		// "github.blog" was the previous blog value; absence confirms drop.
+		if strings.Contains(body, "github.blog") {
+			t.Errorf("body still carries blog row after Blog=\"\" — empty rows should drop")
+		}
+	})
 }
 
 func TestUserCard_ASCII(t *testing.T) {

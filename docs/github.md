@@ -32,7 +32,14 @@ the upstream query and uppercased only for the rendered headline.
 - Headline — login, uppercased.
 - Display name.
 - Bio.
-- `★ <followers>  ⌥ <public_repos>` — always rendered, even at zero.
+- `Organization` badge — only when upstream `type == "Organization"`.
+- Stats line —
+  `★ <followers> followers · ⌥ <public_repos> repos · <following> following · <gists> gists`,
+  always rendered, even at zero.
+- Company — leading `@` is stripped (pylon parses leading `@` as a directive).
+- Blog homepage — `http(s)://` scheme stripped so the row reads as bare host + path.
+- Twitter handle — rendered as `x.com/<handle>` (URL form distinguishes it
+  from a free-text row and avoids the leading-`@` directive parse).
 - Location.
 - `joined <Mon YYYY>` — from `created_at`.
 
