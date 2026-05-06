@@ -111,6 +111,13 @@ func sanitize(s string) string {
 	return s
 }
 
+// sanitizeFull is sanitize without the rune-budget truncation. Used for
+// repo descriptions, which often run longer than captionBudget and where
+// the user explicitly asked for the full memo on the card.
+func sanitizeFull(s string) string {
+	return render.StripPylonSyntax(sanitizerReplacer.Replace(s))
+}
+
 // truncateRunes returns s shortened to at most n runes. Safe for
 // multi-byte UTF-8 — slices on a rune boundary.
 func truncateRunes(s string, n int) string {
@@ -255,32 +262,24 @@ func (h *handler) renderUser(c *gin.Context, login string, p profile.Profile, er
 // headline is the repo NAME only (without owner) so the rendered banner
 // stays the same visual width as the user-card banner — viewers that
 // fit-to-width otherwise shrink the wider OWNER/NAME headline and the
-// glyphs read smaller. The owner is emitted as the first caption row
-// so the affiliation is still visible.
+// glyphs read smaller. The owner is implied by the URL and not echoed
+// on the card.
 func (h *handler) renderRepo(c *gin.Context, fullName string, r profile.Repo, err error) {
-	owner, name, ok := strings.Cut(fullName, "/")
+	_, name, ok := strings.Cut(fullName, "/")
 	if !ok {
-		// Fallback for an unexpected fullName shape — keep the original
-		// headline behavior so the path stays renderable.
-		owner, name = "", fullName
+		name = fullName
 	}
 	headline := strings.ToUpper(name)
-	captions := func(base []string) []string {
-		if owner == "" {
-			return base
-		}
-		return append([]string{owner}, base...)
-	}
 	switch {
 	case err == nil:
-		writeBanner(c, headline, captions(repoCaptions(r)), http.StatusOK, repoMaxAge)
+		writeBanner(c, headline, repoCaptions(r), http.StatusOK, repoMaxAge)
 	case errors.Is(err, profile.ErrNotFound):
 		renderNotFound(c, fullName)
 	case errors.Is(err, profile.ErrRateLimited):
 		renderRateLimited(c)
 	default:
 		if r.FullName != "" {
-			rows := append(captions(repoCaptions(r)), "( stale data )")
+			rows := append(repoCaptions(r), "( stale data )")
 			writeBanner(c, headline, rows, http.StatusOK, rateLimitMaxAge)
 			return
 		}
@@ -409,35 +408,43 @@ func sanitizeBlog(blog string) string {
 	return sanitize(s)
 }
 
-// repoCaptions assembles the per-row caption slice for a Repo. Same
-// per-field sanitize discipline as userCaptions; the language·license·
-// branch row is composed from individually-sanitized parts before
-// joining (the "·" separator is U+00B7 and is not in the sanitizer
-// table, so the join after sanitisation is safe).
+// repoCaptions assembles the per-row caption slice for a Repo. Order:
+// full description, then stars/forks/issues stats, then language ·
+// license · branch metadata, then pushed + release on one row. The
+// description is NOT rune-truncated here (sanitizeFull) — repo memos
+// can run long and the user explicitly asked for the full text.
+//
+// Same sanitize discipline as userCaptions; the "·" separator is
+// U+00B7 and is not in the sanitizer table, so post-sanitize joins
+// with it are safe.
 func repoCaptions(r profile.Repo) []string {
 	var out []string
-	if s := sanitize(r.Description); s != "" {
+	if s := sanitizeFull(r.Description); s != "" {
 		out = append(out, s)
 	}
 	out = append(out, fmt.Sprintf("★ %d  ⎇ %d  ⚠ %d", r.Stars, r.Forks, r.OpenIssues))
-	parts := []string{}
+	meta := []string{}
 	if s := sanitize(r.Language); s != "" {
-		parts = append(parts, s)
+		meta = append(meta, s)
 	}
 	if s := sanitize(r.License); s != "" {
-		parts = append(parts, s)
+		meta = append(meta, s)
 	}
 	if s := sanitize(r.DefaultBranch); s != "" {
-		parts = append(parts, s)
+		meta = append(meta, s)
 	}
-	if len(parts) > 0 {
-		out = append(out, strings.Join(parts, " · "))
+	if len(meta) > 0 {
+		out = append(out, strings.Join(meta, " · "))
 	}
+	pushRel := []string{}
 	if s := humanizePushed(r.PushedAt); s != "" {
-		out = append(out, "pushed "+s)
+		pushRel = append(pushRel, "pushed "+s)
 	}
 	if s := sanitize(r.LatestRelease); s != "" {
-		out = append(out, "release "+s)
+		pushRel = append(pushRel, "release "+s)
+	}
+	if len(pushRel) > 0 {
+		out = append(out, strings.Join(pushRel, " · "))
 	}
 	return out
 }

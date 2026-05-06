@@ -52,20 +52,20 @@ count already convey reach.
 
 **Repo card** (rows in order, each conditional on a non-empty value):
 
-- Headline — repo NAME only, uppercased. Owner moves to the first
-  caption row so the rendered banner stays the same visual width as
-  the user-card banner; viewers that fit-to-width otherwise shrink a
-  longer `OWNER/NAME` headline and the body rows read smaller.
-- Owner login.
-- Description.
+- Headline — repo NAME only, uppercased. Owner is implied by the URL
+  and not echoed on the card so the rendered banner stays the same
+  visual width as the user-card banner.
+- Description — rendered in full (no rune-budget truncation, unlike
+  user-card free-text fields).
 - `★ <stars>  ⎇ <forks>  ⚠ <open_issues>` — always rendered.
 - `<language> · <license> · <default_branch>` — joined with U+00B7;
   individual missing fields drop out of the join.
-- `pushed <relative time ago>` — from `pushed_at`. Thresholds: just
-  now / Nm ago / Nh ago / Nd ago (under 30d) / Nmo ago (under 365d) /
-  Ny ago.
-- `release <tag>` — `tag_name` from `/releases/latest`. Omitted when
-  the repo has no releases or the release fetch failed.
+- `pushed <relative time ago>` and `release <tag>` collapsed onto one
+  row with `·` between them when both are populated; each renders
+  alone if the other is missing. Push thresholds: just now / Nm ago
+  / Nh ago / Nd ago (under 30d) / Nmo ago (under 365d) / Ny ago.
+  `<tag>` is `tag_name` from `/releases/latest`; the row drops if the
+  repo has no releases or the release fetch failed.
 
 License prefers `license.spdx_id` and falls back to `license.name`.
 
