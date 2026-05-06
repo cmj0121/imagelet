@@ -45,6 +45,7 @@ Flags:
 | `GET`  | `/now`           | Banner-rendered current time with date / weekday / zone caption.           |
 | `GET`  | `/stock`         | Banner-rendered regional stock-index quote.                                |
 | `GET`  | `/stock/:symbol` | Banner-rendered quote for a caller-specified Yahoo symbol.                 |
+| `GET`  | `/qr`            | QR code encoding `?text=` (default `https://imglet.sh`); `?ec=L\|M\|Q\|H`. |
 | `*`    | _other_          | `404` banner above a fake Python traceback with the requested path inside. |
 
 Detailed docs live under [`docs/`](./docs):
@@ -55,6 +56,7 @@ Detailed docs live under [`docs/`](./docs):
 - [`docs/security.md`](./docs/security.md) — request-size caps, `?date=` clamp, SSRF guards, snapshot decode cap.
 - [`docs/html-view.md`](./docs/html-view.md) — Open Graph meta and `/stock` keyboard shortcuts.
 - [`docs/localization.md`](./docs/localization.md) — locale negotiation, `?lang=` override, Vary policy.
+- [`docs/qr.md`](./docs/qr.md) — `/qr` parameters, error-correction levels, ASCII scannability caveat.
 
 ## Result
 

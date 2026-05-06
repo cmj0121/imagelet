@@ -18,6 +18,14 @@ The body cap is defense-in-depth — no current route reads a body —
 and exists so a future POST handler doesn't accidentally inherit an
 unbounded reader.
 
+## `?text=` cap on `/qr`
+
+`/qr?text=` is capped at **1 KiB** — anything longer returns
+`414 URI Too Long`, mirroring the URL-path / query-string limiters
+above. The cap is sized so encoded matrices stay within QR Version 40
+(177×177 modules) regardless of error-correction level, which bounds
+the worst-case PNG render at ~1480×1480 px.
+
 ## `?date=` clamp
 
 The `date=YYYY-MM-DD` override is clamped to `[now - 15y, now + 1d]`.
