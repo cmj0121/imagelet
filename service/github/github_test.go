@@ -174,8 +174,7 @@ func TestUserCard_CaptionRows(t *testing.T) {
 			"github",                                                   // company (leading @ stripped — pylon directive collision)
 			"github.blog",                                              // blog (scheme stripped)
 			"x.com/github",                                             // twitter handle as x.com URL
-			"San Francisco",                                            // location
-			"joined Apr 2008",                                          // joined
+			"San Francisco · joined Apr 2008",                          // location + joined collapsed
 		}
 		for _, w := range wants {
 			if !strings.Contains(body, w) {
@@ -218,6 +217,40 @@ func TestUserCard_CaptionRows(t *testing.T) {
 		// "github.blog" was the previous blog value; absence confirms drop.
 		if strings.Contains(body, "github.blog") {
 			t.Errorf("body still carries blog row after Blog=\"\" — empty rows should drop")
+		}
+	})
+
+	t.Run("location_only", func(t *testing.T) {
+		// Empty JoinedAt → row reads as just the location, no `·` separator.
+		p := freshProfile()
+		p.JoinedAt = time.Time{}
+		r := newRouter(&fakeUser{p: p}, &fakeRepo{})
+		rec := do(r, http.MethodGet, "/github/octocat?format=svg", map[string]string{
+			"User-Agent": "curl/8.4.0",
+		})
+		body := rec.Body.String()
+		if !strings.Contains(body, "San Francisco") {
+			t.Errorf("body missing location row")
+		}
+		if strings.Contains(body, "San Francisco · joined") {
+			t.Errorf("body has stray separator when JoinedAt is zero")
+		}
+	})
+
+	t.Run("joined_only", func(t *testing.T) {
+		// Empty Location → row reads as just the joined-since.
+		p := freshProfile()
+		p.Location = ""
+		r := newRouter(&fakeUser{p: p}, &fakeRepo{})
+		rec := do(r, http.MethodGet, "/github/octocat?format=svg", map[string]string{
+			"User-Agent": "curl/8.4.0",
+		})
+		body := rec.Body.String()
+		if !strings.Contains(body, "joined Apr 2008") {
+			t.Errorf("body missing joined row")
+		}
+		if strings.Contains(body, " · joined") {
+			t.Errorf("body has stray separator when Location is empty")
 		}
 	})
 }

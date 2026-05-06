@@ -40,8 +40,9 @@ the upstream query and uppercased only for the rendered headline.
 - Blog homepage — `http(s)://` scheme stripped so the row reads as bare host + path.
 - Twitter handle — rendered as `x.com/<handle>` (URL form distinguishes it
   from a free-text row and avoids the leading-`@` directive parse).
-- Location.
-- `joined <Mon YYYY>` — from `created_at`.
+- Location and `joined <Mon YYYY>` — collapsed onto a single row when
+  both are populated (`<location> · joined <Mon YYYY>`); each renders
+  alone if the other is missing.
 
 The `Profile.Stars` aggregate (sum of stars across owned repos) is
 deliberately omitted: computing it would require a paginated walk of

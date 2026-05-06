@@ -362,11 +362,21 @@ func userCaptions(p profile.Profile) []string {
 			out = append(out, "x.com/"+s)
 		}
 	}
-	if s := sanitize(p.Location); s != "" {
-		out = append(out, s)
-	}
+	// Location and joined-since collapse into one row with `·` between
+	// them so a card with both populated reads as a single line of
+	// metadata instead of two near-empty rows.
+	loc := sanitize(p.Location)
+	var joined string
 	if !p.JoinedAt.IsZero() {
-		out = append(out, "joined "+p.JoinedAt.Format("Jan 2006"))
+		joined = "joined " + p.JoinedAt.Format("Jan 2006")
+	}
+	switch {
+	case loc != "" && joined != "":
+		out = append(out, loc+" · "+joined)
+	case loc != "":
+		out = append(out, loc)
+	case joined != "":
+		out = append(out, joined)
 	}
 	return out
 }
