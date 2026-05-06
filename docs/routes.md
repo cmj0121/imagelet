@@ -1,15 +1,15 @@
 # Routes
 
-| Method | Path             | Description                                                                |
-| ------ | ---------------- | -------------------------------------------------------------------------- |
-| `GET`  | `/`              | `IMAGELET` banner with tagline and `<repo> · <version>` caption.           |
-| `GET`  | `/healthz`       | Returns `200 No Content`. Liveness probe — never renders, never allocates. |
-| `GET`  | `/favicon.ico`   | Multi-resolution (16/32/48) ICO of the brand mark, baked into the binary.  |
-| `GET`  | `/favicon.svg`   | SVG brand mark; referenced by `<link rel="icon">` in HTML responses.       |
-| `GET`  | `/now`           | Banner-rendered current time with date / weekday / zone caption.           |
-| `GET`  | `/stock`         | Banner-rendered regional stock-index quote.                                |
-| `GET`  | `/stock/:symbol` | Banner-rendered quote for a caller-specified Yahoo symbol.                 |
-| `*`    | _other_          | `404` banner above a fake Python traceback with the requested path inside. |
+- `GET /` — `IMAGELET` banner with tagline and `<repo> · <version>` caption.
+- `GET /healthz` — returns `200 No Content`. Liveness probe — never renders, never allocates.
+- `GET /favicon.ico` — multi-resolution (16/32/48) ICO of the brand mark, baked into the binary.
+- `GET /favicon.svg` — SVG brand mark; referenced by `<link rel="icon">` in HTML responses.
+- `GET /now` — banner-rendered current time with date / weekday / zone caption.
+- `GET /stock` — banner-rendered regional stock-index quote.
+- `GET /stock/:symbol` — banner-rendered quote for a caller-specified Yahoo symbol.
+- `GET /github/:user` — banner card for a GitHub user / org login.
+- `GET /github/:user/:repo` — banner card for a GitHub `owner/name` public repository.
+- `*` (other) — `404` banner above a fake Python traceback with the requested path inside.
 
 ## Date override
 
@@ -34,3 +34,16 @@ PER-STOCK flow (TWSE T86) instead of the market-wide aggregate.
 
 See [stock-render.md](./stock-render.md) for the OHLC + MA bar
 rendering details.
+
+## `/github/:user` and `/github/:user/:repo`
+
+Banner cards rendered from public GitHub data: profile (login, name,
+bio, followers / public repos, location, joined month) and repo
+(description, stars / forks / open issues, language · license ·
+default branch, last-pushed relative time, latest release tag). Logins
+must match GitHub's documented charset; private repos always render
+as 404. The banner is text-only — avatars are deferred indefinitely.
+
+See [github.md](./github.md) for the field-by-field card layout, the
+glyph substitution table applied to caption text, the per-status
+`Cache-Control` matrix, and the `GITHUB_TOKEN` posture.

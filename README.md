@@ -34,19 +34,28 @@ Flags:
                           disk persistence.
 ```
 
+### Environment variables
+
+- `GITHUB_TOKEN` (default: unset) — optional. When set, raises the
+  per-process `/github/*` upstream cap from 60 to 5000 requests per hour.
+
+The `GITHUB_TOKEN` value is read only from the environment — never
+from a CLI flag — so it stays out of `ps -ef` and shell history. See
+[`docs/github.md`](./docs/github.md) for the full posture.
+
 ## Routes
 
-| Method | Path             | Description                                                                |
-| ------ | ---------------- | -------------------------------------------------------------------------- |
-| `GET`  | `/`              | `IMAGELET` banner with tagline and `<repo> · <version>` caption.           |
-| `GET`  | `/healthz`       | Returns `200 No Content`. Liveness probe — never renders, never allocates. |
-| `GET`  | `/favicon.ico`   | Multi-resolution (16/32/48) ICO of the brand mark, baked into the binary.  |
-| `GET`  | `/favicon.svg`   | SVG brand mark; referenced by `<link rel="icon">` in HTML responses.       |
-| `GET`  | `/now`           | Banner-rendered current time with date / weekday / zone caption.           |
-| `GET`  | `/stock`         | Banner-rendered regional stock-index quote.                                |
-| `GET`  | `/stock/:symbol` | Banner-rendered quote for a caller-specified Yahoo symbol.                 |
-| `GET`  | `/qr`            | QR code encoding `?text=` (default `https://imglet.sh`); `?ec=L\|M\|Q\|H`. |
-| `*`    | _other_          | `404` banner above a fake Python traceback with the requested path inside. |
+- `GET /` — `IMAGELET` banner with tagline and `<repo> · <version>` caption.
+- `GET /healthz` — returns `200 No Content`. Liveness probe — never renders, never allocates.
+- `GET /favicon.ico` — multi-resolution (16/32/48) ICO of the brand mark, baked into the binary.
+- `GET /favicon.svg` — SVG brand mark; referenced by `<link rel="icon">` in HTML responses.
+- `GET /now` — banner-rendered current time with date / weekday / zone caption.
+- `GET /stock` — banner-rendered regional stock-index quote.
+- `GET /stock/:symbol` — banner-rendered quote for a caller-specified Yahoo symbol.
+- `GET /qr` — QR code encoding `?text=` (default `https://imglet.sh`); `?ec=L|M|Q|H`.
+- `GET /github/:user` — banner card for a GitHub user / org login.
+- `GET /github/:user/:repo` — banner card for a GitHub `owner/name` public repository.
+- `*` (other) — `404` banner above a fake Python traceback with the requested path inside.
 
 Detailed docs live under [`docs/`](./docs):
 
@@ -57,6 +66,8 @@ Detailed docs live under [`docs/`](./docs):
 - [`docs/html-view.md`](./docs/html-view.md) — Open Graph meta and `/stock` keyboard shortcuts.
 - [`docs/localization.md`](./docs/localization.md) — locale negotiation, `?lang=` override, Vary policy.
 - [`docs/qr.md`](./docs/qr.md) — `/qr` parameters, error-correction levels, ASCII scannability caveat.
+- [`docs/github.md`](./docs/github.md) — `/github/:user` and
+  `/github/:user/:repo` cards, glyph substitutions, `GITHUB_TOKEN` posture.
 
 ## Result
 
@@ -186,6 +197,10 @@ Behavioral notes:
 - The HTML response cache key includes the resolved locale, so three
   locales × URL = at most 3× the working set. The LRU is sized
   accordingly.
+- `/qr` and `/github/*` are locale-agnostic — the rendered bytes are
+  the same for every locale at the same path. Locale resolution still
+  runs (so `htmlcache` keys stay project-wide locale-aware), but the
+  output does not vary on it.
 
 See [`docs/localization.md`](./docs/localization.md) for the full
 behavior spec and the Cloudflare cache-key normalization guidance.
