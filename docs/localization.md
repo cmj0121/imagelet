@@ -94,21 +94,29 @@ design:
 
 The TWSE-specific block (institutional flow, breadth, margin balance,
 retail futures, options PCR, VIX, TDCC holders distribution, 大宗交易,
-殖利率 / PER / PBR fundamentals) is gated by locale:
+殖利率 / PER / PBR fundamentals, 上市 + 外資持股 context row) is
+gated by locale:
 
 - `en` visitors see only the generic OHLC + MA card. The TWSE rows
   are stripped at the service layer (`service/stock.showTWSEEnrichment`)
   — several of those terms (`借券賣出當日餘額`, `融資`, `融券`,
-  `外資籌碼`, `大戶`, `總戶數`, `大宗交易`, `殖利率`) lack clean
-  English equivalents, so emitting them transliterated would be worse
-  than omitting them. The TWSE upstream fetch is also skipped, so
-  `en` stock requests are slightly cheaper.
+  `外資籌碼`, `大戶`, `總戶數`, `大宗交易`, `殖利率`, `外資持股`)
+  lack clean English equivalents, so emitting them transliterated
+  would be worse than omitting them. The TWSE upstream fetch is also
+  skipped, so `en` stock requests are slightly cheaper.
 - `zh-TW` visitors see the full TWSE block with traditional script
   (`漲跌家數`, `融資`, `融券`, `外資籌碼`, `大戶`, `總戶數`,
-  `大宗交易`, `殖利率`, `億`, `萬張`, `張`, `筆`).
+  `大宗交易`, `殖利率`, `外資持股`, `上市`, `億`, `萬張`, `張`, `筆`).
 - `zh-CN` visitors see the full TWSE block with simplified script
   (`涨跌家数`, `融资`, `融券`, `外资筹码`, `大户`, `总户数`,
-  `大宗交易`, `股息率`, `亿`, `万张`, `张`, `笔`).
+  `大宗交易`, `股息率`, `外资持股`, `上市`, `亿`, `万张`, `张`, `笔`).
+
+**Sector names stay Traditional** across both zh locales — TWSE
+returns 產業別 as a numeric code that we resolve via a static map
+written in TW Traditional script (`半導體業`). zh-CN viewers see
+the Trad name. This matches the upstream-provided 證券名稱 (which
+we also don't simplify). A future Trad→Simp dictionary could close
+the gap; out of scope.
 
 `PER` and `PBR` on the fundamentals row stay Latin across both zh
 locales — both abbreviations are universal in TW + CN financial

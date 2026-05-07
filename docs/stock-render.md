@@ -185,6 +185,8 @@ and above the 散戶 group on market-wide views:
 大宗交易  2 筆  ·  2,000 張  ·  44.05 億
 
 殖利率 0.98%  ·  PER 33.97  ·  PBR 10.77
+
+半導體業  ·  上市 1994  ·  外資持股 70.65%
 ```
 
 Each group is separated by a zero-width-space row so pylon's row
@@ -251,3 +253,40 @@ The metrics are derived from published close + cumulative-12mo
 dividend / EPS, so they're stable during the session and render
 alongside the live price without intra-day flicker. Cache: same
 publish-window TTL as 大宗交易.
+
+### Sector + listing-year + 外資持股 row (TWSE only)
+
+The per-stock context row combines three slow-moving signals:
+
+```text
+半導體業  ·  上市 1994  ·  外資持股 70.65%
+```
+
+Per-segment skip on missing data:
+
+- **Sector tag** comes from TWSE's 上市公司基本資料 (`t187ap03_L`).
+  The upstream returns 產業別 as a 2-character numeric code (e.g.
+  `24`); a static 33-row map in the twse package resolves it to TW
+  Traditional names (`半導體業`, `金融保險業`, etc.). Codes outside
+  the map fall through to "" and that segment is skipped. zh-CN
+  viewers see Traditional sector names — same compromise as
+  upstream-provided 證券名稱 (we don't translate `鴻海` to `鸿海`
+  either).
+- **Listing year** is the 4-digit year from the same dataset's
+  上市日期. Surfacing the year alone is enough context for the
+  "established vs. recent IPO" read; the full date felt clunky.
+- **外資持股** is the 全體外資及陸資持股比率% from the daily
+  rwd `MI_QFIIS` endpoint. The renderer surfaces the headline
+  ratio only — `AvailablePct` and `UpperlimitPct` stay on the
+  struct for future use.
+
+A stock with **none** of the three signals omits the row. ETFs
+(0050, 006208) typically render only the foreign-holdings segment
+because t187ap03_L is a companies-only file and ETFs are absent.
+OTC stocks (上櫃) currently omit the entire row — TPEx hosts
+equivalent endpoints at a different domain with a numeric industry
+code that needs its own mapping; deferred to a follow-up.
+
+Source: t187ap03_L cache is single-key 24h; `MI_QFIIS` is the
+date-pinned legacy `rwd/zh/fund` endpoint with walkback like
+TWT93U / lending. Both auth-free, JSON.

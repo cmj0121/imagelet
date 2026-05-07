@@ -13,6 +13,8 @@ duplicate fetches. The cache layer is layered:
 | TDCC holders dispersion (universe)  | 24h         | Single-key bulk dump, parsed once, mapped per stock. |
 | TWSE block trades (BFIAUU)          | 24h / 30min | Single-key daily snapshot; publish-window TTL.       |
 | TWSE fundamentals (BWIBBU_d)        | 24h / 30min | Single-key daily snapshot of yield / PER / PBR.      |
+| TWSE listing info (t187ap03_L)      | 24h         | Single-key bulk; sector + listing date per company.  |
+| TWSE foreign holdings (MI_QFIIS)    | 24h / 30min | Per-(stock,date) walkback; full-universe daily file. |
 | Live breadth (universe + MIS)       | 4h / 30s    | Universe 4h; MIS batch 30s.                          |
 | TWSE name lookup                    | forever     | Stable per stock ID; in `sync.Map`.                  |
 | HTML responses                      | per header  | `internal/htmlcache`, LRU 256, text/html only.       |
