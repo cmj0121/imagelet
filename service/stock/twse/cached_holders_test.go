@@ -287,3 +287,173 @@ func (h *holdersProviderOnly) Get(_ context.Context) (MarketData, error) {
 func (h *holdersProviderOnly) GetHoldersDistribution(_ context.Context, _ string, _ time.Time) (HoldersDistribution, error) {
 	return h.dist, nil
 }
+
+// programmableHolders is a HoldersExactProvider whose return value can
+// be swapped between calls. Used for rotation tests where the second
+// fetch must return a different AsOf than the first.
+type programmableHolders struct {
+	mu    sync.Mutex
+	calls int32
+	dump  holdersDump
+	found bool
+	err   error
+}
+
+func (p *programmableHolders) FetchHoldersExact(_ context.Context) (holdersDump, bool, error) {
+	atomic.AddInt32(&p.calls, 1)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.dump, p.found, p.err
+}
+
+func (p *programmableHolders) set(dump holdersDump, found bool, err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.dump, p.found, p.err = dump, found, err
+}
+
+// dumpAt returns a synthetic dump with stock 2330 carrying the given
+// tier-14 + tier-15 share counts and a fixed total — lets rotation
+// tests vary AsOf and tier sums between fetches.
+func dumpAt(asOf time.Time, t14Share, t15Share int64) holdersDump {
+	return holdersDump{
+		AsOf: asOf,
+		Rows: map[string]HoldersDistribution{
+			"2330": {
+				StockID:    "2330",
+				AsOf:       asOf,
+				TotalCount: 2519187,
+				TotalShare: 25932524521,
+				Tiers: [15]HoldersTier{
+					13: {Count: 224, Share: t14Share},
+					14: {Count: 1497, Share: t15Share},
+				},
+			},
+		},
+	}
+}
+
+// TestCachedHolders_RotatesPreviousOnFreshAsOf pins option (b): when a
+// fresh fetch lands with a NEW AsOf, the prior dump's matching row
+// surfaces as Prev* fields on the next lookup.
+func TestCachedHolders_RotatesPreviousOnFreshAsOf(t *testing.T) {
+	week1 := time.Date(2026, 4, 23, 12, 0, 0, 0, twLoc)
+	week2 := time.Date(2026, 4, 30, 12, 0, 0, 0, twLoc)
+
+	upstream := &programmableHolders{}
+	upstream.set(dumpAt(week1, 200_000_000, 22_000_000_000), true, nil)
+
+	c := NewCachedHolders(upstream, 0)
+	t0 := week1.Add(time.Hour)
+	now := t0
+	c.SetClock(func() time.Time { return now })
+
+	// First fetch: warm-up, no Prev fields.
+	d1, err := c.GetHoldersDistribution(context.Background(), "2330", time.Time{})
+	if err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if !d1.PrevAsOf.IsZero() {
+		t.Errorf("first PrevAsOf = %v, want zero (cold start)", d1.PrevAsOf)
+	}
+
+	// Roll past TTL and swap upstream to week2.
+	now = t0.Add(holdersSuccessTTL + time.Minute)
+	upstream.set(dumpAt(week2, 250_000_000, 22_500_000_000), true, nil)
+
+	d2, err := c.GetHoldersDistribution(context.Background(), "2330", time.Time{})
+	if err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	if !d2.PrevAsOf.Equal(week1) {
+		t.Errorf("second PrevAsOf = %v, want %v (rotated from week1)", d2.PrevAsOf, week1)
+	}
+	if got := d2.PrevTiers[14].Share; got != 22_000_000_000 {
+		t.Errorf("PrevTiers[14].Share = %d, want 22000000000 (week1 tier 15)", got)
+	}
+	if got := d2.PrevTotalShare; got != 25_932_524_521 {
+		t.Errorf("PrevTotalShare = %d, want 25932524521", got)
+	}
+}
+
+// TestCachedHolders_NoRotateOnSameAsOf pins that re-fetching the same
+// AsOf (e.g. cache TTL expired but TDCC hasn't published a new dump)
+// does NOT rotate — previous stays zero, lastDump just refreshes.
+func TestCachedHolders_NoRotateOnSameAsOf(t *testing.T) {
+	week := time.Date(2026, 4, 30, 12, 0, 0, 0, twLoc)
+	upstream := &programmableHolders{}
+	upstream.set(dumpAt(week, 200_000_000, 22_000_000_000), true, nil)
+
+	c := NewCachedHolders(upstream, 0)
+	t0 := week.Add(time.Hour)
+	now := t0
+	c.SetClock(func() time.Time { return now })
+
+	if _, err := c.GetHoldersDistribution(context.Background(), "2330", time.Time{}); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	now = t0.Add(holdersSuccessTTL + time.Minute)
+	d, err := c.GetHoldersDistribution(context.Background(), "2330", time.Time{})
+	if err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	if !d.PrevAsOf.IsZero() {
+		t.Errorf("PrevAsOf = %v, want zero (same AsOf must not rotate)", d.PrevAsOf)
+	}
+}
+
+// TestCachedHolders_LoadFromMirrorsLastDump pins cross-restart Δ
+// continuity: a snapshot restored via loadFrom seeds lastDump so the
+// NEXT fresh fetch (with a different AsOf) rotates correctly. Without
+// the mirror, restart would reset rotation tracking and extend the Δ
+// warm-up window across two publish cycles instead of one.
+//
+// Times are anchored to real wall-clock (time.Now) because
+// ttlcache.LoadJSON gates restored entries on ExpiresAt > real now —
+// fully-mocked clocks would skip the entry as expired before the
+// mirror check ever runs. We pick week1/week2 in the recent past so
+// ExpiresAt = week1 + 24h sits comfortably in the real-wall future.
+func TestCachedHolders_LoadFromMirrorsLastDump(t *testing.T) {
+	realNow := time.Now()
+	week1 := realNow.Add(-2 * time.Hour)
+	week2 := realNow.Add(-time.Hour)
+
+	src := NewCachedHolders(&programmableHolders{
+		dump:  dumpAt(week1, 200_000_000, 22_000_000_000),
+		found: true,
+	}, 0)
+	src.SetClock(func() time.Time { return week1 })
+	if _, err := src.GetHoldersDistribution(context.Background(), "2330", time.Time{}); err != nil {
+		t.Fatalf("populate: %v", err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, snapshotHolders)
+	if err := src.saveTo(path); err != nil {
+		t.Fatalf("saveTo: %v", err)
+	}
+
+	// Fresh wrapper — restart simulation. loadFrom runs against the
+	// real wall (no SetClock yet), and the snapshot's ExpiresAt
+	// (= week1 + 24h ≈ realNow + 22h) is still in the future, so the
+	// entry restores and the lastDump mirror catches it.
+	upstream := &programmableHolders{
+		dump:  dumpAt(week2, 250_000_000, 22_500_000_000),
+		found: true,
+	}
+	dst := NewCachedHolders(upstream, 0)
+	if err := dst.loadFrom(path); err != nil {
+		t.Fatalf("loadFrom: %v", err)
+	}
+
+	// Now flip dst's clock past the entry's TTL so the next call hits
+	// GetOrFetch's fetch closure (where rotation happens).
+	dst.SetClock(func() time.Time { return week1.Add(holdersSuccessTTL + time.Minute) })
+
+	d, err := dst.GetHoldersDistribution(context.Background(), "2330", time.Time{})
+	if err != nil {
+		t.Fatalf("post-restart fetch: %v", err)
+	}
+	if !d.PrevAsOf.Equal(week1) {
+		t.Errorf("PrevAsOf = %v, want %v (loadFrom must mirror lastDump for rotation)", d.PrevAsOf, week1)
+	}
+}

@@ -82,12 +82,26 @@ var holdersExpectedKeys = []string{
 // Empty (zero-valued) when the upstream had no row for the stock id —
 // pre-listing, delisted, non-TW, or pre-publish on a fresh-listing
 // week. Renderer gates on Has() to omit the rows gracefully.
+//
+// Prev* fields carry the prior week's snapshot of the same stock for
+// concentration-drift rendering (▲/▼ pp pill on the 大戶 line). They
+// are populated by CachedHolders only when a prior dump with a
+// different AsOf has rotated through this process; on cold start the
+// fields stay zero and the renderer omits the pill silently. Prev*
+// is populated at lookup time, NOT serialized into the on-disk
+// snapshot — cross-restart Δ continuity is not load-bearing for the
+// pill (warm-up window of ≤7d after restart is acceptable).
 type HoldersDistribution struct {
 	StockID    string          // 證券代號, trimmed (no upstream space-padding)
 	AsOf       time.Time       // 資料日期 from upstream, not from request
 	Tiers      [15]HoldersTier // tier 1..15 verbatim; 16/17 excluded
 	TotalCount int64           // tier 17 人數 (合計 — total accounts holding the stock)
 	TotalShare int64           // tier 17 股數 (合計 — total shares custodied)
+
+	PrevAsOf       time.Time       `json:"-"` // prior dump's published date; zero = no Δ available
+	PrevTiers      [15]HoldersTier `json:"-"` // prior week's per-tier counts (for symmetric bucketing)
+	PrevTotalCount int64           `json:"-"` // prior week's tier 17 人數
+	PrevTotalShare int64           `json:"-"` // prior week's tier 17 股數
 }
 
 // HoldersTier captures one band of the TDCC 持股分級 breakdown for a

@@ -999,9 +999,17 @@ func perStockCreditRows(m twse.StockMargin, l twse.SecuritiesLending, cat *i18n.
 	return rows
 }
 
+// holdersDeltaThreshold is the minimum |Δ| (in percentage points) at
+// which the 大戶 line emits a directional ▲/▼ pill. Below the threshold
+// the pill renders as ≈ to signal "stable WoW" without leading the
+// reader to over-interpret rounding-noise drift. 0.05pp matches half
+// of one trailing decimal in the 86.36% display precision — finer
+// than this is upstream rounding artifact, not signal.
+const holdersDeltaThreshold = 0.05
+
 // holdersRows formats the TDCC 集保戶股權分散表 summary as two lines:
 //
-//	大戶    1,721 戶  0.07%  ·  持股 86.36%
+//	大戶    1,721 戶  0.07%  ·  持股 86.36%  ·  ▲0.05pp
 //	總戶數  2,519,187
 //
 // The "大戶" bucket aggregates TDCC tiers 14+15 (≥800k shares) — the
@@ -1012,6 +1020,12 @@ func perStockCreditRows(m twse.StockMargin, l twse.SecuritiesLending, cat *i18n.
 // surfaces. The 總戶數 row is the absolute account count from tier 17
 // (合計) — useful for "newly listed" vs "established" comparison and
 // for change-over-time once historical caching arrives.
+//
+// The trailing pill on the 大戶 line is the week-over-week change in
+// the 持股 percentage (▲ tightening concentration, ▼ loosening, ≈ no
+// material drift). The pill is omitted when h.PrevAsOf is zero (cold
+// start, single-publish window) or when the prior dump has no row for
+// this stock (newly listed mid-week).
 //
 // Returns nil when h is empty (Has() == false) or when the catalog's
 // holders strings are empty (en locale — though the locale gate at
@@ -1040,16 +1054,41 @@ func holdersRows(h twse.HoldersDistribution, cat *i18n.Catalog) []string {
 		bigPctShares = float64(bigShare) / float64(h.TotalShare) * 100
 	}
 	w := maxLabelWidth(cat.TWSEHoldersBig, cat.TWSEHoldersAll)
+	bigLine := fmt.Sprintf("%s  %s %s  %.2f%%  %s  %s %.2f%%",
+		padLabel(cat.TWSEHoldersBig, w),
+		formatThousands(bigCount), cat.TWSEHoldersUnit,
+		bigPctAccounts,
+		cat.Separator,
+		cat.TWSEHoldersHold, bigPctShares)
+	if pill := holdersDeltaPill(h, bigPctShares); pill != "" {
+		bigLine += "  " + cat.Separator + "  " + pill
+	}
 	return []string{
-		fmt.Sprintf("%s  %s %s  %.2f%%  %s  %s %.2f%%",
-			padLabel(cat.TWSEHoldersBig, w),
-			formatThousands(bigCount), cat.TWSEHoldersUnit,
-			bigPctAccounts,
-			cat.Separator,
-			cat.TWSEHoldersHold, bigPctShares),
+		bigLine,
 		fmt.Sprintf("%s  %s",
 			padLabel(cat.TWSEHoldersAll, w),
 			formatThousands(h.TotalCount)),
+	}
+}
+
+// holdersDeltaPill renders the WoW concentration-drift pill (▲/▼/≈
+// + magnitude in pp) for the 大戶 line. Returns "" when no prior
+// snapshot is available (cold start) or when the prior dump has no
+// row for this stock.
+func holdersDeltaPill(h twse.HoldersDistribution, currPct float64) string {
+	if h.PrevAsOf.IsZero() || h.PrevTotalShare == 0 {
+		return ""
+	}
+	prevBigShare := h.PrevTiers[13].Share + h.PrevTiers[14].Share
+	prevPct := float64(prevBigShare) / float64(h.PrevTotalShare) * 100
+	delta := currPct - prevPct
+	switch {
+	case delta > holdersDeltaThreshold:
+		return fmt.Sprintf("▲%.2fpp", delta)
+	case delta < -holdersDeltaThreshold:
+		return fmt.Sprintf("▼%.2fpp", -delta)
+	default:
+		return "≈"
 	}
 }
 

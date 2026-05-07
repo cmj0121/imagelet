@@ -1724,6 +1724,95 @@ func TestServeHoldersOmitsWhenNoData(t *testing.T) {
 	}
 }
 
+// fakeHoldersDistWithPrev returns the same shape as fakeHoldersDist
+// but with prior-week fields populated so the renderer emits the Δ
+// pill on the 大戶 line. Tier 14+15 share went from 22.0B → 22.394B
+// (current = 22193101818 + 201422294, prev = 22B), totals same: drift
+// = (22.394/25.933) - (22.0/25.933) ≈ 1.52pp upward.
+func fakeHoldersDistWithPrev() twse.HoldersDistribution {
+	d := fakeHoldersDist()
+	d.PrevAsOf = time.Date(2026, 4, 23, 12, 0, 0, 0, time.UTC)
+	d.PrevTotalCount = 2519187
+	d.PrevTotalShare = 25932524521
+	// Prev tier 14: same. Prev tier 15: 22.0B (was 22.193B current).
+	d.PrevTiers[13] = twse.HoldersTier{Count: 224, Share: 201422294, Pct: 0.77}
+	d.PrevTiers[14] = twse.HoldersTier{Count: 1497, Share: 22_000_000_000, Pct: 84.83}
+	return d
+}
+
+// TestServeHoldersRendersDeltaPill pins the WoW drift pill on the
+// 大戶 line. Current concentration = 86.36%, prev = 85.62% → Δ ≈
+// +0.74pp → ▲ pill. Verify the body carries ▲ + the magnitude.
+func TestServeHoldersRendersDeltaPill(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "2330.TW"
+	q.Currency = "TWD"
+	q.IsClosed = true
+	tw := &histTWSE{
+		dataLive: freshTW(),
+		holders: map[string]twse.HoldersDistribution{
+			"2330": fakeHoldersDistWithPrev(),
+		},
+	}
+	r := newRouterWithTWSE(fakeProvider{q: q}, tw)
+
+	req := httptest.NewRequest(http.MethodGet, "/stock/2330.tw", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "▲") {
+		t.Errorf("body missing ▲ pill\n--- body ---\n%s", body)
+	}
+	if !strings.Contains(body, "pp") {
+		t.Errorf("body missing pp suffix on Δ pill\n--- body ---\n%s", body)
+	}
+}
+
+// TestServeHoldersOmitsPillOnColdStart pins the warm-up window: a
+// distribution without Prev* fields renders the 大戶 line WITHOUT a
+// pill. ≈ alone (the no-drift token) is acceptable, but ▲/▼ + pp
+// must be absent — the pill should appear only when there's a
+// prior-week baseline to diff against.
+func TestServeHoldersOmitsPillOnColdStart(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "2330.TW"
+	q.Currency = "TWD"
+	q.IsClosed = true
+	tw := &histTWSE{
+		dataLive: freshTW(),
+		holders: map[string]twse.HoldersDistribution{
+			"2330": fakeHoldersDist(), // no Prev* — cold start
+		},
+	}
+	r := newRouterWithTWSE(fakeProvider{q: q}, tw)
+
+	req := httptest.NewRequest(http.MethodGet, "/stock/2330.tw", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "pp") {
+		t.Errorf("cold-start body unexpectedly contains pp Δ suffix\n--- body ---\n%s", body)
+	}
+	// Sanity: 大戶 line still renders, just without the pill suffix.
+	if !strings.Contains(body, "大戶") {
+		t.Errorf("大戶 missing — holders rows should still render without pill\n--- body ---\n%s", body)
+	}
+}
+
 // TestEnCatalogHoldersFieldsEmpty pins the catalog invariant: en
 // must leave the new TWSE Holders fields empty, matching the existing
 // pattern. Catches a future contributor accidentally populating en

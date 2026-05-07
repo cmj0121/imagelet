@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -338,10 +339,22 @@ const holdersSuccessTTL = 24 * time.Hour
 // Per-stock lookup is a map hit on the parsed dump; concurrent /stock
 // requests for different stocks during the same week converge on a
 // single 9.5 MiB fetch.
+//
+// Concentration-drift rendering (the ▲/▼ pp pill on the 大戶 line)
+// requires the prior week's dump for diff. The cache layer keeps a
+// rotation buffer in-memory: lastDump shadows the latest successful
+// fetch; previous holds whatever lastDump held when a fresh AsOf
+// supersedes it. On cold start (or pod restart without snapshot
+// previous), previous stays zero and the renderer omits the pill —
+// option (b): warm-up rather than fake a baseline.
 type CachedHolders struct {
 	upstream HoldersExactProvider
 	cache    *ttlcache.Cache[string, holdersDump]
 	now      func() time.Time
+
+	mu       sync.Mutex
+	lastDump holdersDump // mirror of latest successful fetch (or restored snapshot)
+	previous holdersDump // rotated-out predecessor; zero until a fresh AsOf supersedes lastDump
 }
 
 // NewCachedHolders returns a cached wrapper around upstream. cap is
@@ -373,9 +386,25 @@ const holdersCacheKey = "latest"
 // shared dump. asOf is informational here — staleness gating against
 // the dump's published AsOf is the renderer's job (see HoldersFreshFor
 // in holders.go).
+//
+// On a fresh fetch with a NEW AsOf (different from lastDump.AsOf), the
+// outgoing lastDump rotates into previous so the renderer can compute
+// week-over-week concentration drift. The rotation runs only inside
+// the fetch closure, so a sustained burst of cache hits doesn't churn
+// the previous slot.
 func (c *CachedHolders) GetHoldersDistribution(ctx context.Context, stockID string, _ time.Time) (HoldersDistribution, error) {
 	dump, found, err := c.cache.GetOrFetch(holdersCacheKey, holdersSuccessTTL, func() (holdersDump, bool, error) {
-		return c.upstream.FetchHoldersExact(ctx)
+		d, ok, ferr := c.upstream.FetchHoldersExact(ctx)
+		if ferr != nil || !ok {
+			return d, ok, ferr
+		}
+		c.mu.Lock()
+		if !c.lastDump.AsOf.IsZero() && !c.lastDump.AsOf.Equal(d.AsOf) {
+			c.previous = c.lastDump
+		}
+		c.lastDump = d
+		c.mu.Unlock()
+		return d, true, nil
 	})
 	if err != nil {
 		return HoldersDistribution{}, err
@@ -383,7 +412,24 @@ func (c *CachedHolders) GetHoldersDistribution(ctx context.Context, stockID stri
 	if !found {
 		return HoldersDistribution{}, ErrUnavailable
 	}
-	return holdersLookup(dump, stockID)
+
+	out, err := holdersLookup(dump, stockID)
+	if err != nil {
+		return out, err
+	}
+
+	c.mu.Lock()
+	prev := c.previous
+	c.mu.Unlock()
+	if !prev.AsOf.IsZero() {
+		if pr, ok := prev.Rows[stockID]; ok {
+			out.PrevAsOf = prev.AsOf
+			out.PrevTiers = pr.Tiers
+			out.PrevTotalCount = pr.TotalCount
+			out.PrevTotalShare = pr.TotalShare
+		}
+	}
+	return out, nil
 }
 
 // CachedVIX wraps a VIXExactProvider. Walk-back probes ~2 months back
@@ -537,5 +583,21 @@ func (c *CachedOptionsPCR) loadFrom(path string) error  { return ttlcache.LoadJS
 func (c *CachedOptionsPCR) saveTo(path string) error    { return ttlcache.SaveJSONFile(c.cache, path) }
 func (c *CachedVIX) loadFrom(path string) error         { return ttlcache.LoadJSONFile(c.cache, path) }
 func (c *CachedVIX) saveTo(path string) error           { return ttlcache.SaveJSONFile(c.cache, path) }
-func (c *CachedHolders) loadFrom(path string) error     { return ttlcache.LoadJSONFile(c.cache, path) }
-func (c *CachedHolders) saveTo(path string) error       { return ttlcache.SaveJSONFile(c.cache, path) }
+// CachedHolders.loadFrom mirrors the restored cache entry into
+// lastDump so a subsequent fresh fetch (with a new AsOf) rotates the
+// pre-restart dump into previous. Without this mirror, a pod restart
+// would silently reset Δ tracking — the next fresh fetch would have
+// no lastDump to rotate, and the warm-up window would extend across
+// two publish cycles instead of one.
+func (c *CachedHolders) loadFrom(path string) error {
+	if err := ttlcache.LoadJSONFile(c.cache, path); err != nil {
+		return err
+	}
+	if e, ok := c.cache.Get(holdersCacheKey); ok && e.Found {
+		c.mu.Lock()
+		c.lastDump = e.Value
+		c.mu.Unlock()
+	}
+	return nil
+}
+func (c *CachedHolders) saveTo(path string) error { return ttlcache.SaveJSONFile(c.cache, path) }
