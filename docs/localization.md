@@ -93,18 +93,22 @@ design:
 ## TWSE enrichment policy
 
 The TWSE-specific block (institutional flow, breadth, margin balance,
-retail futures, options PCR, VIX) is gated by locale:
+retail futures, options PCR, VIX, TDCC holders distribution) is gated
+by locale:
 
 - `en` visitors see only the generic OHLC + MA card. The TWSE rows
   are stripped at the service layer (`service/stock.showTWSEEnrichment`)
   — several of those terms (`借券賣出當日餘額`, `融資`, `融券`,
-  `外資籌碼`) lack clean English equivalents, so emitting them
-  transliterated would be worse than omitting them. The TWSE upstream
-  fetch is also skipped, so `en` stock requests are slightly cheaper.
+  `外資籌碼`, `大戶`, `總戶數`) lack clean English equivalents, so
+  emitting them transliterated would be worse than omitting them. The
+  TWSE upstream fetch is also skipped, so `en` stock requests are
+  slightly cheaper.
 - `zh-TW` visitors see the full TWSE block with traditional script
-  (`漲跌家數`, `融資`, `融券`, `外資籌碼`, `億`, `萬張`, `張`).
+  (`漲跌家數`, `融資`, `融券`, `外資籌碼`, `大戶`, `總戶數`, `億`,
+  `萬張`, `張`).
 - `zh-CN` visitors see the full TWSE block with simplified script
-  (`涨跌家数`, `融资`, `融券`, `外资筹码`, `亿`, `万张`, `张`).
+  (`涨跌家数`, `融资`, `融券`, `外资筹码`, `大户`, `总户数`, `亿`,
+  `万张`, `张`).
 
 Row-level column padding is computed in display cells via
 `mattn/go-runewidth` so CJK rows align under monospace rendering.

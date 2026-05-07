@@ -70,4 +70,8 @@ var catalogZhCN = Catalog{
 	TWSERetailTMF:     "微台散户",
 	TWSEOptionsPCR:    "台指期权",
 	TWSEVIX:           "波动指数",
+	TWSEHoldersBig:    "大户",
+	TWSEHoldersAll:    "总户数",
+	TWSEHoldersHold:   "持股",
+	TWSEHoldersUnit:   "户",
 }

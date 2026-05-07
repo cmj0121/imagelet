@@ -316,6 +316,76 @@ func (c *CachedOptionsPCR) GetOptionsPCR(ctx context.Context, asOf time.Time) (O
 	return out, err
 }
 
+// holdersSuccessTTL is the cache hold time for a successful TDCC dump
+// fetch. TDCC publishes once per week, so a 24h TTL keeps the cache
+// fresh without re-downloading the 9.5 MiB dump on every request.
+//
+// Single TTL (vs the dual-TTL design hint of 24h success / 1h failure):
+// ttlcache.GetOrFetch takes one TTL per call, decided BEFORE the fetch
+// returns. Splitting based on found=true vs found=false would require
+// either bypassing GetOrFetch's singleflight (loses stampede control)
+// or duplicating it (extra plumbing for marginal benefit). TDCC publish
+// gaps are rare (TDCC has shipped weekly since the 集保 system began);
+// holding a found=false sentinel for 24h instead of 1h adds at most a
+// 23h window where holders rows go missing on a stock — acceptable
+// given holders is non-load-bearing for the rest of /stock/:symbol.
+const holdersSuccessTTL = 24 * time.Hour
+
+// CachedHolders wraps a HoldersExactProvider with a single-key TTL
+// cache + singleflight (via ttlcache). Unlike the other Cached* types,
+// there is no walkback — the TDCC OpenAPI 1-5 endpoint always serves
+// the latest weekly snapshot, so one cache key covers all asOf inputs.
+// Per-stock lookup is a map hit on the parsed dump; concurrent /stock
+// requests for different stocks during the same week converge on a
+// single 9.5 MiB fetch.
+type CachedHolders struct {
+	upstream HoldersExactProvider
+	cache    *ttlcache.Cache[string, holdersDump]
+	now      func() time.Time
+}
+
+// NewCachedHolders returns a cached wrapper around upstream. cap is
+// the LRU eviction threshold; pass 0 for ttlcache.DefaultCap. Only one
+// entry is ever held (key=holdersCacheKey), so cap mostly governs the
+// LRU bookkeeping overhead — the default is fine.
+func NewCachedHolders(upstream HoldersExactProvider, capacity int) *CachedHolders {
+	return &CachedHolders{
+		upstream: upstream,
+		cache:    ttlcache.New[string, holdersDump](capacity),
+		now:      time.Now,
+	}
+}
+
+// SetClock overrides the wall-clock for tests.
+func (c *CachedHolders) SetClock(now func() time.Time) {
+	c.now = now
+	c.cache.SetClock(now)
+}
+
+// holdersCacheKey is the single key under which the parsed dump lives.
+// The dump is universe-wide and date-pinned by upstream, so caching at
+// any other granularity (per-stock, per-asOf) would just waste memory.
+const holdersCacheKey = "latest"
+
+// GetHoldersDistribution implements HoldersProvider via the cached
+// dump. Concurrent callers for the same week converge on one fetch
+// (ttlcache singleflight); per-stock lookup is a map hit on the
+// shared dump. asOf is informational here — staleness gating against
+// the dump's published AsOf is the renderer's job (see HoldersFreshFor
+// in holders.go).
+func (c *CachedHolders) GetHoldersDistribution(ctx context.Context, stockID string, _ time.Time) (HoldersDistribution, error) {
+	dump, found, err := c.cache.GetOrFetch(holdersCacheKey, holdersSuccessTTL, func() (holdersDump, bool, error) {
+		return c.upstream.FetchHoldersExact(ctx)
+	})
+	if err != nil {
+		return HoldersDistribution{}, err
+	}
+	if !found {
+		return HoldersDistribution{}, ErrUnavailable
+	}
+	return holdersLookup(dump, stockID)
+}
+
 // CachedVIX wraps a VIXExactProvider. Walk-back probes ~2 months back
 // (matching the upstream's monthly dump fallback) by walking days and
 // skipping weekends like the other caches.
@@ -361,12 +431,13 @@ func (c *CachedVIX) GetVIX(ctx context.Context, asOf time.Time) (VIX, error) {
 // owns its own file so a schema change to one value type doesn't
 // invalidate the others.
 const (
-	snapshotT86             = "twse-t86.json"
-	snapshotLending         = "twse-securities-lending.json"
-	snapshotMargin          = "twse-stock-margin.json"
-	snapshotRetailFutures   = "taifex-retail-futures.json"
-	snapshotOptionsPCR      = "taifex-options-pcr.json"
-	snapshotVIX             = "taifex-vix.json"
+	snapshotT86           = "twse-t86.json"
+	snapshotLending       = "twse-securities-lending.json"
+	snapshotMargin        = "twse-stock-margin.json"
+	snapshotRetailFutures = "taifex-retail-futures.json"
+	snapshotOptionsPCR    = "taifex-options-pcr.json"
+	snapshotVIX           = "taifex-vix.json"
+	snapshotHolders       = "tdcc-holders.json"
 )
 
 // LoadSnapshots restores cached entries from JSON files under dir.
@@ -383,6 +454,7 @@ func (c *Cached) LoadSnapshots(dir string) {
 	loadOne(c.taifexFutures, dir, snapshotRetailFutures)
 	loadOne(c.taifexPCR, dir, snapshotOptionsPCR)
 	loadOne(c.taifexVIX, dir, snapshotVIX)
+	loadOne(c.cachedHolders, dir, snapshotHolders)
 }
 
 // SaveSnapshots writes each cache's live entries to dir as JSON.
@@ -399,6 +471,7 @@ func (c *Cached) SaveSnapshots(dir string) {
 	saveOne(c.taifexFutures, dir, snapshotRetailFutures)
 	saveOne(c.taifexPCR, dir, snapshotOptionsPCR)
 	saveOne(c.taifexVIX, dir, snapshotVIX)
+	saveOne(c.cachedHolders, dir, snapshotHolders)
 }
 
 // snapshotter is the minimal interface every CachedFoo exposes for
@@ -446,15 +519,23 @@ var removeFile = os.Remove
 
 // Per-wrapper snapshotter conformance — each delegates to the
 // underlying ttlcache via SaveJSONFile / LoadJSONFile.
-func (c *CachedT86) loadFrom(path string) error             { return ttlcache.LoadJSONFile(c.cache, path) }
-func (c *CachedT86) saveTo(path string) error               { return ttlcache.SaveJSONFile(c.cache, path) }
-func (c *CachedSecuritiesLending) loadFrom(path string) error { return ttlcache.LoadJSONFile(c.cache, path) }
-func (c *CachedSecuritiesLending) saveTo(path string) error   { return ttlcache.SaveJSONFile(c.cache, path) }
-func (c *CachedStockMargin) loadFrom(path string) error     { return ttlcache.LoadJSONFile(c.cache, path) }
-func (c *CachedStockMargin) saveTo(path string) error       { return ttlcache.SaveJSONFile(c.cache, path) }
-func (c *CachedRetailFutures) loadFrom(path string) error   { return ttlcache.LoadJSONFile(c.cache, path) }
-func (c *CachedRetailFutures) saveTo(path string) error     { return ttlcache.SaveJSONFile(c.cache, path) }
-func (c *CachedOptionsPCR) loadFrom(path string) error      { return ttlcache.LoadJSONFile(c.cache, path) }
-func (c *CachedOptionsPCR) saveTo(path string) error        { return ttlcache.SaveJSONFile(c.cache, path) }
-func (c *CachedVIX) loadFrom(path string) error             { return ttlcache.LoadJSONFile(c.cache, path) }
-func (c *CachedVIX) saveTo(path string) error               { return ttlcache.SaveJSONFile(c.cache, path) }
+func (c *CachedT86) loadFrom(path string) error { return ttlcache.LoadJSONFile(c.cache, path) }
+func (c *CachedT86) saveTo(path string) error   { return ttlcache.SaveJSONFile(c.cache, path) }
+func (c *CachedSecuritiesLending) loadFrom(path string) error {
+	return ttlcache.LoadJSONFile(c.cache, path)
+}
+func (c *CachedSecuritiesLending) saveTo(path string) error {
+	return ttlcache.SaveJSONFile(c.cache, path)
+}
+func (c *CachedStockMargin) loadFrom(path string) error { return ttlcache.LoadJSONFile(c.cache, path) }
+func (c *CachedStockMargin) saveTo(path string) error   { return ttlcache.SaveJSONFile(c.cache, path) }
+func (c *CachedRetailFutures) loadFrom(path string) error {
+	return ttlcache.LoadJSONFile(c.cache, path)
+}
+func (c *CachedRetailFutures) saveTo(path string) error { return ttlcache.SaveJSONFile(c.cache, path) }
+func (c *CachedOptionsPCR) loadFrom(path string) error  { return ttlcache.LoadJSONFile(c.cache, path) }
+func (c *CachedOptionsPCR) saveTo(path string) error    { return ttlcache.SaveJSONFile(c.cache, path) }
+func (c *CachedVIX) loadFrom(path string) error         { return ttlcache.LoadJSONFile(c.cache, path) }
+func (c *CachedVIX) saveTo(path string) error           { return ttlcache.SaveJSONFile(c.cache, path) }
+func (c *CachedHolders) loadFrom(path string) error     { return ttlcache.LoadJSONFile(c.cache, path) }
+func (c *CachedHolders) saveTo(path string) error       { return ttlcache.SaveJSONFile(c.cache, path) }

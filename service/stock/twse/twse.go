@@ -304,6 +304,7 @@ type HTTPProvider struct {
 	taifexFutures string // TAIFEX 三大法人區分各期貨契約 download (production-only; empty disables GetRetailFutures)
 	taifexPCR     string // TAIFEX 臺指選擇權 Put/Call ratio (production-only; empty disables GetOptionsPCR)
 	taifexVIX     string // TAIFEX VIX monthly dump URL template — must contain a single %s for YYYYMM
+	holders       string // TDCC OpenAPI 1-5 集保戶股權分散表 (production-only; empty disables FetchHoldersExact)
 	client        *http.Client
 
 	// Live breadth state — separate plane from the daily Get() pipeline.
@@ -354,6 +355,7 @@ func New() *HTTPProvider {
 	p.taifexFutures = defaultTAIFEXFuturesEndpoint
 	p.taifexPCR = defaultTAIFEXPCREndpoint
 	p.taifexVIX = defaultTAIFEXVIXURLTemplate
+	p.holders = defaultHoldersEndpoint
 	return p
 }
 
@@ -850,12 +852,13 @@ type Cached struct {
 	// `inner` exposes the matching Exact*Provider interface; nil
 	// fallthrough drops to the legacy bypass path (raw inner walk-back,
 	// no caching). HTTPProvider implements all six.
-	perStockT86      *CachedT86
-	perStockLending  *CachedSecuritiesLending
-	perStockMargin   *CachedStockMargin
-	taifexFutures    *CachedRetailFutures
-	taifexPCR        *CachedOptionsPCR
-	taifexVIX        *CachedVIX
+	perStockT86     *CachedT86
+	perStockLending *CachedSecuritiesLending
+	perStockMargin  *CachedStockMargin
+	taifexFutures   *CachedRetailFutures
+	taifexPCR       *CachedOptionsPCR
+	taifexVIX       *CachedVIX
+	cachedHolders   *CachedHolders
 }
 
 // NewCached returns a Cached wrapper using the default TTLs (4h / 30m)
@@ -891,6 +894,9 @@ func NewCachedWithTTL(inner Provider, successTTL, failureTTL time.Duration) *Cac
 	}
 	if e, ok := inner.(VIXExactProvider); ok {
 		c.taifexVIX = NewCachedVIX(e, 0)
+	}
+	if e, ok := inner.(HoldersExactProvider); ok {
+		c.cachedHolders = NewCachedHolders(e, 0)
 	}
 	return c
 }
@@ -1063,4 +1069,22 @@ func (c *Cached) GetRetailFutures(ctx context.Context, asOf time.Time) (RetailFu
 		return RetailFutures{}, ErrUnavailable
 	}
 	return rfp.GetRetailFutures(ctx, asOf)
+}
+
+// GetHoldersDistribution prefers the single-key TDCC dump cache when
+// inner exposes FetchHoldersExact; otherwise falls back to inner's raw
+// HoldersProvider (uncached). The cached path holds the parsed dump
+// for a 24h window and serves per-stock lookups as map hits, so 100
+// concurrent /stock requests on different stocks during the same week
+// cost one fetch + 100 map lookups rather than 100 independent fetches
+// of the 9.5 MiB dump.
+func (c *Cached) GetHoldersDistribution(ctx context.Context, stockID string, asOf time.Time) (HoldersDistribution, error) {
+	if c.cachedHolders != nil {
+		return c.cachedHolders.GetHoldersDistribution(ctx, stockID, asOf)
+	}
+	hp, ok := c.inner.(HoldersProvider)
+	if !ok {
+		return HoldersDistribution{}, ErrUnavailable
+	}
+	return hp.GetHoldersDistribution(ctx, stockID, asOf)
 }

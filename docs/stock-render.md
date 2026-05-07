@@ -106,3 +106,82 @@ to occupy without erasing the sentinel.
 O: 4,460.00 · C: - · P: 4,450.00
 H: 4,520.00 · L: 4,440.00
 ```
+
+## Holders rows (TWSE only)
+
+For per-stock TWSE views (`/stock/2330.TW`, `/stock/6488.TWO`, etc.)
+the renderer appends two summary rows from the TDCC weekly
+集保戶股權分散表 (shareholder dispersion table). Sourced once a week
+from TDCC and reused as a parsed map across requests; one row per
+stock survives into the rendered card:
+
+```text
+大戶    1,721 戶  0.07%  ·  持股 86.36%
+總戶數  2,519,187
+```
+
+- **大戶 line**: count of accounts holding ≥800 k shares (the bucket
+  combines TDCC tiers 14 and 15), the bucket's share of the total
+  account population (`0.07%`), and its share of all custodied shares
+  (`持股 86.36%`). The high concentration on TSMC is the canonical
+  "institutional float" signal — answers "how concentrated is the
+  ownership?" at a glance.
+- **總戶數 line**: the absolute account count from TDCC's tier 17
+  (合計). Useful for the "newly listed vs. established" comparison
+  between symbols and for tracking issuance over time.
+
+The 大戶 bucket combines tiers 14 (800 k–1 M shares) and 15 (>1 M
+shares) — tier 15 alone underestimates concentration on
+thinly-traded mid-caps where 800 k–1 M holders are still meaningful.
+Bucketing 14+15 matches the convention used by Goodinfo and other
+public 籌碼分析 surfaces. TDCC's tier 16 (差異數調整) is a settlement-
+adjustment row, not a holder bucket — dropped at parse time.
+
+### Update cadence
+
+TDCC publishes once per week (typically the Thursday after the
+target Friday's close), so the cached entry refreshes daily but the
+underlying values move on a weekly cadence. Concentration drift is
+slow enough that the rendered card stays meaningful intra-day; the
+holders fetch is therefore the one TWSE row that does **not** gate on
+`q.IsClosed` — the lending / margin / 三大法人 rows hide intra-day
+to avoid showing yesterday's afterTrading numbers next to today's
+live price, but holders is structurally weekly and stays visible.
+
+### Locale gating
+
+The 大戶 / 總戶數 rows render on `zh-TW` and `zh-CN`; `en` strips
+them along with the rest of the TWSE block (see
+[`docs/localization.md`](./localization.md) — there is no clean
+English vocabulary for 集保戶 / 持股分級 / 大戶, so the rows are
+suppressed rather than emitted as transliteration).
+
+### `?date=` staleness gate
+
+When `?date=` pins a historical OHLC bar more than 14 days off the
+TDCC dump's published date, the holders rows are silently suppressed.
+Stitching January's price action against April's dispersion is
+misleading — especially on stocks where the holder base shifted
+materially between the two dates (IPOs, secondary offerings,
+buybacks). Within the 14-day window the rows render as usual; past
+it, the renderer treats the data as if it were unavailable.
+
+### Where the rows sit
+
+The new rows sit beneath the existing per-stock TW enrichment groups
+and above the 散戶 group on market-wide views:
+
+```text
+外資籌碼  ░░░░░░░░░░│████████░░  +43.9B
+投信籌碼  ░░░░░░░░░░│░░░░░░░░░░  +2.2B
+自營籌碼  ░░░░░░░░░░│██░░░░░░░░  +8.9B
+合計籌碼  ░░░░░░░░░░│██████████  +55.0B  ▲
+
+信用餘額  融資 4,409億   融券 19.1萬張
+
+大戶    1,721 戶  0.07%  ·  持股 86.36%
+總戶數  2,519,187
+```
+
+Each group is separated by a zero-width-space row so pylon's row
+parser keeps them distinct without trimming the gap.

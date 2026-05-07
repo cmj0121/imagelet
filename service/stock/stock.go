@@ -237,6 +237,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	var margin twse.StockMargin
 	var pcr twse.OptionsPCR
 	var vix twse.VIX
+	var holders twse.HoldersDistribution
 	if enrichTW && h.twse != nil && showTWSEEnrichment(loc) {
 		ctx := c.Request.Context()
 		switch {
@@ -313,6 +314,29 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 			}
 		}
 
+		// TDCC holders distribution is weekly (集保戶股權分散表
+		// publishes once per Thursday-ish), so unlike the rest of the
+		// per-stock TW enrichment it's NOT gated on q.IsClosed —
+		// concentration drift is meaningful intra-day too. The /stock
+		// renderer applies twse.HoldersFreshFor against the user's
+		// ?date= so a historical OHLC pin doesn't stitch an unrelated
+		// holders snapshot onto the card. Failures are best-effort:
+		// log and leave holders zero so the renderer skips the rows.
+		if stockID != "" {
+			ctx := c.Request.Context()
+			asOfQuery := asOf
+			if !dateOverride {
+				asOfQuery = time.Time{}
+			}
+			if hp, ok := h.twse.(twse.HoldersProvider); ok {
+				if d, herr := hp.GetHoldersDistribution(ctx, stockID, asOfQuery); herr == nil {
+					holders = d
+				} else if !errors.Is(herr, twse.ErrUnavailable) {
+					log.Warn().Err(herr).Str("stock", stockID).Msg("twse holders fetch failed; omitting holders rows")
+				}
+			}
+		}
+
 		// Retail futures positioning (小台 / 微台) is a market-wide
 		// signal, not per-symbol — sourced from TAIFEX 三大法人區分
 		// 各期貨契約 OI with retail derived as -(institutional net OI).
@@ -371,6 +395,20 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 				}
 			}
 		}
+
+		// Holders staleness gate: when a ?date= override pins an OHLC
+		// bar more than holdersStaleWindow (14d) away from the dump's
+		// published AsOf, suppress the holders rows so the card does
+		// not stitch January's price action against April's dispersion.
+		// No override → always render (HoldersFreshFor returns true on
+		// zero reqAsOf).
+		var reqAsOf time.Time
+		if dateOverride {
+			reqAsOf = asOf
+		}
+		if holders.Has() && !twse.HoldersFreshFor(reqAsOf, holders.AsOf) {
+			holders = twse.HoldersDistribution{}
+		}
 	}
 
 	headline := strconv.FormatFloat(q.Last, 'f', 2, 64)
@@ -403,7 +441,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	// labels via the ASCII path; honors both Accept: text/pylon and
 	// ?format=pylon for header/query parity.
 	if middleware.WantsPylonSource(c) {
-		bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, stale, loc, cat)
+		bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, holders, stale, loc, cat)
 		c.Data(http.StatusOK, "text/pylon",
 			[]byte(render.BannerSourceBoxes(headline, "", bs.captions, bs.boxes())))
 		return
@@ -417,7 +455,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	// font in render/png.go. The TWSE enrichment rows are gated on
 	// locale via showTWSEEnrichment so en visitors see only the
 	// generic OHLC + MA card.
-	bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, stale, loc, cat)
+	bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, holders, stale, loc, cat)
 
 	renderAt := func(m render.Mode) ([]byte, error) {
 		return render.BannerBoxes(headline, "", bs.captions, bs.boxes(), m)
@@ -545,7 +583,7 @@ func zwspGuard(row string) string {
 // labels inside the TWSE block stay literal — every rendered surface
 // (ASCII / pylon-source / SVG / HTML / PNG) carries CJK coverage now,
 // so there is no tofu-fallback path to gate them on.
-func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse.StockData, live twse.LiveBreadth, retail twse.RetailFutures, lending twse.SecuritiesLending, margin twse.StockMargin, pcr twse.OptionsPCR, vix twse.VIX, stale bool, loc i18n.Locale, cat *i18n.Catalog) stockBlocks {
+func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse.StockData, live twse.LiveBreadth, retail twse.RetailFutures, lending twse.SecuritiesLending, margin twse.StockMargin, pcr twse.OptionsPCR, vix twse.VIX, holders twse.HoldersDistribution, stale bool, loc i18n.Locale, cat *i18n.Catalog) stockBlocks {
 	bs := stockBlocks{captions: make([]string, 0, 3)}
 
 	// Title row: `<symbol> · <name>`. The symbol/name pair contains
@@ -697,6 +735,16 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 	}
 	if q.IsClosed && (margin.Has() || lending.Has()) {
 		groups = append(groups, perStockCreditRows(margin, lending, cat))
+	}
+	// Holders rows render regardless of market-state — TDCC publishes
+	// weekly so the dispersion is meaningful intra-day too. Has() gate
+	// covers both "no upstream data" and "staleness gate suppressed it
+	// at the handler boundary" (the handler zeros out the struct on a
+	// stale ?date= so we don't have to re-thread reqAsOf through here).
+	if holders.Has() {
+		if rows := holdersRows(holders, cat); len(rows) > 0 {
+			groups = append(groups, rows)
+		}
 	}
 	if q.IsClosed && (pcr.Has() || vix.Has()) {
 		groups = append(groups, []string{marketSentimentRow(pcr, vix, cat)})
@@ -949,6 +997,60 @@ func perStockCreditRows(m twse.StockMargin, l twse.SecuritiesLending, cat *i18n.
 			padLabel(cat.TWSESecLending, w), formatThousands(lots), cat.TWSEUnitZhang))
 	}
 	return rows
+}
+
+// holdersRows formats the TDCC 集保戶股權分散表 summary as two lines:
+//
+//	大戶    1,721 戶  0.07%  ·  持股 86.36%
+//	總戶數  2,519,187
+//
+// The "大戶" bucket aggregates TDCC tiers 14+15 (≥800k shares) — the
+// canonical "concentrated institutional float" signal that retail
+// readers ask first about a TWSE listing. Tier 15 alone (>1M shares)
+// underestimates concentration on thinly-traded mid-caps, so 14+15
+// matches the bucketing convention used by Goodinfo / public 籌碼分析
+// surfaces. The 總戶數 row is the absolute account count from tier 17
+// (合計) — useful for "newly listed" vs "established" comparison and
+// for change-over-time once historical caching arrives.
+//
+// Returns nil when h is empty (Has() == false) or when the catalog's
+// holders strings are empty (en locale — though the locale gate at
+// buildBlocks short-circuits before this is called, the empty check
+// is a defence-in-depth guard against future en-keyed callers).
+//
+// Label cell-widths align with TWSEHoldersBig / TWSEHoldersAll within
+// the holders group itself, mirroring perStockCreditRows. NOTE the
+// formatting deliberately avoids `(...)` and `[...]` pairs — those
+// parse as pylon Ref / Box nodes and re-flow the line across multiple
+// rows. Plain double-space + middle-dot separators keep the line as
+// a single rendered row across all surfaces.
+func holdersRows(h twse.HoldersDistribution, cat *i18n.Catalog) []string {
+	if !h.Has() || cat.TWSEHoldersAll == "" {
+		return nil
+	}
+	// Tiers 14..15 = 0-indexed slots 13..14 (≥800k shares).
+	bigCount := h.Tiers[13].Count + h.Tiers[14].Count
+	bigShare := h.Tiers[13].Share + h.Tiers[14].Share
+	bigPctAccounts := 0.0
+	if h.TotalCount > 0 {
+		bigPctAccounts = float64(bigCount) / float64(h.TotalCount) * 100
+	}
+	bigPctShares := 0.0
+	if h.TotalShare > 0 {
+		bigPctShares = float64(bigShare) / float64(h.TotalShare) * 100
+	}
+	w := maxLabelWidth(cat.TWSEHoldersBig, cat.TWSEHoldersAll)
+	return []string{
+		fmt.Sprintf("%s  %s %s  %.2f%%  %s  %s %.2f%%",
+			padLabel(cat.TWSEHoldersBig, w),
+			formatThousands(bigCount), cat.TWSEHoldersUnit,
+			bigPctAccounts,
+			cat.Separator,
+			cat.TWSEHoldersHold, bigPctShares),
+		fmt.Sprintf("%s  %s",
+			padLabel(cat.TWSEHoldersAll, w),
+			formatThousands(h.TotalCount)),
+	}
 }
 
 // marketSentimentRow combines the 台指選擇權 Put/Call ratio and the

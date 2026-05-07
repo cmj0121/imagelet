@@ -74,4 +74,11 @@ type Catalog struct {
 	TWSERetailTMF     string // 微台散戶 / 微台散户 — retail futures (micro-TWII)
 	TWSEOptionsPCR    string // 台指選擇 / 台指期权 — TAIFEX options PCR row
 	TWSEVIX           string // 波動指數 / 波动指数 — Taiwan VIX row
+	// TDCC 集保戶股權分散表 — per-stock weekly shareholder dispersion.
+	// Holders rows render only when the resolved per-stock dump exists
+	// AND the staleness gate against ?date= passes (see twse.HoldersFreshFor).
+	TWSEHoldersBig  string // 大戶 / 大户 — concentration tier label (≥800k shares = TDCC tiers 14+15)
+	TWSEHoldersAll  string // 總戶數 / 总户数 — headline 合計 (TDCC tier 17) holder count
+	TWSEHoldersHold string // 持股 / 持股 — share-of-shares prefix on the concentration line
+	TWSEHoldersUnit string // 戶 / 户 — account count unit suffix
 }
