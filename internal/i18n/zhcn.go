@@ -77,6 +77,8 @@ var catalogZhCN = Catalog{
 	TWSEBlockTrades:     "大宗交易",
 	TWSEBlockTradesUnit: "笔",
 	TWSEDividendYield:   "股息率",
-	TWSEListingPrefix:   "上市",
-	TWSEForeignHolding:  "外资持股",
+	TWSEListingPrefix:       "上市",
+	TWSEForeignHolding:      "外资持股",
+	TWSEIndustryForeignMean: "业均",
+	TWSEMonthlyRevenue:      "月营收",
 }
