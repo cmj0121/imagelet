@@ -489,6 +489,52 @@ func (c *CachedBlockTrades) GetBlockTrades(ctx context.Context, stockID string, 
 	return day, day.Rows[strings.TrimSpace(stockID)], nil
 }
 
+// CachedForeign wraps a ForeignExactProvider with a per-(stockID,
+// date) walk-back cache, mirroring CachedSecuritiesLending /
+// CachedStockMargin. The rwd MI_QFIIS endpoint is date-pinned (not
+// latest-only like the OpenAPI providers), so walk-back across
+// publish gaps is required — most weekly publish cycles emit data
+// for every trading day, but holiday windows can skip several
+// consecutive dates.
+type CachedForeign struct {
+	upstream ForeignExactProvider
+	cache    *ttlcache.Cache[string, Foreign]
+	now      func() time.Time
+}
+
+func NewCachedForeign(upstream ForeignExactProvider, capacity int) *CachedForeign {
+	return &CachedForeign{
+		upstream: upstream,
+		cache:    ttlcache.New[string, Foreign](capacity),
+		now:      time.Now,
+	}
+}
+
+func (c *CachedForeign) SetClock(now func() time.Time) {
+	c.now = now
+	c.cache.SetClock(now)
+}
+
+func (c *CachedForeign) GetForeign(ctx context.Context, stockID string, asOf time.Time) (Foreign, error) {
+	var out Foreign
+	err := walkBackTradingDays(asOf, c.now(), func(probe time.Time) (bool, error) {
+		date := probe.Format("20060102")
+		key := stockID + "|" + date
+		v, found, err := c.cache.GetOrFetch(key, ttlForAsOf(probe, c.now()), func() (Foreign, bool, error) {
+			return c.upstream.FetchForeignExact(ctx, stockID, date)
+		})
+		if err != nil {
+			return false, err
+		}
+		if found {
+			out = v
+			return true, nil
+		}
+		return false, nil
+	})
+	return out, err
+}
+
 // CachedListingInfo wraps a ListingInfoExactProvider with a single-key
 // 24h cache. The t187ap03_L upstream is essentially static (only
 // changes on IPOs / renames), so cache TTL is fixed rather than

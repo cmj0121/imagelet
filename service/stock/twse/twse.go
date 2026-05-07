@@ -308,6 +308,7 @@ type HTTPProvider struct {
 	blockTrades   string // TWSE OpenAPI BFIAUU 大宗交易/配對交易 (production-only; empty disables FetchBlockTradesExact)
 	fundamentals  string // TWSE OpenAPI BWIBBU_d 殖利率/本益比/PBR (production-only; empty disables FetchFundamentalsExact)
 	listingInfo   string // TWSE OpenAPI t187ap03_L 上市公司基本資料 (production-only; empty disables FetchListingInfoExact)
+	foreign       string // TWSE rwd MI_QFIIS 外資及陸資投資持股 URL template — must contain one %s for YYYYMMDD
 	client        *http.Client
 
 	// Live breadth state — separate plane from the daily Get() pipeline.
@@ -362,6 +363,7 @@ func New() *HTTPProvider {
 	p.blockTrades = defaultBlockTradesEndpoint
 	p.fundamentals = defaultFundamentalsEndpoint
 	p.listingInfo = defaultListingInfoEndpoint
+	p.foreign = defaultForeignEndpoint
 	return p
 }
 
@@ -868,6 +870,7 @@ type Cached struct {
 	cachedBlockTrades  *CachedBlockTrades
 	cachedFundamentals *CachedFundamentals
 	cachedListingInfo  *CachedListingInfo
+	cachedForeign      *CachedForeign
 }
 
 // NewCached returns a Cached wrapper using the default TTLs (4h / 30m)
@@ -915,6 +918,9 @@ func NewCachedWithTTL(inner Provider, successTTL, failureTTL time.Duration) *Cac
 	}
 	if e, ok := inner.(ListingInfoExactProvider); ok {
 		c.cachedListingInfo = NewCachedListingInfo(e, 0)
+	}
+	if e, ok := inner.(ForeignExactProvider); ok {
+		c.cachedForeign = NewCachedForeign(e, 0)
 	}
 	return c
 }
@@ -1153,4 +1159,19 @@ func (c *Cached) GetListingInfo(ctx context.Context, stockID string, asOf time.T
 		return ListingInfo{}, ErrUnavailable
 	}
 	return lp.GetListingInfo(ctx, stockID, asOf)
+}
+
+// GetForeign prefers the rwd MI_QFIIS walkback cache when inner
+// exposes FetchForeignExact; otherwise falls back to inner's raw
+// ForeignProvider. Walkback because the rwd endpoint is date-pinned
+// (unlike the OpenAPI single-key providers).
+func (c *Cached) GetForeign(ctx context.Context, stockID string, asOf time.Time) (Foreign, error) {
+	if c.cachedForeign != nil {
+		return c.cachedForeign.GetForeign(ctx, stockID, asOf)
+	}
+	fp, ok := c.inner.(ForeignProvider)
+	if !ok {
+		return Foreign{}, ErrUnavailable
+	}
+	return fp.GetForeign(ctx, stockID, asOf)
 }
