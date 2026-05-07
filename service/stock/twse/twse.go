@@ -307,9 +307,10 @@ type HTTPProvider struct {
 	holders       string // TDCC OpenAPI 1-5 集保戶股權分散表 (production-only; empty disables FetchHoldersExact)
 	blockTrades   string // TWSE OpenAPI BFIAUU 大宗交易/配對交易 (production-only; empty disables FetchBlockTradesExact)
 	fundamentals  string // TWSE OpenAPI BWIBBU_d 殖利率/本益比/PBR (production-only; empty disables FetchFundamentalsExact)
-	listingInfo   string // TWSE OpenAPI t187ap03_L 上市公司基本資料 (production-only; empty disables FetchListingInfoExact)
-	foreign       string // TWSE rwd MI_QFIIS 外資及陸資投資持股 URL template — must contain one %s for YYYYMMDD
-	client        *http.Client
+	listingInfo    string // TWSE OpenAPI t187ap03_L 上市公司基本資料 (production-only; empty disables FetchListingInfoExact)
+	otcListingInfo string // TPEx OpenAPI mopsfin_t187ap03_O 上櫃公司基本資料 (production-only; empty disables FetchOTCListingInfoExact)
+	foreign        string // TWSE rwd MI_QFIIS 外資及陸資投資持股 URL template — must contain one %s for YYYYMMDD
+	client         *http.Client
 
 	// Live breadth state — separate plane from the daily Get() pipeline.
 	// Empty endpoints disable FetchLiveBreadth; New() populates them with
@@ -363,6 +364,7 @@ func New() *HTTPProvider {
 	p.blockTrades = defaultBlockTradesEndpoint
 	p.fundamentals = defaultFundamentalsEndpoint
 	p.listingInfo = defaultListingInfoEndpoint
+	p.otcListingInfo = defaultOTCListingInfoEndpoint
 	p.foreign = defaultForeignEndpoint
 	return p
 }
@@ -869,8 +871,9 @@ type Cached struct {
 	cachedHolders      *CachedHolders
 	cachedBlockTrades  *CachedBlockTrades
 	cachedFundamentals *CachedFundamentals
-	cachedListingInfo  *CachedListingInfo
-	cachedForeign      *CachedForeign
+	cachedListingInfo    *CachedListingInfo
+	cachedOTCListingInfo *CachedOTCListingInfo
+	cachedForeign        *CachedForeign
 }
 
 // NewCached returns a Cached wrapper using the default TTLs (4h / 30m)
@@ -918,6 +921,9 @@ func NewCachedWithTTL(inner Provider, successTTL, failureTTL time.Duration) *Cac
 	}
 	if e, ok := inner.(ListingInfoExactProvider); ok {
 		c.cachedListingInfo = NewCachedListingInfo(e, 0)
+	}
+	if e, ok := inner.(OTCListingInfoExactProvider); ok {
+		c.cachedOTCListingInfo = NewCachedOTCListingInfo(e, 0)
 	}
 	if e, ok := inner.(ForeignExactProvider); ok {
 		c.cachedForeign = NewCachedForeign(e, 0)
@@ -1159,6 +1165,21 @@ func (c *Cached) GetListingInfo(ctx context.Context, stockID string, asOf time.T
 		return ListingInfo{}, ErrUnavailable
 	}
 	return lp.GetListingInfo(ctx, stockID, asOf)
+}
+
+// GetOTCListingInfo returns the OTC parallel: TPEx t187ap03_O cached
+// when inner exposes FetchOTCListingInfoExact, else falls through to
+// the raw provider. Same value type as TWSE-listed; only the upstream
+// schema differs.
+func (c *Cached) GetOTCListingInfo(ctx context.Context, stockID string, asOf time.Time) (ListingInfo, error) {
+	if c.cachedOTCListingInfo != nil {
+		return c.cachedOTCListingInfo.GetOTCListingInfo(ctx, stockID, asOf)
+	}
+	lp, ok := c.inner.(OTCListingInfoProvider)
+	if !ok {
+		return ListingInfo{}, ErrUnavailable
+	}
+	return lp.GetOTCListingInfo(ctx, stockID, asOf)
 }
 
 // GetForeign prefers the rwd MI_QFIIS walkback cache when inner

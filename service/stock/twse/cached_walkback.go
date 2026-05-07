@@ -579,6 +579,49 @@ func (c *CachedListingInfo) GetListingInfo(ctx context.Context, stockID string, 
 	return info, nil
 }
 
+// CachedOTCListingInfo wraps an OTCListingInfoExactProvider — the
+// TPEx parallel to CachedListingInfo. Same shape: single-key 24h TTL.
+// Distinct cache instance because the underlying upstream is a
+// different domain + schema; LRU is independent so an evicted TWSE
+// entry doesn't churn an OTC entry.
+type CachedOTCListingInfo struct {
+	upstream OTCListingInfoExactProvider
+	cache    *ttlcache.Cache[string, ListingInfoDump]
+	now      func() time.Time
+}
+
+func NewCachedOTCListingInfo(upstream OTCListingInfoExactProvider, capacity int) *CachedOTCListingInfo {
+	return &CachedOTCListingInfo{
+		upstream: upstream,
+		cache:    ttlcache.New[string, ListingInfoDump](capacity),
+		now:      time.Now,
+	}
+}
+
+func (c *CachedOTCListingInfo) SetClock(now func() time.Time) {
+	c.now = now
+	c.cache.SetClock(now)
+}
+
+const otcListingInfoCacheKey = "latest"
+
+func (c *CachedOTCListingInfo) GetOTCListingInfo(ctx context.Context, stockID string, asOf time.Time) (ListingInfo, error) {
+	dump, found, err := c.cache.GetOrFetch(otcListingInfoCacheKey, listingInfoSuccessTTL, func() (ListingInfoDump, bool, error) {
+		return c.upstream.FetchOTCListingInfoExact(ctx, asOf)
+	})
+	if err != nil {
+		return ListingInfo{}, err
+	}
+	if !found {
+		return ListingInfo{}, ErrUnavailable
+	}
+	info, ok := dump.Rows[strings.TrimSpace(stockID)]
+	if !ok {
+		return ListingInfo{}, ErrUnavailable
+	}
+	return info, nil
+}
+
 // CachedFundamentals wraps a FundamentalsExactProvider with a
 // single-key TTL cache + singleflight (via ttlcache). Same shape as
 // CachedBlockTrades — BWIBBU_d serves only the latest publication, so
