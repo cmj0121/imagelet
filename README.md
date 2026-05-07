@@ -38,10 +38,18 @@ Flags:
 
 - `GITHUB_TOKEN` (default: unset) — optional. When set, raises the
   per-process `/github/*` upstream cap from 60 to 5000 requests per hour.
+- `DNS_RESOLVER` (default: `1.1.1.1:853,1.0.0.1:853`) — optional.
+  Comma-separated `host:port` fallback list for the `/dns/*` resolver.
+  Default is Cloudflare DNS-over-TLS (port 853); set port 53 explicitly
+  to opt out of DoT.
+- `DNS_RESOLVER_SNI` (default: `cloudflare-dns.com`) — optional. TLS
+  hostname presented during the DoT handshake. Override when pointing
+  `DNS_RESOLVER` at a self-signed internal resolver.
 
 The `GITHUB_TOKEN` value is read only from the environment — never
 from a CLI flag — so it stays out of `ps -ef` and shell history. See
-[`docs/github.md`](./docs/github.md) for the full posture.
+[`docs/github.md`](./docs/github.md) and
+[`docs/dns.md`](./docs/dns.md) for the full posture.
 
 ## Routes
 
@@ -55,6 +63,8 @@ from a CLI flag — so it stays out of `ps -ef` and shell history. See
 - `GET /qr` — QR code encoding `?text=` (default `https://imglet.sh`); `?ec=L|M|Q|H`.
 - `GET /github/:user` — banner card for a GitHub user / org login.
 - `GET /github/:user/:repo` — banner card for a GitHub `owner/name` public repository.
+- `GET /dns/:hostname` — banner card for a public hostname's DNS records
+  (A / AAAA / CNAME / MX / NS / TXT / SOA / CAA / SRV).
 - `*` (other) — `404` banner above a fake Python traceback with the requested path inside.
 
 Detailed docs live under [`docs/`](./docs):
@@ -68,6 +78,8 @@ Detailed docs live under [`docs/`](./docs):
 - [`docs/qr.md`](./docs/qr.md) — `/qr` parameters, error-correction levels, ASCII scannability caveat.
 - [`docs/github.md`](./docs/github.md) — `/github/:user` and
   `/github/:user/:repo` cards, glyph substitutions, `GITHUB_TOKEN` posture.
+- [`docs/dns.md`](./docs/dns.md) — `/dns/:hostname` card, hostname
+  validation, `DNS_RESOLVER` / `DNS_RESOLVER_SNI` posture.
 
 ## Result
 

@@ -79,11 +79,11 @@ func healthzHandler(c *gin.Context) {
 }
 
 // robotsBody is the static crawler policy returned by GET /robots.txt.
-// Disallows /github/* so high-frequency crawlers don't help convert the
-// public route into a GitHub-data exfiltration tool by proxy (R10).
+// Disallows /github/* and /dns/* so high-frequency crawlers don't help
+// convert public routes into upstream-exfiltration tools by proxy (R10).
 // Other routes are not listed — the default for `User-agent: *` is to
 // allow what isn't explicitly disallowed.
-const robotsBody = "User-agent: *\nDisallow: /github/\n"
+const robotsBody = "User-agent: *\nDisallow: /github/\nDisallow: /dns/\n"
 
 // robotsHandler returns the static robots.txt body with text/plain
 // content-type. Hardcoded body, no file IO, deterministic — if a
