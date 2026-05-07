@@ -306,6 +306,7 @@ type HTTPProvider struct {
 	taifexVIX     string // TAIFEX VIX monthly dump URL template — must contain a single %s for YYYYMM
 	holders       string // TDCC OpenAPI 1-5 集保戶股權分散表 (production-only; empty disables FetchHoldersExact)
 	blockTrades   string // TWSE OpenAPI BFIAUU 大宗交易/配對交易 (production-only; empty disables FetchBlockTradesExact)
+	fundamentals  string // TWSE OpenAPI BWIBBU_d 殖利率/本益比/PBR (production-only; empty disables FetchFundamentalsExact)
 	client        *http.Client
 
 	// Live breadth state — separate plane from the daily Get() pipeline.
@@ -358,6 +359,7 @@ func New() *HTTPProvider {
 	p.taifexVIX = defaultTAIFEXVIXURLTemplate
 	p.holders = defaultHoldersEndpoint
 	p.blockTrades = defaultBlockTradesEndpoint
+	p.fundamentals = defaultFundamentalsEndpoint
 	return p
 }
 
@@ -860,8 +862,9 @@ type Cached struct {
 	taifexFutures   *CachedRetailFutures
 	taifexPCR       *CachedOptionsPCR
 	taifexVIX       *CachedVIX
-	cachedHolders     *CachedHolders
-	cachedBlockTrades *CachedBlockTrades
+	cachedHolders      *CachedHolders
+	cachedBlockTrades  *CachedBlockTrades
+	cachedFundamentals *CachedFundamentals
 }
 
 // NewCached returns a Cached wrapper using the default TTLs (4h / 30m)
@@ -903,6 +906,9 @@ func NewCachedWithTTL(inner Provider, successTTL, failureTTL time.Duration) *Cac
 	}
 	if e, ok := inner.(BlockTradesExactProvider); ok {
 		c.cachedBlockTrades = NewCachedBlockTrades(e, 0)
+	}
+	if e, ok := inner.(FundamentalsExactProvider); ok {
+		c.cachedFundamentals = NewCachedFundamentals(e, 0)
 	}
 	return c
 }
@@ -1110,4 +1116,19 @@ func (c *Cached) GetBlockTrades(ctx context.Context, stockID string, asOf time.T
 		return BlockTradesDay{}, nil, ErrUnavailable
 	}
 	return bp.GetBlockTrades(ctx, stockID, asOf)
+}
+
+// GetFundamentals prefers the BWIBBU_d cache when inner exposes
+// FetchFundamentalsExact; otherwise falls back to inner's raw
+// FundamentalsProvider (uncached). The cached path holds the parsed
+// snapshot for a publish-window-bounded TTL.
+func (c *Cached) GetFundamentals(ctx context.Context, stockID string, asOf time.Time) (Fundamentals, error) {
+	if c.cachedFundamentals != nil {
+		return c.cachedFundamentals.GetFundamentals(ctx, stockID, asOf)
+	}
+	fp, ok := c.inner.(FundamentalsProvider)
+	if !ok {
+		return Fundamentals{}, ErrUnavailable
+	}
+	return fp.GetFundamentals(ctx, stockID, asOf)
 }

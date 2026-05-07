@@ -275,14 +275,17 @@ type histTWSE struct {
 	perStockErr     error
 	holders         map[string]twse.HoldersDistribution
 	holdersErr      error
-	blockTrades     map[string][]twse.BlockTrade
-	blockTradesErr  error
-	getAtCall       int
-	liveCall        int
-	getCall         int
-	perStockCall    int
-	holdersCall     int
-	blockTradesCall int
+	blockTrades      map[string][]twse.BlockTrade
+	blockTradesErr   error
+	fundamentals     map[string]twse.Fundamentals
+	fundamentalsErr  error
+	getAtCall        int
+	liveCall         int
+	getCall          int
+	perStockCall     int
+	holdersCall      int
+	blockTradesCall  int
+	fundamentalsCall int
 }
 
 func (p *histTWSE) Get(_ context.Context) (twse.MarketData, error) {
@@ -349,6 +352,22 @@ func (p *histTWSE) GetBlockTrades(_ context.Context, stockID string, _ time.Time
 		return twse.BlockTradesDay{}, nil, p.blockTradesErr
 	}
 	return twse.BlockTradesDay{}, p.blockTrades[stockID], nil
+}
+
+// GetFundamentals implements twse.FundamentalsProvider. Missing stock
+// → ErrUnavailable (matches "stock not in dump" production behaviour).
+func (p *histTWSE) GetFundamentals(_ context.Context, stockID string, _ time.Time) (twse.Fundamentals, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.fundamentalsCall++
+	if p.fundamentalsErr != nil {
+		return twse.Fundamentals{}, p.fundamentalsErr
+	}
+	f, ok := p.fundamentals[stockID]
+	if !ok {
+		return twse.Fundamentals{}, twse.ErrUnavailable
+	}
+	return f, nil
 }
 
 // TestServeDateOverrideUsesGetAt pins the contract that ?date=YYYY-MM-DD
@@ -1897,6 +1916,90 @@ func TestServeBlockTradesOmitsRowWhenEmpty(t *testing.T) {
 	body := rec.Body.String()
 	if strings.Contains(body, "大宗交易") {
 		t.Errorf("empty-trades body unexpectedly contains 大宗交易\n--- body ---\n%s", body)
+	}
+}
+
+// TestServeFundamentalsRendersZhTW pins the 殖利率 / PER / PBR row
+// for a stock with all three metrics populated (TSMC live shape).
+func TestServeFundamentalsRendersZhTW(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "2330.TW"
+	q.Currency = "TWD"
+	q.IsClosed = true
+	tw := &histTWSE{
+		dataLive: freshTW(),
+		fundamentals: map[string]twse.Fundamentals{
+			"2330": {
+				StockID:       "2330",
+				Name:          "台積電",
+				DividendYield: 0.98,
+				PERatio:       33.97,
+				PBRatio:       10.77,
+			},
+		},
+	}
+	r := newRouterWithTWSE(fakeProvider{q: q}, tw)
+
+	req := httptest.NewRequest(http.MethodGet, "/stock/2330.tw", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"殖利率 0.98%", "PER 33.97", "PBR 10.77"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q\n--- body ---\n%s", want, body)
+		}
+	}
+}
+
+// TestServeFundamentalsSkipsZeroSegments pins the per-segment skip
+// path: a non-dividend-paying stock (DividendYield == 0) renders the
+// row with PER + PBR but without the 殖利率 prefix. Same for a
+// loss-maker with PER == 0.
+func TestServeFundamentalsSkipsZeroSegments(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "2330.TW"
+	q.Currency = "TWD"
+	q.IsClosed = true
+	tw := &histTWSE{
+		dataLive: freshTW(),
+		fundamentals: map[string]twse.Fundamentals{
+			"2330": {
+				StockID:       "2330",
+				Name:          "台積電",
+				DividendYield: 0,    // no dividend
+				PERatio:       0,    // loss-maker
+				PBRatio:       2.34, // book value still publishable
+			},
+		},
+	}
+	r := newRouterWithTWSE(fakeProvider{q: q}, tw)
+
+	req := httptest.NewRequest(http.MethodGet, "/stock/2330.tw", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "PBR 2.34") {
+		t.Errorf("body missing PBR 2.34\n--- body ---\n%s", body)
+	}
+	if strings.Contains(body, "殖利率") {
+		t.Errorf("殖利率 unexpectedly rendered when DividendYield == 0\n--- body ---\n%s", body)
+	}
+	if strings.Contains(body, "PER") {
+		t.Errorf("PER unexpectedly rendered when PERatio == 0\n--- body ---\n%s", body)
 	}
 }
 

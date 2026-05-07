@@ -75,4 +75,5 @@ var catalogZhTW = Catalog{
 	TWSEHoldersUnit:     "戶",
 	TWSEBlockTrades:     "大宗交易",
 	TWSEBlockTradesUnit: "筆",
+	TWSEDividendYield:   "殖利率",
 }

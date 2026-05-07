@@ -239,6 +239,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	var vix twse.VIX
 	var holders twse.HoldersDistribution
 	var blockTrades []twse.BlockTrade
+	var fundamentals twse.Fundamentals
 	if enrichTW && h.twse != nil && showTWSEEnrichment(loc) {
 		ctx := c.Request.Context()
 		switch {
@@ -348,6 +349,19 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 					log.Warn().Err(berr).Str("stock", stockID).Msg("twse block-trades fetch failed; omitting row")
 				}
 			}
+			// Fundamentals (BWIBBU_d) — daily snapshot of per-stock
+			// 殖利率 / 本益比 / PBR. Like block trades, NOT gated on
+			// (q.IsClosed || dateOverride): the metrics are derived
+			// from the published close + cumulative-12mo dividend / EPS,
+			// which doesn't move with intra-day price ticks. Stable
+			// enough during the session to render alongside live price.
+			if fp, ok := h.twse.(twse.FundamentalsProvider); ok {
+				if f, ferr := fp.GetFundamentals(ctx, stockID, asOfQuery); ferr == nil {
+					fundamentals = f
+				} else if !errors.Is(ferr, twse.ErrUnavailable) {
+					log.Warn().Err(ferr).Str("stock", stockID).Msg("twse fundamentals fetch failed; omitting row")
+				}
+			}
 		}
 
 		// Retail futures positioning (小台 / 微台) is a market-wide
@@ -454,7 +468,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	// labels via the ASCII path; honors both Accept: text/pylon and
 	// ?format=pylon for header/query parity.
 	if middleware.WantsPylonSource(c) {
-		bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, holders, blockTrades, stale, loc, cat)
+		bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, holders, blockTrades, fundamentals, stale, loc, cat)
 		c.Data(http.StatusOK, "text/pylon",
 			[]byte(render.BannerSourceBoxes(headline, "", bs.captions, bs.boxes())))
 		return
@@ -468,7 +482,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	// font in render/png.go. The TWSE enrichment rows are gated on
 	// locale via showTWSEEnrichment so en visitors see only the
 	// generic OHLC + MA card.
-	bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, holders, blockTrades, stale, loc, cat)
+	bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, holders, blockTrades, fundamentals, stale, loc, cat)
 
 	renderAt := func(m render.Mode) ([]byte, error) {
 		return render.BannerBoxes(headline, "", bs.captions, bs.boxes(), m)
@@ -596,7 +610,7 @@ func zwspGuard(row string) string {
 // labels inside the TWSE block stay literal — every rendered surface
 // (ASCII / pylon-source / SVG / HTML / PNG) carries CJK coverage now,
 // so there is no tofu-fallback path to gate them on.
-func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse.StockData, live twse.LiveBreadth, retail twse.RetailFutures, lending twse.SecuritiesLending, margin twse.StockMargin, pcr twse.OptionsPCR, vix twse.VIX, holders twse.HoldersDistribution, blockTrades []twse.BlockTrade, stale bool, loc i18n.Locale, cat *i18n.Catalog) stockBlocks {
+func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse.StockData, live twse.LiveBreadth, retail twse.RetailFutures, lending twse.SecuritiesLending, margin twse.StockMargin, pcr twse.OptionsPCR, vix twse.VIX, holders twse.HoldersDistribution, blockTrades []twse.BlockTrade, fundamentals twse.Fundamentals, stale bool, loc i18n.Locale, cat *i18n.Catalog) stockBlocks {
 	bs := stockBlocks{captions: make([]string, 0, 3)}
 
 	// Title row: `<symbol> · <name>`. The symbol/name pair contains
@@ -760,6 +774,9 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 		}
 	}
 	if row := blockTradesRow(blockTrades, cat); row != "" {
+		groups = append(groups, []string{row})
+	}
+	if row := fundamentalsRow(fundamentals, cat); row != "" {
 		groups = append(groups, []string{row})
 	}
 	if q.IsClosed && (pcr.Has() || vix.Has()) {
@@ -1013,6 +1030,41 @@ func perStockCreditRows(m twse.StockMargin, l twse.SecuritiesLending, cat *i18n.
 			padLabel(cat.TWSESecLending, w), formatThousands(lots), cat.TWSEUnitZhang))
 	}
 	return rows
+}
+
+// fundamentalsRow formats the per-stock 殖利率 / 本益比 / PBR row from
+// the BWIBBU_d daily snapshot:
+//
+//	殖利率 0.98%  ·  PER 33.97  ·  PBR 10.77
+//
+// Skips individual segments that the upstream emitted as "-" (parsed
+// to 0 by parseTWSEFloat) — a non-dividend-paying stock has
+// DividendYield == 0, a loss-making stock may have PER == 0. The
+// row renders if at least one metric is non-zero AND the upstream
+// row was found (Has() == true). PER and PBR labels are kept Latin
+// across both zh locales to keep the row tight; only the
+// dividend-yield label localises (殖利率 / 股息率).
+//
+// Returns "" when fund.Has() is false or when the catalog's
+// dividend-yield label is empty (en defence-in-depth).
+func fundamentalsRow(fund twse.Fundamentals, cat *i18n.Catalog) string {
+	if !fund.Has() || cat.TWSEDividendYield == "" {
+		return ""
+	}
+	var segs []string
+	if fund.DividendYield != 0 {
+		segs = append(segs, fmt.Sprintf("%s %.2f%%", cat.TWSEDividendYield, fund.DividendYield))
+	}
+	if fund.PERatio != 0 {
+		segs = append(segs, fmt.Sprintf("PER %.2f", fund.PERatio))
+	}
+	if fund.PBRatio != 0 {
+		segs = append(segs, fmt.Sprintf("PBR %.2f", fund.PBRatio))
+	}
+	if len(segs) == 0 {
+		return ""
+	}
+	return strings.Join(segs, "  "+cat.Separator+"  ")
 }
 
 // blockTradesRow formats the per-stock 大宗交易 (BFIAUU) summary as

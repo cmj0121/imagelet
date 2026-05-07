@@ -489,6 +489,50 @@ func (c *CachedBlockTrades) GetBlockTrades(ctx context.Context, stockID string, 
 	return day, day.Rows[strings.TrimSpace(stockID)], nil
 }
 
+// CachedFundamentals wraps a FundamentalsExactProvider with a
+// single-key TTL cache + singleflight (via ttlcache). Same shape as
+// CachedBlockTrades — BWIBBU_d serves only the latest publication, so
+// one cache key covers all asOf inputs and TTL follows the
+// publish-window-aware logic.
+type CachedFundamentals struct {
+	upstream FundamentalsExactProvider
+	cache    *ttlcache.Cache[string, FundamentalsDump]
+	now      func() time.Time
+}
+
+func NewCachedFundamentals(upstream FundamentalsExactProvider, capacity int) *CachedFundamentals {
+	return &CachedFundamentals{
+		upstream: upstream,
+		cache:    ttlcache.New[string, FundamentalsDump](capacity),
+		now:      time.Now,
+	}
+}
+
+func (c *CachedFundamentals) SetClock(now func() time.Time) {
+	c.now = now
+	c.cache.SetClock(now)
+}
+
+const fundamentalsCacheKey = "latest"
+
+func (c *CachedFundamentals) GetFundamentals(ctx context.Context, stockID string, asOf time.Time) (Fundamentals, error) {
+	asOf = clampAsOfTWAt(asOf, c.now())
+	dump, found, err := c.cache.GetOrFetch(fundamentalsCacheKey, ttlForAsOf(asOf, c.now()), func() (FundamentalsDump, bool, error) {
+		return c.upstream.FetchFundamentalsExact(ctx, asOf)
+	})
+	if err != nil {
+		return Fundamentals{}, err
+	}
+	if !found {
+		return Fundamentals{}, ErrUnavailable
+	}
+	f, ok := dump.Rows[strings.TrimSpace(stockID)]
+	if !ok {
+		return Fundamentals{}, ErrUnavailable
+	}
+	return f, nil
+}
+
 // CachedVIX wraps a VIXExactProvider. Walk-back probes ~2 months back
 // (matching the upstream's monthly dump fallback) by walking days and
 // skipping weekends like the other caches.
@@ -542,6 +586,7 @@ const (
 	snapshotVIX           = "taifex-vix.json"
 	snapshotHolders       = "tdcc-holders.json"
 	snapshotBlockTrades   = "twse-block-trades.json"
+	snapshotFundamentals  = "twse-fundamentals.json"
 )
 
 // LoadSnapshots restores cached entries from JSON files under dir.
@@ -560,6 +605,7 @@ func (c *Cached) LoadSnapshots(dir string) {
 	loadOne(c.taifexVIX, dir, snapshotVIX)
 	loadOne(c.cachedHolders, dir, snapshotHolders)
 	loadOne(c.cachedBlockTrades, dir, snapshotBlockTrades)
+	loadOne(c.cachedFundamentals, dir, snapshotFundamentals)
 }
 
 // SaveSnapshots writes each cache's live entries to dir as JSON.
@@ -578,6 +624,7 @@ func (c *Cached) SaveSnapshots(dir string) {
 	saveOne(c.taifexVIX, dir, snapshotVIX)
 	saveOne(c.cachedHolders, dir, snapshotHolders)
 	saveOne(c.cachedBlockTrades, dir, snapshotBlockTrades)
+	saveOne(c.cachedFundamentals, dir, snapshotFundamentals)
 }
 
 // snapshotter is the minimal interface every CachedFoo exposes for
@@ -665,3 +712,9 @@ func (c *CachedBlockTrades) loadFrom(path string) error {
 	return ttlcache.LoadJSONFile(c.cache, path)
 }
 func (c *CachedBlockTrades) saveTo(path string) error { return ttlcache.SaveJSONFile(c.cache, path) }
+func (c *CachedFundamentals) loadFrom(path string) error {
+	return ttlcache.LoadJSONFile(c.cache, path)
+}
+func (c *CachedFundamentals) saveTo(path string) error {
+	return ttlcache.SaveJSONFile(c.cache, path)
+}

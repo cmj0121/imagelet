@@ -76,4 +76,5 @@ var catalogZhCN = Catalog{
 	TWSEHoldersUnit:     "户",
 	TWSEBlockTrades:     "大宗交易",
 	TWSEBlockTradesUnit: "笔",
+	TWSEDividendYield:   "股息率",
 }

@@ -86,4 +86,9 @@ type Catalog struct {
 	// entry for the resolved stock id; most days the row is absent.
 	TWSEBlockTrades     string // 大宗交易 / 大宗交易 — block-trade row label
 	TWSEBlockTradesUnit string // 筆 / 笔 — block-trade count unit
+	// TWSE BWIBBU_d 殖利率 / 本益比 / PBR per-stock daily fundamentals.
+	// PER and PBR are rendered as Latin abbreviations (universally
+	// readable in TW + CN financial media); only the dividend-yield
+	// label needs locale-specific text.
+	TWSEDividendYield string // 殖利率 / 股息率 — dividend-yield row label
 }
