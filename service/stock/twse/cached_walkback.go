@@ -371,7 +371,7 @@ const holdersCacheKey = "latest"
 // dump. Concurrent callers for the same week converge on one fetch
 // (ttlcache singleflight); per-stock lookup is a map hit on the
 // shared dump. asOf is informational here — staleness gating against
-// the dump's published AsOf is the renderer's job (see holdersFreshFor
+// the dump's published AsOf is the renderer's job (see HoldersFreshFor
 // in holders.go).
 func (c *CachedHolders) GetHoldersDistribution(ctx context.Context, stockID string, _ time.Time) (HoldersDistribution, error) {
 	dump, found, err := c.cache.GetOrFetch(holdersCacheKey, holdersSuccessTTL, func() (holdersDump, bool, error) {

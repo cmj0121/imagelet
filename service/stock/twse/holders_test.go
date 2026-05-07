@@ -319,9 +319,9 @@ func TestHoldersFreshFor(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := holdersFreshFor(tc.req, dump)
+			got := HoldersFreshFor(tc.req, dump)
 			if got != tc.want {
-				t.Errorf("holdersFreshFor(%v, %v) = %v, want %v", tc.req, dump, got, tc.want)
+				t.Errorf("HoldersFreshFor(%v, %v) = %v, want %v", tc.req, dump, got, tc.want)
 			}
 		})
 	}
@@ -338,6 +338,29 @@ func TestValidateHoldersSchema_Standalone(t *testing.T) {
 	}
 	if err := validateHoldersSchema(good); err != nil {
 		t.Errorf("validateHoldersSchema(canonical) = %v, want nil", err)
+	}
+}
+
+// TestHTTPProvider_GetHoldersDistribution_Direct exercises the
+// uncached HoldersProvider conformance on HTTPProvider. The cached
+// path covers FetchHoldersExact → CachedHolders.GetHoldersDistribution
+// transitively; this pins the direct-call path that the Cached
+// fallback branch dispatches through for non-Cached test wiring.
+func TestHTTPProvider_GetHoldersDistribution_Direct(t *testing.T) {
+	srv := newHoldersFixtureServer(t)
+	defer srv.Close()
+	p := newHoldersProvider(t, srv)
+
+	d, err := p.GetHoldersDistribution(context.Background(), "2330", time.Time{})
+	if err != nil {
+		t.Fatalf("GetHoldersDistribution: %v", err)
+	}
+	if got := d.Tiers[14].Count; got != 1497 {
+		t.Errorf("Tiers[14].Count = %d, want 1497", got)
+	}
+	_, err = p.GetHoldersDistribution(context.Background(), "9999", time.Time{})
+	if !errors.Is(err, ErrUnavailable) {
+		t.Errorf("unknown stock err = %v, want ErrUnavailable", err)
 	}
 }
 

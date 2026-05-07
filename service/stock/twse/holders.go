@@ -122,7 +122,7 @@ type holdersDump struct {
 // per-stock TDCC dispersion queries. Get takes asOf so the caller can
 // pin a historical date via /stock/:symbol?date=... — implementations
 // may surface ErrUnavailable when asOf is too far from the published
-// snapshot (see holdersFreshFor / holdersStaleWindow).
+// snapshot (see HoldersFreshFor / holdersStaleWindow).
 type HoldersProvider interface {
 	GetHoldersDistribution(ctx context.Context, stockID string, asOf time.Time) (HoldersDistribution, error)
 }
@@ -304,13 +304,14 @@ func validateHoldersSchema(first map[string]string) error {
 	return nil
 }
 
-// holdersFreshFor reports whether holders rows should render given a
+// HoldersFreshFor reports whether holders rows should render given a
 // request's asOf and the dump's published AsOf. Returns true (render)
 // when the request has no asOf override (zero time) or when the gap
 // is within holdersStaleWindow either way; false (skip) when the
 // request is pinning a historical OHLC bar that's drifted out of
-// alignment with current dispersion.
-func holdersFreshFor(reqAsOf, dumpAsOf time.Time) bool {
+// alignment with current dispersion. Exported so the /stock handler
+// can apply the staleness gate when assembling enrichment rows.
+func HoldersFreshFor(reqAsOf, dumpAsOf time.Time) bool {
 	if reqAsOf.IsZero() {
 		return true
 	}

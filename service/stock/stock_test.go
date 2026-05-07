@@ -273,10 +273,13 @@ type histTWSE struct {
 	dataHist     twse.MarketData
 	perStock     map[string]twse.StockData
 	perStockErr  error
+	holders      map[string]twse.HoldersDistribution
+	holdersErr   error
 	getAtCall    int
 	liveCall     int
 	getCall      int
 	perStockCall int
+	holdersCall  int
 }
 
 func (p *histTWSE) Get(_ context.Context) (twse.MarketData, error) {
@@ -310,6 +313,24 @@ func (p *histTWSE) GetForStock(_ context.Context, stockID string, _ time.Time) (
 	d, ok := p.perStock[stockID]
 	if !ok {
 		return twse.StockData{}, twse.ErrUnavailable
+	}
+	return d, nil
+}
+
+// GetHoldersDistribution implements twse.HoldersProvider so the
+// /stock/:symbol handler can pull TDCC dispersion through the same
+// fake. Empty map → ErrUnavailable for all stocks (matches the
+// expected behaviour for tests that don't pre-populate holders).
+func (p *histTWSE) GetHoldersDistribution(_ context.Context, stockID string, _ time.Time) (twse.HoldersDistribution, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.holdersCall++
+	if p.holdersErr != nil {
+		return twse.HoldersDistribution{}, p.holdersErr
+	}
+	d, ok := p.holders[stockID]
+	if !ok {
+		return twse.HoldersDistribution{}, twse.ErrUnavailable
 	}
 	return d, nil
 }
@@ -1524,6 +1545,199 @@ func TestRenderSkipsMARowWhenInsufficientHistory(t *testing.T) {
 	for _, unwanted := range []string{"M10:", "M5:", "5↗10", "5↘10"} {
 		if strings.Contains(body, unwanted) {
 			t.Errorf("body unexpectedly contains %q\n--- body ---\n%s", unwanted, body)
+		}
+	}
+}
+
+// fakeHoldersDist returns a deterministic HoldersDistribution
+// resembling TSMC: tier 15 (>1M shares) holds 1,497 accounts owning
+// 85.58% of the float, total 2,519,187 holders. The handler tests use
+// it to assert the rendered 大戶 / 總戶數 lines without depending on
+// the pinned TDCC fixture (kept under service/stock/twse/testdata).
+func fakeHoldersDist() twse.HoldersDistribution {
+	d := twse.HoldersDistribution{
+		StockID:    "2330",
+		AsOf:       time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC),
+		TotalCount: 2519187,
+		TotalShare: 25932524521,
+	}
+	// Tier 14 (800k-1M shares): 224 accounts, 0.77% of float.
+	d.Tiers[13] = twse.HoldersTier{Count: 224, Share: 201422294, Pct: 0.77}
+	// Tier 15 (>1M shares): 1497 accounts, 85.58% of float.
+	d.Tiers[14] = twse.HoldersTier{Count: 1497, Share: 22193101818, Pct: 85.58}
+	return d
+}
+
+// TestServeHoldersRendersZhTW pins that the holders rows render
+// correctly on a per-stock TW path with zh-TW locale: 大戶 line shows
+// the tier 14+15 bucket count + percentages, 總戶數 line shows the
+// tier 17 total. Numbers carry thousands-separator commas.
+func TestServeHoldersRendersZhTW(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "2330.TW"
+	q.Currency = "TWD"
+	q.IsClosed = true
+	tw := &histTWSE{
+		dataLive: freshTW(),
+		holders: map[string]twse.HoldersDistribution{
+			"2330": fakeHoldersDist(),
+		},
+	}
+	r := newRouterWithTWSE(fakeProvider{q: q}, tw)
+
+	req := httptest.NewRequest(http.MethodGet, "/stock/2330.tw", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if tw.holdersCall != 1 {
+		t.Errorf("holdersCall = %d, want 1", tw.holdersCall)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		// 大戶 line: 224+1497 = 1,721 accounts, 0.07% accounts, 86.35% shares
+		"大戶",
+		"1,721 戶",
+		"持股",
+		// 總戶數 line: 2,519,187 (with commas)
+		"總戶數",
+		"2,519,187",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q\n--- body ---\n%s", want, body)
+		}
+	}
+}
+
+// TestServeHoldersStripsOnEn pins that the en locale strips the
+// holders rows entirely — the showTWSEEnrichment(loc) gate at
+// buildBlocks short-circuits the whole TW block before holdersRows is
+// called. Verifies the existing locale-by-gate idiom still applies.
+func TestServeHoldersStripsOnEn(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "2330.TW"
+	q.Currency = "TWD"
+	q.IsClosed = true
+	tw := &histTWSE{
+		holders: map[string]twse.HoldersDistribution{
+			"2330": fakeHoldersDist(),
+		},
+	}
+	r := newRouterWithTWSE(fakeProvider{q: q}, tw)
+
+	// Default locale fallback for an unset CF-IPCountry is en.
+	req := httptest.NewRequest(http.MethodGet, "/stock/2330.tw", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, unwanted := range []string{"大戶", "大户", "總戶數", "总户数"} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("en body unexpectedly contains %q (TWSE strip broken)\n--- body ---\n%s", unwanted, body)
+		}
+	}
+}
+
+// TestServeHoldersStripsOnStaleDate pins the staleness gate: when
+// ?date= pins an OHLC bar more than 14 days off the dump's AsOf, the
+// holders rows are suppressed even though the upstream returned a
+// valid distribution.
+func TestServeHoldersStripsOnStaleDate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "2330.TW"
+	q.Currency = "TWD"
+	q.IsClosed = true
+	// histProvider satisfies HistoricalProvider so the ?date= path
+	// resolves; fakeProvider would error with ErrUnavailable on GetAt.
+	p := &histProvider{live: q, hist: q}
+	tw := &histTWSE{
+		dataHist: freshTW(),
+		holders: map[string]twse.HoldersDistribution{
+			"2330": fakeHoldersDist(), // dump.AsOf = 2026-04-30
+		},
+	}
+	r := newRouterWithTWSE(p, tw)
+
+	// ?date=2026-01-15 is ~3 months before the dump's AsOf — well past
+	// the 14-day staleness window.
+	req := httptest.NewRequest(http.MethodGet, "/stock/2330.tw?date=2026-01-15", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, unwanted := range []string{"大戶", "總戶數"} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("stale-date body unexpectedly contains %q (staleness gate broken)\n--- body ---\n%s", unwanted, body)
+		}
+	}
+}
+
+// TestServeHoldersOmitsWhenNoData pins that an upstream returning
+// ErrUnavailable for the holders fetch leaves the rest of the card
+// intact and just drops the holders rows.
+func TestServeHoldersOmitsWhenNoData(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "2330.TW"
+	q.Currency = "TWD"
+	q.IsClosed = true
+	tw := &histTWSE{
+		dataLive: freshTW(),
+		// holders map is nil → all stocks return ErrUnavailable
+	}
+	r := newRouterWithTWSE(fakeProvider{q: q}, tw)
+
+	req := httptest.NewRequest(http.MethodGet, "/stock/2330.tw", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, unwanted := range []string{"大戶", "總戶數"} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("no-data body unexpectedly contains %q\n--- body ---\n%s", unwanted, body)
+		}
+	}
+	// The rest of the card still renders.
+	if !strings.Contains(body, "2330.TW") {
+		t.Errorf("symbol missing from body — card collapsed entirely")
+	}
+}
+
+// TestEnCatalogHoldersFieldsEmpty pins the catalog invariant: en
+// must leave the new TWSE Holders fields empty, matching the existing
+// pattern. Catches a future contributor accidentally populating en
+// values that would then leak into PNG / SVG renders.
+func TestEnCatalogHoldersFieldsEmpty(t *testing.T) {
+	cat := i18n.For(i18n.LocaleEN)
+	for name, got := range map[string]string{
+		"TWSEHoldersBig":  cat.TWSEHoldersBig,
+		"TWSEHoldersAll":  cat.TWSEHoldersAll,
+		"TWSEHoldersHold": cat.TWSEHoldersHold,
+		"TWSEHoldersUnit": cat.TWSEHoldersUnit,
+	} {
+		if got != "" {
+			t.Errorf("en catalog %s = %q, want empty", name, got)
 		}
 	}
 }

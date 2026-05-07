@@ -69,4 +69,8 @@ var catalogZhTW = Catalog{
 	TWSERetailTMF:     "微台散戶",
 	TWSEOptionsPCR:    "台指選擇",
 	TWSEVIX:           "波動指數",
+	TWSEHoldersBig:    "大戶",
+	TWSEHoldersAll:    "總戶數",
+	TWSEHoldersHold:   "持股",
+	TWSEHoldersUnit:   "戶",
 }
