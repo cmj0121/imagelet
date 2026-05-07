@@ -59,8 +59,12 @@ which:
 - allows cross-host redirects only within the same eTLD+1 (so
   Yahoo's `query1` ↔ `query2` fail-over still works);
 - wraps response bodies in `MaxBytesReader` — 1 MiB for Yahoo, 8
-  MiB for TWSE / TAIFEX — so a hostile or misbehaving upstream
-  can't exhaust memory.
+  MiB for TWSE / TAIFEX, 16 MiB for the TDCC holders dump (the
+  only path that exceeds the 8 MiB default; the live response is
+  ≈9.5 MiB, the cap leaves headroom but still bounds runaway
+  responses) — so a hostile or misbehaving upstream can't exhaust
+  memory. The 16 MiB cap is per-fetch on a dedicated client, so
+  the global default stays at 8 MiB for everything else.
 
 ## `/github/*`
 

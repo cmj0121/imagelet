@@ -289,16 +289,16 @@ The 大戶 / 戶 / 持股 / 總戶數 strings live in `internal/i18n` catalogs. 
 
 ## 9. Failure modes the renderer must handle
 
-| Mode                          | Cause                                 | Behaviour                                                |
-| ----------------------------- | ------------------------------------- | -------------------------------------------------------- |
-| Network timeout               | TDCC slow / unreachable               | Skip rows; log Warn once per cache TTL                   |
-| HTTP 5xx                      | TDCC outage                           | Skip rows; serve stale cache if present                  |
-| HTTP 200 + empty array        | Publish gap (rare; weekly bug)        | Skip rows; cache empty for 1h                            |
-| Body truncated                | Cap hit (config drift)                | `json.Unmarshal` errors LOUDLY; do not partial-render    |
-| Stock id absent               | Pre-listing / delisted / non-TW       | Skip rows silently                                       |
-| Tier 17 missing               | Schema drift                          | Use sum of tiers 1-15 as fallback total; log Warn        |
-| **Schema-version probe fail** | TDCC renamed/added/dropped a JSON key | Return `ErrUnavailable`; log Warn; skip rows; no partial |
-| **Stale `?date=` (>14d gap)** | User pinned a historical OHLC         | Skip rows silently (see §10)                             |
+| Mode                          | Cause                                 | Behaviour                                                                |
+| ----------------------------- | ------------------------------------- | ------------------------------------------------------------------------ |
+| Network timeout               | TDCC slow / unreachable               | Skip rows; log Warn once per cache TTL                                   |
+| HTTP 5xx                      | TDCC outage                           | Skip rows; serve stale cache if present                                  |
+| HTTP 200 + empty array        | Publish gap (rare; weekly bug)        | Skip rows; cache empty for 1h                                            |
+| Body truncated                | Cap hit (config drift)                | `json.Unmarshal` errors LOUDLY; do not partial-render                    |
+| Stock id absent               | Pre-listing / delisted / non-TW       | Skip rows silently                                                       |
+| Tier 17 missing               | Schema drift                          | TotalCount stays 0 → `Has()` false → skip silently (no fallback, no log) |
+| **Schema-version probe fail** | TDCC renamed/added/dropped a JSON key | Return `ErrUnavailable`; log Warn; skip rows; no partial                 |
+| **Stale `?date=` (>14d gap)** | User pinned a historical OHLC         | Skip rows silently (see §10)                                             |
 
 ### Schema-version probe (added after tenth-man)
 

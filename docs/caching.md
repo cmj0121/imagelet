@@ -4,15 +4,16 @@ Upstream calls to Yahoo Finance, TWSE, and TAIFEX are cached in
 process so a steady stream of `/stock` requests doesn't fan out
 duplicate fetches. The cache layer is layered:
 
-| Provider                            | Success TTL | Notes                                          |
-| ----------------------------------- | ----------- | ---------------------------------------------- |
-| Yahoo quote (per symbol)            | 60s         | Singleflight; serves stale on upstream error.  |
-| TWSE market-wide aggregate          | 4h          | BFI82U + MI_INDEX + MI_MARGN merged.           |
-| TWSE per-stock T86 / TWT93U / MARGN | 24h / 30min | Keyed on (stockID, resolved date).             |
-| TAIFEX retail futures / PCR / VIX   | 24h / 30min | Keyed on resolved date.                        |
-| Live breadth (universe + MIS)       | 4h / 30s    | Universe 4h; MIS batch 30s.                    |
-| TWSE name lookup                    | forever     | Stable per stock ID; in `sync.Map`.            |
-| HTML responses                      | per header  | `internal/htmlcache`, LRU 256, text/html only. |
+| Provider                            | Success TTL | Notes                                                |
+| ----------------------------------- | ----------- | ---------------------------------------------------- |
+| Yahoo quote (per symbol)            | 60s         | Singleflight; serves stale on upstream error.        |
+| TWSE market-wide aggregate          | 4h          | BFI82U + MI_INDEX + MI_MARGN merged.                 |
+| TWSE per-stock T86 / TWT93U / MARGN | 24h / 30min | Keyed on (stockID, resolved date).                   |
+| TAIFEX retail futures / PCR / VIX   | 24h / 30min | Keyed on resolved date.                              |
+| TDCC holders dispersion (universe)  | 24h         | Single-key bulk dump, parsed once, mapped per stock. |
+| Live breadth (universe + MIS)       | 4h / 30s    | Universe 4h; MIS batch 30s.                          |
+| TWSE name lookup                    | forever     | Stable per stock ID; in `sync.Map`.                  |
+| HTML responses                      | per header  | `internal/htmlcache`, LRU 256, text/html only.       |
 
 Per-stock and TAIFEX caches use a publish-window-aware TTL: requests
 covering today before ~17:00 Asia/Taipei (the TWSE / TAIFEX afterTrading
@@ -42,8 +43,19 @@ directory:
 ├── twse-stock-margin.json
 ├── taifex-retail-futures.json
 ├── taifex-options-pcr.json
-└── taifex-vix.json
+├── taifex-vix.json
+└── tdcc-holders.json
 ```
+
+`tdcc-holders.json` is the largest of the snapshots — the TDCC
+集保戶股權分散表 covers ≈3 967 listed equities × 17 tiers per
+weekly dump, serializing to ~5 MiB on disk for the production
+universe. That sits comfortably under `MaxSnapshotBytes` (64 MiB)
+with ~12× headroom; operators sizing the cache directory should
+plan for it alongside the per-stock files. Restoring this snapshot
+on startup avoids a 9.5 MiB cold-fetch from TDCC on every pod boot
+and is the primary mitigation for K8s rollout storms (singleflight
+is per-process, not cross-pod).
 
 Each file carries a schema-version header — a future cached-value
 field addition invalidates stale snapshots gracefully (the wrapper
