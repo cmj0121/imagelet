@@ -310,6 +310,8 @@ type HTTPProvider struct {
 	listingInfo    string // TWSE OpenAPI t187ap03_L 上市公司基本資料 (production-only; empty disables FetchListingInfoExact)
 	otcListingInfo  string // TPEx OpenAPI mopsfin_t187ap03_O 上櫃公司基本資料 (production-only; empty disables FetchOTCListingInfoExact)
 	industryForeign string // TWSE OpenAPI MI_QFIIS_cat industry-aggregate foreign holdings (production-only; empty disables FetchIndustryForeignExact)
+	revenueListed   string // TWSE OpenAPI t187ap05_L 上市公司月營收 (production-only; empty disables FetchRevenueExact)
+	revenueOTC      string // TPEx OpenAPI mopsfin_t187ap05_O 上櫃公司月營收 (production-only; empty disables FetchOTCRevenueExact)
 	foreign         string // TWSE rwd MI_QFIIS 外資及陸資投資持股 URL template — must contain one %s for YYYYMMDD
 	client          *http.Client
 
@@ -367,6 +369,8 @@ func New() *HTTPProvider {
 	p.listingInfo = defaultListingInfoEndpoint
 	p.otcListingInfo = defaultOTCListingInfoEndpoint
 	p.industryForeign = defaultIndustryForeignEndpoint
+	p.revenueListed = defaultRevenueListedEndpoint
+	p.revenueOTC = defaultRevenueOTCEndpoint
 	p.foreign = defaultForeignEndpoint
 	return p
 }
@@ -876,6 +880,8 @@ type Cached struct {
 	cachedListingInfo    *CachedListingInfo
 	cachedOTCListingInfo  *CachedOTCListingInfo
 	cachedIndustryForeign *CachedIndustryForeign
+	cachedRevenue         *CachedRevenue
+	cachedOTCRevenue      *CachedOTCRevenue
 	cachedForeign         *CachedForeign
 }
 
@@ -930,6 +936,12 @@ func NewCachedWithTTL(inner Provider, successTTL, failureTTL time.Duration) *Cac
 	}
 	if e, ok := inner.(IndustryForeignExactProvider); ok {
 		c.cachedIndustryForeign = NewCachedIndustryForeign(e, 0)
+	}
+	if e, ok := inner.(RevenueExactProvider); ok {
+		c.cachedRevenue = NewCachedRevenue(e, 0)
+	}
+	if e, ok := inner.(OTCRevenueExactProvider); ok {
+		c.cachedOTCRevenue = NewCachedOTCRevenue(e, 0)
 	}
 	if e, ok := inner.(ForeignExactProvider); ok {
 		c.cachedForeign = NewCachedForeign(e, 0)
@@ -1201,6 +1213,34 @@ func (c *Cached) GetIndustryForeign(ctx context.Context, industryName string, as
 		return IndustryForeign{}, ErrUnavailable
 	}
 	return ip.GetIndustryForeign(ctx, industryName, asOf)
+}
+
+// GetRevenue prefers the t187ap05_L cache when inner exposes
+// FetchRevenueExact; otherwise falls back to inner's RevenueProvider.
+// TWSE-listed only — caller routes OTC stocks via GetOTCRevenue.
+func (c *Cached) GetRevenue(ctx context.Context, stockID string, asOf time.Time) (Revenue, error) {
+	if c.cachedRevenue != nil {
+		return c.cachedRevenue.GetRevenue(ctx, stockID, asOf)
+	}
+	rp, ok := c.inner.(RevenueProvider)
+	if !ok {
+		return Revenue{}, ErrUnavailable
+	}
+	return rp.GetRevenue(ctx, stockID, asOf)
+}
+
+// GetOTCRevenue is the TPEx parallel to GetRevenue. Same value type;
+// only the upstream URL + cache instance differ. Handler picks based
+// on listing type (.TW vs .TWO suffix).
+func (c *Cached) GetOTCRevenue(ctx context.Context, stockID string, asOf time.Time) (Revenue, error) {
+	if c.cachedOTCRevenue != nil {
+		return c.cachedOTCRevenue.GetOTCRevenue(ctx, stockID, asOf)
+	}
+	rp, ok := c.inner.(OTCRevenueProvider)
+	if !ok {
+		return Revenue{}, ErrUnavailable
+	}
+	return rp.GetOTCRevenue(ctx, stockID, asOf)
 }
 
 // GetForeign prefers the rwd MI_QFIIS walkback cache when inner

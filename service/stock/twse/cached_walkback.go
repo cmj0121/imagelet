@@ -690,6 +690,88 @@ func lookupIndustryForeign(dump IndustryForeignDump, industryName string) (Indus
 	return IndustryForeign{}, false
 }
 
+// CachedRevenue wraps a RevenueExactProvider (TWSE-listed monthly
+// revenue from t187ap05_L). Single-key 24h cache — the upstream
+// publishes monthly so 24h is plenty; same shape as the other
+// single-key OpenAPI caches.
+type CachedRevenue struct {
+	upstream RevenueExactProvider
+	cache    *ttlcache.Cache[string, RevenueDump]
+	now      func() time.Time
+}
+
+func NewCachedRevenue(upstream RevenueExactProvider, capacity int) *CachedRevenue {
+	return &CachedRevenue{
+		upstream: upstream,
+		cache:    ttlcache.New[string, RevenueDump](capacity),
+		now:      time.Now,
+	}
+}
+
+func (c *CachedRevenue) SetClock(now func() time.Time) {
+	c.now = now
+	c.cache.SetClock(now)
+}
+
+const revenueCacheKey = "latest"
+const revenueSuccessTTL = 24 * time.Hour
+
+func (c *CachedRevenue) GetRevenue(ctx context.Context, stockID string, asOf time.Time) (Revenue, error) {
+	dump, found, err := c.cache.GetOrFetch(revenueCacheKey, revenueSuccessTTL, func() (RevenueDump, bool, error) {
+		return c.upstream.FetchRevenueExact(ctx, asOf)
+	})
+	if err != nil {
+		return Revenue{}, err
+	}
+	if !found {
+		return Revenue{}, ErrUnavailable
+	}
+	r, ok := dump.Rows[strings.TrimSpace(stockID)]
+	if !ok {
+		return Revenue{}, ErrUnavailable
+	}
+	return r, nil
+}
+
+// CachedOTCRevenue is the TPEx parallel — same shape, distinct cache.
+type CachedOTCRevenue struct {
+	upstream OTCRevenueExactProvider
+	cache    *ttlcache.Cache[string, RevenueDump]
+	now      func() time.Time
+}
+
+func NewCachedOTCRevenue(upstream OTCRevenueExactProvider, capacity int) *CachedOTCRevenue {
+	return &CachedOTCRevenue{
+		upstream: upstream,
+		cache:    ttlcache.New[string, RevenueDump](capacity),
+		now:      time.Now,
+	}
+}
+
+func (c *CachedOTCRevenue) SetClock(now func() time.Time) {
+	c.now = now
+	c.cache.SetClock(now)
+}
+
+const otcRevenueCacheKey = "latest"
+
+func (c *CachedOTCRevenue) GetOTCRevenue(ctx context.Context, stockID string, asOf time.Time) (Revenue, error) {
+	dump, found, err := c.cache.GetOrFetch(otcRevenueCacheKey, revenueSuccessTTL, func() (RevenueDump, bool, error) {
+		return c.upstream.FetchOTCRevenueExact(ctx, asOf)
+	})
+	if err != nil {
+		return Revenue{}, err
+	}
+	if !found {
+		return Revenue{}, ErrUnavailable
+	}
+	r, ok := dump.Rows[strings.TrimSpace(stockID)]
+	if !ok {
+		return Revenue{}, ErrUnavailable
+	}
+	return r, nil
+}
+
 // CachedFundamentals wraps a FundamentalsExactProvider with a
 // single-key TTL cache + singleflight (via ttlcache). Same shape as
 // CachedBlockTrades — BWIBBU_d serves only the latest publication, so
