@@ -186,7 +186,8 @@ and above the 散戶 group on market-wide views:
 
 殖利率 0.98%  ·  PER 33.97  ·  PBR 10.77
 
-半導體業  ·  上市 1994  ·  外資持股 70.65%
+半導體業  ·  上市 1994  ·  外資持股 70.65%  ·  業均 43.10%
+2026/03 月營收 4,151.92 億  ·  YoY ▲45.19%
 ```
 
 Each group is separated by a zero-width-space row so pylon's row
@@ -280,13 +281,56 @@ Per-segment skip on missing data:
   ratio only — `AvailablePct` and `UpperlimitPct` stay on the
   struct for future use.
 
-A stock with **none** of the three signals omits the row. ETFs
+A stock with **none** of the four signals omits the row. ETFs
 (0050, 006208) typically render only the foreign-holdings segment
 because t187ap03_L is a companies-only file and ETFs are absent.
-OTC stocks (上櫃) currently omit the entire row — TPEx hosts
-equivalent endpoints at a different domain with a numeric industry
-code that needs its own mapping; deferred to a follow-up.
 
-Source: t187ap03_L cache is single-key 24h; `MI_QFIIS` is the
-date-pinned legacy `rwd/zh/fund` endpoint with walkback like
-TWT93U / lending. Both auth-free, JSON.
+OTC stocks (上櫃) render the row via TPEx's parallel endpoint
+(`mopsfin_t187ap03_O`). Industry-code numbering is shared between
+TWSE and TPEx so the same `twseIndustryNames` static map resolves
+6488 = 24 = 半導體業. Per-stock 外資持股 stays TWSE-only — TPEx
+OpenAPI doesn't expose it — so the OTC row stops at sector +
+上市 + 業均.
+
+The trailing **業均 X%** segment is the industry-aggregate foreign
+holdings from `MI_QFIIS_cat` (35-row daily aggregate), keyed by
+the resolved sector NAME from listing-info. Hidden when per-stock
+外資持股 is absent — without a per-stock comparand, the industry
+mean reads as floating trivia. The lookup tolerates a `業`-suffix
+mismatch between the per-stock sector name (e.g. `金融保險業`) and
+the `MI_QFIIS_cat` name (`金融保險`); a few smaller industries
+(電子商務, 文化創意業) aren't in the aggregate file at all and the
+overlay segment silently omits.
+
+Sources:
+
+- `t187ap03_L` (TWSE-listed): single-key 24h cache.
+- `mopsfin_t187ap03_O` (OTC): single-key 24h cache, parallel.
+- `MI_QFIIS_cat` (industry aggregate): single-key 24h cache.
+- `MI_QFIIS` (per-stock foreign): date-pinned legacy `rwd/zh/fund`
+  with walkback like TWT93U / lending. TWSE-listed only.
+
+### Monthly revenue row (TWSE + OTC)
+
+Per-stock monthly operating-revenue row from TWSE's t187ap05_L
+(上市) and TPEx's mopsfin_t187ap05_O (上櫃). Both endpoints
+publish identical Chinese-keyed schema — one parser handles both.
+
+```text
+2026/03 月營收 4,151.92 億  ·  YoY ▲45.19%
+```
+
+Three signals from one upstream row:
+
+- **Year-month**: ROC `資料年月` (`"11503"`) decoded to Gregorian
+  `2026/03` via `rocYearMonthLabel`. ROC year + 1911 = Gregorian.
+- **Revenue**: `當月營收` in 千元, multiplied × 1000 at parse time
+  for raw NTD, then rendered in 億 (NTD 100M) units with 2dp.
+- **YoY**: pre-computed by upstream as `去年同月增減(%)`. Direction
+  rendered as `▲` for non-negative, `▼` for negative; magnitude
+  is always the absolute value.
+
+The row covers BOTH listed types — handler routes by symbol suffix
+(.TW → TWSE, .TWO → TPEx). Revenue publishes monthly (~10th of the
+following month for most listings); 24h cache TTL is plenty for
+the monthly cadence.
