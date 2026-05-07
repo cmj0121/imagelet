@@ -179,9 +179,75 @@ and above the 散戶 group on market-wide views:
 
 信用餘額  融資 4,409億   融券 19.1萬張
 
-大戶    1,721 戶  0.07%  ·  持股 86.36%
+大戶    1,721 戶  0.07%  ·  持股 86.36%  ·  ▲0.05pp
 總戶數  2,519,187
+
+大宗交易  2 筆  ·  2,000 張  ·  44.05 億
+
+殖利率 0.98%  ·  PER 33.97  ·  PBR 10.77
 ```
 
 Each group is separated by a zero-width-space row so pylon's row
 parser keeps them distinct without trimming the gap.
+
+### Holders weekly Δ pill
+
+The trailing token on the 大戶 line shows the week-over-week change
+in the 持股% (concentration) since the prior TDCC publication:
+
+- `▲X.XXpp` — concentration tightening (more institutional float)
+- `▼X.XXpp` — concentration loosening (institutional distribution)
+- `≈` — no material drift (|Δ| < 0.05pp)
+
+The pill is omitted on cold start (no prior dump rotated through the
+cache yet) and on a long pod restart where the previous-week dump
+expired before save. Warm-up is one weekly publish cycle (≤7d).
+Snapshot persistence (`--cache-dir`) extends Δ continuity across
+short restarts; the previous-dump tracker mirrors the restored cache
+entry so the next fresh fetch with a new AsOf rotates correctly.
+
+### 大宗交易 row (TWSE only)
+
+The per-stock 大宗交易 row aggregates all matched-trade events from
+the latest BFIAUU snapshot for the resolved stock id. Three numbers:
+
+- **Count** (`筆 / 笔`) — number of distinct block-trade events.
+- **Volume** (`張 / 张`) — total share volume converted to 張
+  (1 張 = 1,000 shares, TWSE convention).
+- **Value** (`億 / 亿`) — total TWD value with 2dp.
+
+The row renders intra-day too — block trades are reported as the
+session runs, so the same-day file refreshes during open hours. Most
+stocks have no block trades on most days; the row is silently
+omitted in that branch (the most-common path).
+
+Source: TWSE OpenAPI v1 `/exchangeReport/BFIAUU` (auth-free JSON,
+single-day snapshot). Cache: publish-window-aware TTL via
+`ttlForAsOf` — 30 minutes before 17:00 Asia/Taipei, 24h post-publish.
+
+### 殖利率 / PER / PBR row (TWSE only)
+
+The fundamentals row carries the per-stock daily snapshot of
+dividend yield, P/E ratio, and P/B ratio:
+
+```text
+殖利率 0.98%  ·  PER 33.97  ·  PBR 10.77
+```
+
+Per-segment skip — each metric renders only when non-zero:
+
+- A non-dividend-paying stock omits the `殖利率` prefix entirely
+  (DividendYield = 0 from upstream "-" → 0).
+- A loss-making stock omits PER (PERatio = 0).
+- A row with no published metrics at all is skipped entirely.
+
+`PER` and `PBR` labels stay Latin across both zh locales — both
+acronyms are universal in TW + CN financial media, and keeping them
+Latin keeps the row tight. Only the dividend-yield label localises
+(殖利率 / 股息率).
+
+Source: TWSE OpenAPI v1 `/exchangeReport/BWIBBU_d` (auth-free JSON).
+The metrics are derived from published close + cumulative-12mo
+dividend / EPS, so they're stable during the session and render
+alongside the live price without intra-day flicker. Cache: same
+publish-window TTL as 大宗交易.
