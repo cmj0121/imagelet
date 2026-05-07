@@ -30,9 +30,10 @@ func TestHealthzReturns200Empty(t *testing.T) {
 	}
 }
 
-// TestRobotsTxt pins the abuse-posture decision (DESIGN.md §9): /github/* is
-// disallowed for crawlers so unfurl bots and SEO scrapers don't burn the
-// upstream rate-limit budget enumerating GitHub via imagelet.
+// TestRobotsTxt pins the abuse-posture decision (DESIGN.md §9): /github/*
+// and /dns/* are disallowed for crawlers so unfurl bots and SEO scrapers
+// don't burn the upstream rate-limit budget enumerating GitHub or
+// resolving arbitrary hostnames via imagelet.
 func TestRobotsTxt(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -46,7 +47,7 @@ func TestRobotsTxt(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
 	body := rec.Body.String()
-	for _, sub := range []string{"User-agent: *", "Disallow: /github/"} {
+	for _, sub := range []string{"User-agent: *", "Disallow: /github/", "Disallow: /dns/"} {
 		if !strings.Contains(body, sub) {
 			t.Errorf("body missing %q\n--- body ---\n%s", sub, body)
 		}

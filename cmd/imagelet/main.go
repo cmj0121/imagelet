@@ -27,6 +27,9 @@ import (
 	"github.com/cmj0121/imagelet/logger"
 	"github.com/cmj0121/imagelet/middleware/iplimit"
 	"github.com/cmj0121/imagelet/server"
+	"github.com/cmj0121/imagelet/service/dns"
+	dnsresolver "github.com/cmj0121/imagelet/service/dns/resolver"
+	dnscached "github.com/cmj0121/imagelet/service/dns/resolver/cached"
 	"github.com/cmj0121/imagelet/service/favicon"
 	"github.com/cmj0121/imagelet/service/github"
 	githubprofile "github.com/cmj0121/imagelet/service/github/profile"
@@ -153,6 +156,22 @@ func main() {
 	// throttled.
 	githubGroup := r.Group("", iplimit.New30PerMin().Middleware(github.RateLimitedHandler))
 	github.Register(githubGroup, userCache, repoCache)
+
+	// /dns routes — process-shared resolver with DoT default + comma-list
+	// fallback (R2), wrapped in a TTL+singleflight cache (R6 clamped),
+	// per-IP rate-limited (R10) on its OWN iplimit instance (NOT shared
+	// with /github — bucket budgets are per-route; sharing would let a
+	// caller's /github traffic exhaust their /dns budget and vice versa).
+	// Empty group prefix mirrors /github: dns.Register adds /dns/... itself.
+	dnsClient, err := dnsresolver.New(os.Getenv("DNS_RESOLVER"))
+	if err != nil {
+		log.Fatal().Err(err).Msg("dns: parse DNS_RESOLVER")
+	}
+	log.Info().Strs("resolvers", dnsClient.Resolvers()).Msg("dns: resolver configured (default DoT, port 853)")
+	dnsCache := dnscached.New(dnsClient)
+	go dnsCache.LogHourly(ctx)
+	dnsGroup := r.Group("", iplimit.New30PerMin().Middleware(dns.RateLimitedHandler))
+	dns.Register(dnsGroup, dnsCache)
 
 	// NoRoute fallback — must be installed last so every other route had
 	// a chance to claim its path first.
