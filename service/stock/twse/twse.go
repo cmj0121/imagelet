@@ -307,6 +307,8 @@ type HTTPProvider struct {
 	holders       string // TDCC OpenAPI 1-5 集保戶股權分散表 (production-only; empty disables FetchHoldersExact)
 	blockTrades   string // TWSE OpenAPI BFIAUU 大宗交易/配對交易 (production-only; empty disables FetchBlockTradesExact)
 	fundamentals  string // TWSE OpenAPI BWIBBU_d 殖利率/本益比/PBR (production-only; empty disables FetchFundamentalsExact)
+	listingInfo   string // TWSE OpenAPI t187ap03_L 上市公司基本資料 (production-only; empty disables FetchListingInfoExact)
+	foreign       string // TWSE rwd MI_QFIIS 外資及陸資投資持股 URL template — must contain one %s for YYYYMMDD
 	client        *http.Client
 
 	// Live breadth state — separate plane from the daily Get() pipeline.
@@ -360,6 +362,8 @@ func New() *HTTPProvider {
 	p.holders = defaultHoldersEndpoint
 	p.blockTrades = defaultBlockTradesEndpoint
 	p.fundamentals = defaultFundamentalsEndpoint
+	p.listingInfo = defaultListingInfoEndpoint
+	p.foreign = defaultForeignEndpoint
 	return p
 }
 
@@ -865,6 +869,8 @@ type Cached struct {
 	cachedHolders      *CachedHolders
 	cachedBlockTrades  *CachedBlockTrades
 	cachedFundamentals *CachedFundamentals
+	cachedListingInfo  *CachedListingInfo
+	cachedForeign      *CachedForeign
 }
 
 // NewCached returns a Cached wrapper using the default TTLs (4h / 30m)
@@ -909,6 +915,12 @@ func NewCachedWithTTL(inner Provider, successTTL, failureTTL time.Duration) *Cac
 	}
 	if e, ok := inner.(FundamentalsExactProvider); ok {
 		c.cachedFundamentals = NewCachedFundamentals(e, 0)
+	}
+	if e, ok := inner.(ListingInfoExactProvider); ok {
+		c.cachedListingInfo = NewCachedListingInfo(e, 0)
+	}
+	if e, ok := inner.(ForeignExactProvider); ok {
+		c.cachedForeign = NewCachedForeign(e, 0)
 	}
 	return c
 }
@@ -1131,4 +1143,35 @@ func (c *Cached) GetFundamentals(ctx context.Context, stockID string, asOf time.
 		return Fundamentals{}, ErrUnavailable
 	}
 	return fp.GetFundamentals(ctx, stockID, asOf)
+}
+
+// GetListingInfo prefers the t187ap03_L cache when inner exposes
+// FetchListingInfoExact; otherwise falls back to inner's raw
+// ListingInfoProvider (uncached). The dump is essentially static
+// (changes only when a new IPO lists or a corporate action renames),
+// so a 24h TTL leaves headroom even though same-day flips are rare.
+func (c *Cached) GetListingInfo(ctx context.Context, stockID string, asOf time.Time) (ListingInfo, error) {
+	if c.cachedListingInfo != nil {
+		return c.cachedListingInfo.GetListingInfo(ctx, stockID, asOf)
+	}
+	lp, ok := c.inner.(ListingInfoProvider)
+	if !ok {
+		return ListingInfo{}, ErrUnavailable
+	}
+	return lp.GetListingInfo(ctx, stockID, asOf)
+}
+
+// GetForeign prefers the rwd MI_QFIIS walkback cache when inner
+// exposes FetchForeignExact; otherwise falls back to inner's raw
+// ForeignProvider. Walkback because the rwd endpoint is date-pinned
+// (unlike the OpenAPI single-key providers).
+func (c *Cached) GetForeign(ctx context.Context, stockID string, asOf time.Time) (Foreign, error) {
+	if c.cachedForeign != nil {
+		return c.cachedForeign.GetForeign(ctx, stockID, asOf)
+	}
+	fp, ok := c.inner.(ForeignProvider)
+	if !ok {
+		return Foreign{}, ErrUnavailable
+	}
+	return fp.GetForeign(ctx, stockID, asOf)
 }

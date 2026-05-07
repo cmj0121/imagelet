@@ -91,4 +91,10 @@ type Catalog struct {
 	// readable in TW + CN financial media); only the dividend-yield
 	// label needs locale-specific text.
 	TWSEDividendYield string // 殖利率 / 股息率 — dividend-yield row label
+	// Per-stock context row: sector tag + listing year + foreign
+	// holdings percentage. The sector name comes from upstream
+	// (TWSE 產業別 → resolved via static map in the twse package),
+	// always in TW Traditional script — no zh-CN simplification yet.
+	TWSEListingPrefix  string // 上市 — TW shorthand for "listed since" before the year
+	TWSEForeignHolding string // 外資持股 / 外资持股 — total foreign + PRC holdings ratio label
 }

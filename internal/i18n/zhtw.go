@@ -76,4 +76,6 @@ var catalogZhTW = Catalog{
 	TWSEBlockTrades:     "大宗交易",
 	TWSEBlockTradesUnit: "筆",
 	TWSEDividendYield:   "殖利率",
+	TWSEListingPrefix:   "上市",
+	TWSEForeignHolding:  "外資持股",
 }

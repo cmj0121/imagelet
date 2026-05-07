@@ -279,6 +279,10 @@ type histTWSE struct {
 	blockTradesErr   error
 	fundamentals     map[string]twse.Fundamentals
 	fundamentalsErr  error
+	listingInfo      map[string]twse.ListingInfo
+	listingInfoErr   error
+	foreign          map[string]twse.Foreign
+	foreignErr       error
 	getAtCall        int
 	liveCall         int
 	getCall          int
@@ -286,6 +290,8 @@ type histTWSE struct {
 	holdersCall      int
 	blockTradesCall  int
 	fundamentalsCall int
+	listingInfoCall  int
+	foreignCall      int
 }
 
 func (p *histTWSE) Get(_ context.Context) (twse.MarketData, error) {
@@ -366,6 +372,36 @@ func (p *histTWSE) GetFundamentals(_ context.Context, stockID string, _ time.Tim
 	f, ok := p.fundamentals[stockID]
 	if !ok {
 		return twse.Fundamentals{}, twse.ErrUnavailable
+	}
+	return f, nil
+}
+
+// GetListingInfo implements twse.ListingInfoProvider.
+func (p *histTWSE) GetListingInfo(_ context.Context, stockID string, _ time.Time) (twse.ListingInfo, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.listingInfoCall++
+	if p.listingInfoErr != nil {
+		return twse.ListingInfo{}, p.listingInfoErr
+	}
+	li, ok := p.listingInfo[stockID]
+	if !ok {
+		return twse.ListingInfo{}, twse.ErrUnavailable
+	}
+	return li, nil
+}
+
+// GetForeign implements twse.ForeignProvider.
+func (p *histTWSE) GetForeign(_ context.Context, stockID string, _ time.Time) (twse.Foreign, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.foreignCall++
+	if p.foreignErr != nil {
+		return twse.Foreign{}, p.foreignErr
+	}
+	f, ok := p.foreign[stockID]
+	if !ok {
+		return twse.Foreign{}, twse.ErrUnavailable
 	}
 	return f, nil
 }
@@ -2000,6 +2036,133 @@ func TestServeFundamentalsSkipsZeroSegments(t *testing.T) {
 	}
 	if strings.Contains(body, "PER") {
 		t.Errorf("PER unexpectedly rendered when PERatio == 0\n--- body ---\n%s", body)
+	}
+}
+
+// TestServeContextRowRendersZhTW pins the per-stock context row with
+// all three signals (sector + listing year + foreign holdings).
+func TestServeContextRowRendersZhTW(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "2330.TW"
+	q.Currency = "TWD"
+	q.IsClosed = true
+	tw := &histTWSE{
+		dataLive: freshTW(),
+		listingInfo: map[string]twse.ListingInfo{
+			"2330": {
+				StockID:      "2330",
+				Name:         "台積電",
+				IndustryCode: "24",
+				IndustryName: "半導體業",
+				ListingDate:  time.Date(1994, 9, 5, 0, 0, 0, 0, time.UTC),
+			},
+		},
+		foreign: map[string]twse.Foreign{
+			"2330": {
+				StockID:    "2330",
+				Name:       "台積電",
+				HoldingPct: 70.65,
+			},
+		},
+	}
+	r := newRouterWithTWSE(fakeProvider{q: q}, tw)
+
+	req := httptest.NewRequest(http.MethodGet, "/stock/2330.tw", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"半導體業", "上市 1994", "外資持股 70.65%"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q\n--- body ---\n%s", want, body)
+		}
+	}
+}
+
+// TestServeContextRowSkipsMissingSegments pins per-segment skip:
+// listing-info-only or foreign-only stocks render the row with just
+// the available segment(s).
+func TestServeContextRowSkipsMissingSegments(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "2330.TW"
+	q.Currency = "TWD"
+	q.IsClosed = true
+	tw := &histTWSE{
+		dataLive: freshTW(),
+		// Only foreign data — no listing-info (e.g. ETF case).
+		foreign: map[string]twse.Foreign{
+			"2330": {StockID: "2330", HoldingPct: 70.65},
+		},
+	}
+	r := newRouterWithTWSE(fakeProvider{q: q}, tw)
+
+	req := httptest.NewRequest(http.MethodGet, "/stock/2330.tw", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "外資持股 70.65%") {
+		t.Errorf("body missing foreign segment\n--- body ---\n%s", body)
+	}
+	if strings.Contains(body, "半導體業") {
+		t.Errorf("body unexpectedly contains 半導體業 when listing-info absent\n--- body ---\n%s", body)
+	}
+	if strings.Contains(body, "上市 ") {
+		t.Errorf("body unexpectedly contains 上市 prefix when listing-info absent\n--- body ---\n%s", body)
+	}
+}
+
+// TestServeContextRowOmitsRowWhenAllAbsent pins the all-empty path:
+// row is omitted entirely (other rows still render).
+func TestServeContextRowOmitsRowWhenAllAbsent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "2330.TW"
+	q.Currency = "TWD"
+	q.IsClosed = true
+	tw := &histTWSE{dataLive: freshTW()}
+	r := newRouterWithTWSE(fakeProvider{q: q}, tw)
+
+	req := httptest.NewRequest(http.MethodGet, "/stock/2330.tw", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "外資持股") || strings.Contains(body, "上市 ") {
+		t.Errorf("context row unexpectedly rendered when all upstreams empty\n--- body ---\n%s", body)
+	}
+	if !strings.Contains(body, "2330.TW") {
+		t.Errorf("symbol missing — card collapsed entirely")
+	}
+}
+
+// TestEnCatalogContextFieldsEmpty pins the catalog invariant: en must
+// leave TWSEListingPrefix and TWSEForeignHolding empty so the
+// defence-in-depth check inside contextRow() short-circuits cleanly.
+func TestEnCatalogContextFieldsEmpty(t *testing.T) {
+	cat := i18n.For(i18n.LocaleEN)
+	if cat.TWSEListingPrefix != "" {
+		t.Errorf("en TWSEListingPrefix = %q, want empty", cat.TWSEListingPrefix)
+	}
+	if cat.TWSEForeignHolding != "" {
+		t.Errorf("en TWSEForeignHolding = %q, want empty", cat.TWSEForeignHolding)
 	}
 }
 
