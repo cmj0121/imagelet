@@ -622,6 +622,74 @@ func (c *CachedOTCListingInfo) GetOTCListingInfo(ctx context.Context, stockID st
 	return info, nil
 }
 
+// CachedIndustryForeign wraps an IndustryForeignExactProvider with a
+// single-key 24h cache. The MI_QFIIS_cat upstream is daily; one fetch
+// covers all 36 industry rows. Render path uses the resolved industry
+// NAME from listingInfo.IndustryName (resolved via twseIndustryNames)
+// as the lookup key — a stock id alone is not enough.
+type CachedIndustryForeign struct {
+	upstream IndustryForeignExactProvider
+	cache    *ttlcache.Cache[string, IndustryForeignDump]
+	now      func() time.Time
+}
+
+func NewCachedIndustryForeign(upstream IndustryForeignExactProvider, capacity int) *CachedIndustryForeign {
+	return &CachedIndustryForeign{
+		upstream: upstream,
+		cache:    ttlcache.New[string, IndustryForeignDump](capacity),
+		now:      time.Now,
+	}
+}
+
+func (c *CachedIndustryForeign) SetClock(now func() time.Time) {
+	c.now = now
+	c.cache.SetClock(now)
+}
+
+const industryForeignCacheKey = "latest"
+const industryForeignSuccessTTL = 24 * time.Hour
+
+func (c *CachedIndustryForeign) GetIndustryForeign(ctx context.Context, industryName string, asOf time.Time) (IndustryForeign, error) {
+	dump, found, err := c.cache.GetOrFetch(industryForeignCacheKey, industryForeignSuccessTTL, func() (IndustryForeignDump, bool, error) {
+		return c.upstream.FetchIndustryForeignExact(ctx, asOf)
+	})
+	if err != nil {
+		return IndustryForeign{}, err
+	}
+	if !found {
+		return IndustryForeign{}, ErrUnavailable
+	}
+	row, ok := lookupIndustryForeign(dump, industryName)
+	if !ok {
+		return IndustryForeign{}, ErrUnavailable
+	}
+	return row, nil
+}
+
+// lookupIndustryForeign resolves a t187ap03_L industry name (from
+// twseIndustryNames, e.g. "金融保險業") to a MI_QFIIS_cat row keyed
+// by a slightly different naming convention. The aggregate file
+// drops the 業 suffix on a few industries ("金融保險" not "金融保險業")
+// and consolidates a few smaller categories (電子商務, 文化創意業,
+// 農業科技業 are absent from the aggregate). Tries exact match first,
+// then strips a trailing 業 character — covers the known mismatches
+// without a separate translation table.
+func lookupIndustryForeign(dump IndustryForeignDump, industryName string) (IndustryForeign, bool) {
+	industryName = strings.TrimSpace(industryName)
+	if row, ok := dump.Rows[industryName]; ok {
+		return row, true
+	}
+	// MI_QFIIS_cat sometimes drops the 業 suffix that t187ap03_L
+	// includes (金融保險 vs 金融保險業 is the canonical case). Try
+	// stripping it once.
+	if stripped := strings.TrimSuffix(industryName, "業"); stripped != industryName {
+		if row, ok := dump.Rows[stripped]; ok {
+			return row, true
+		}
+	}
+	return IndustryForeign{}, false
+}
+
 // CachedFundamentals wraps a FundamentalsExactProvider with a
 // single-key TTL cache + singleflight (via ttlcache). Same shape as
 // CachedBlockTrades — BWIBBU_d serves only the latest publication, so

@@ -308,9 +308,10 @@ type HTTPProvider struct {
 	blockTrades   string // TWSE OpenAPI BFIAUU 大宗交易/配對交易 (production-only; empty disables FetchBlockTradesExact)
 	fundamentals  string // TWSE OpenAPI BWIBBU_d 殖利率/本益比/PBR (production-only; empty disables FetchFundamentalsExact)
 	listingInfo    string // TWSE OpenAPI t187ap03_L 上市公司基本資料 (production-only; empty disables FetchListingInfoExact)
-	otcListingInfo string // TPEx OpenAPI mopsfin_t187ap03_O 上櫃公司基本資料 (production-only; empty disables FetchOTCListingInfoExact)
-	foreign        string // TWSE rwd MI_QFIIS 外資及陸資投資持股 URL template — must contain one %s for YYYYMMDD
-	client         *http.Client
+	otcListingInfo  string // TPEx OpenAPI mopsfin_t187ap03_O 上櫃公司基本資料 (production-only; empty disables FetchOTCListingInfoExact)
+	industryForeign string // TWSE OpenAPI MI_QFIIS_cat industry-aggregate foreign holdings (production-only; empty disables FetchIndustryForeignExact)
+	foreign         string // TWSE rwd MI_QFIIS 外資及陸資投資持股 URL template — must contain one %s for YYYYMMDD
+	client          *http.Client
 
 	// Live breadth state — separate plane from the daily Get() pipeline.
 	// Empty endpoints disable FetchLiveBreadth; New() populates them with
@@ -365,6 +366,7 @@ func New() *HTTPProvider {
 	p.fundamentals = defaultFundamentalsEndpoint
 	p.listingInfo = defaultListingInfoEndpoint
 	p.otcListingInfo = defaultOTCListingInfoEndpoint
+	p.industryForeign = defaultIndustryForeignEndpoint
 	p.foreign = defaultForeignEndpoint
 	return p
 }
@@ -872,8 +874,9 @@ type Cached struct {
 	cachedBlockTrades  *CachedBlockTrades
 	cachedFundamentals *CachedFundamentals
 	cachedListingInfo    *CachedListingInfo
-	cachedOTCListingInfo *CachedOTCListingInfo
-	cachedForeign        *CachedForeign
+	cachedOTCListingInfo  *CachedOTCListingInfo
+	cachedIndustryForeign *CachedIndustryForeign
+	cachedForeign         *CachedForeign
 }
 
 // NewCached returns a Cached wrapper using the default TTLs (4h / 30m)
@@ -924,6 +927,9 @@ func NewCachedWithTTL(inner Provider, successTTL, failureTTL time.Duration) *Cac
 	}
 	if e, ok := inner.(OTCListingInfoExactProvider); ok {
 		c.cachedOTCListingInfo = NewCachedOTCListingInfo(e, 0)
+	}
+	if e, ok := inner.(IndustryForeignExactProvider); ok {
+		c.cachedIndustryForeign = NewCachedIndustryForeign(e, 0)
 	}
 	if e, ok := inner.(ForeignExactProvider); ok {
 		c.cachedForeign = NewCachedForeign(e, 0)
@@ -1180,6 +1186,21 @@ func (c *Cached) GetOTCListingInfo(ctx context.Context, stockID string, asOf tim
 		return ListingInfo{}, ErrUnavailable
 	}
 	return lp.GetOTCListingInfo(ctx, stockID, asOf)
+}
+
+// GetIndustryForeign prefers the MI_QFIIS_cat cache when inner exposes
+// FetchIndustryForeignExact; otherwise falls back to inner's raw
+// IndustryForeignProvider. industryName must be the resolved Chinese
+// name (e.g. "半導體業"), not the numeric code.
+func (c *Cached) GetIndustryForeign(ctx context.Context, industryName string, asOf time.Time) (IndustryForeign, error) {
+	if c.cachedIndustryForeign != nil {
+		return c.cachedIndustryForeign.GetIndustryForeign(ctx, industryName, asOf)
+	}
+	ip, ok := c.inner.(IndustryForeignProvider)
+	if !ok {
+		return IndustryForeign{}, ErrUnavailable
+	}
+	return ip.GetIndustryForeign(ctx, industryName, asOf)
 }
 
 // GetForeign prefers the rwd MI_QFIIS walkback cache when inner
