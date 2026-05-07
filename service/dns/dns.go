@@ -260,7 +260,7 @@ func (h *handler) render(c *gin.Context, host string, recs resolver.Records, err
 	headline := dnsHeadline(host)
 	switch {
 	case err == nil:
-		writeBanner(c, headline, dnsCaptions(host, recs), http.StatusOK, okMaxAge)
+		writeBannerLeft(c, headline, dnsCaptions(host, recs), http.StatusOK, okMaxAge)
 	case errors.Is(err, resolver.ErrNotFound):
 		renderNotFound(c, host)
 	case errors.Is(err, resolver.ErrSelfThrottled):
@@ -271,7 +271,7 @@ func (h *handler) render(c *gin.Context, host string, recs resolver.Records, err
 		// "stale value present" from "no value at all".
 		if recs.Hostname != "" {
 			captions := append(dnsCaptions(host, recs), "( stale data )")
-			writeBanner(c, headline, captions, http.StatusOK, staleMaxAge)
+			writeBannerLeft(c, headline, captions, http.StatusOK, staleMaxAge)
 			return
 		}
 		log.Warn().Err(err).Str("path", c.Request.URL.Path).Msg("dns upstream failed")
@@ -304,6 +304,40 @@ func renderRateLimited(c *gin.Context) {
 // again.
 func renderSelfThrottled(c *gin.Context) {
 	writeBanner(c, "RATE LIMITED", []string{"TRY LATER"}, http.StatusServiceUnavailable, rateLimitMaxAge)
+}
+
+// writeBannerLeft renders the banner with caption rows packed into a
+// single left-aligned BoxBlock. Used by the /dns success + stale paths
+// so the labeled record-type rows (A / AAAA / MX / ...) keep their
+// values aligned in a flush-left column instead of each row being
+// individually centered. Per-mode dispatch matches writeBanner.
+func writeBannerLeft(c *gin.Context, headline string, rows []string, status, maxAge int) {
+	c.Header("Cache-Control", fmt.Sprintf("public, max-age=%d", maxAge))
+	c.Header("Vary", "User-Agent")
+	mode := middleware.ResolveMode(c)
+	boxes := []render.BoxBlock{{Rows: rows, Align: render.AlignLeft}}
+	body, err := render.BannerBoxes(headline, "", nil, boxes, mode)
+	if err != nil {
+		log.Error().Err(err).Str("headline", headline).Stringer("mode", mode).Msg("dns banner render")
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+	switch mode {
+	case render.ModePNG:
+		c.Data(status, "image/png", body)
+	case render.ModeSVG:
+		c.Data(status, "image/svg+xml", body)
+	case render.ModeHTML:
+		og := render.OGMeta{
+			Title:     "imagelet · " + headline,
+			ImageURL:  middleware.AbsoluteURL(c, "format=png"),
+			ImageType: "image/png",
+			PageURL:   middleware.AbsoluteURL(c, ""),
+		}
+		c.Data(status, "text/html; charset=utf-8", render.InjectOGMeta(body, og))
+	default:
+		c.Data(status, "text/plain; charset=utf-8", body)
+	}
 }
 
 // writeBanner is the per-mode dispatch shared by every successful
