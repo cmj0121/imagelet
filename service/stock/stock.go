@@ -238,6 +238,8 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	var pcr twse.OptionsPCR
 	var vix twse.VIX
 	var holders twse.HoldersDistribution
+	var blockTrades []twse.BlockTrade
+	var fundamentals twse.Fundamentals
 	if enrichTW && h.twse != nil && showTWSEEnrichment(loc) {
 		ctx := c.Request.Context()
 		switch {
@@ -333,6 +335,31 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 					holders = d
 				} else if !errors.Is(herr, twse.ErrUnavailable) {
 					log.Warn().Err(herr).Str("stock", stockID).Msg("twse holders fetch failed; omitting holders rows")
+				}
+			}
+			// Block trades (BFIAUU) — single-day snapshot, latest publish.
+			// Not gated on (q.IsClosed || dateOverride) because BFIAUU
+			// reports intra-day events (block trades reported during the
+			// session land in the same-day file), so the row stays
+			// meaningful while the market is open.
+			if bp, ok := h.twse.(twse.BlockTradesProvider); ok {
+				if _, trades, berr := bp.GetBlockTrades(ctx, stockID, asOfQuery); berr == nil {
+					blockTrades = trades
+				} else if !errors.Is(berr, twse.ErrUnavailable) {
+					log.Warn().Err(berr).Str("stock", stockID).Msg("twse block-trades fetch failed; omitting row")
+				}
+			}
+			// Fundamentals (BWIBBU_d) — daily snapshot of per-stock
+			// 殖利率 / 本益比 / PBR. Like block trades, NOT gated on
+			// (q.IsClosed || dateOverride): the metrics are derived
+			// from the published close + cumulative-12mo dividend / EPS,
+			// which doesn't move with intra-day price ticks. Stable
+			// enough during the session to render alongside live price.
+			if fp, ok := h.twse.(twse.FundamentalsProvider); ok {
+				if f, ferr := fp.GetFundamentals(ctx, stockID, asOfQuery); ferr == nil {
+					fundamentals = f
+				} else if !errors.Is(ferr, twse.ErrUnavailable) {
+					log.Warn().Err(ferr).Str("stock", stockID).Msg("twse fundamentals fetch failed; omitting row")
 				}
 			}
 		}
@@ -441,7 +468,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	// labels via the ASCII path; honors both Accept: text/pylon and
 	// ?format=pylon for header/query parity.
 	if middleware.WantsPylonSource(c) {
-		bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, holders, stale, loc, cat)
+		bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, holders, blockTrades, fundamentals, stale, loc, cat)
 		c.Data(http.StatusOK, "text/pylon",
 			[]byte(render.BannerSourceBoxes(headline, "", bs.captions, bs.boxes())))
 		return
@@ -455,7 +482,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	// font in render/png.go. The TWSE enrichment rows are gated on
 	// locale via showTWSEEnrichment so en visitors see only the
 	// generic OHLC + MA card.
-	bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, holders, stale, loc, cat)
+	bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, holders, blockTrades, fundamentals, stale, loc, cat)
 
 	renderAt := func(m render.Mode) ([]byte, error) {
 		return render.BannerBoxes(headline, "", bs.captions, bs.boxes(), m)
@@ -583,7 +610,7 @@ func zwspGuard(row string) string {
 // labels inside the TWSE block stay literal — every rendered surface
 // (ASCII / pylon-source / SVG / HTML / PNG) carries CJK coverage now,
 // so there is no tofu-fallback path to gate them on.
-func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse.StockData, live twse.LiveBreadth, retail twse.RetailFutures, lending twse.SecuritiesLending, margin twse.StockMargin, pcr twse.OptionsPCR, vix twse.VIX, holders twse.HoldersDistribution, stale bool, loc i18n.Locale, cat *i18n.Catalog) stockBlocks {
+func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse.StockData, live twse.LiveBreadth, retail twse.RetailFutures, lending twse.SecuritiesLending, margin twse.StockMargin, pcr twse.OptionsPCR, vix twse.VIX, holders twse.HoldersDistribution, blockTrades []twse.BlockTrade, fundamentals twse.Fundamentals, stale bool, loc i18n.Locale, cat *i18n.Catalog) stockBlocks {
 	bs := stockBlocks{captions: make([]string, 0, 3)}
 
 	// Title row: `<symbol> · <name>`. The symbol/name pair contains
@@ -745,6 +772,12 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 		if rows := holdersRows(holders, cat); len(rows) > 0 {
 			groups = append(groups, rows)
 		}
+	}
+	if row := blockTradesRow(blockTrades, cat); row != "" {
+		groups = append(groups, []string{row})
+	}
+	if row := fundamentalsRow(fundamentals, cat); row != "" {
+		groups = append(groups, []string{row})
 	}
 	if q.IsClosed && (pcr.Has() || vix.Has()) {
 		groups = append(groups, []string{marketSentimentRow(pcr, vix, cat)})
@@ -999,9 +1032,92 @@ func perStockCreditRows(m twse.StockMargin, l twse.SecuritiesLending, cat *i18n.
 	return rows
 }
 
+// fundamentalsRow formats the per-stock 殖利率 / 本益比 / PBR row from
+// the BWIBBU_d daily snapshot:
+//
+//	殖利率 0.98%  ·  PER 33.97  ·  PBR 10.77
+//
+// Skips individual segments that the upstream emitted as "-" (parsed
+// to 0 by parseTWSEFloat) — a non-dividend-paying stock has
+// DividendYield == 0, a loss-making stock may have PER == 0. The
+// row renders if at least one metric is non-zero AND the upstream
+// row was found (Has() == true). PER and PBR labels are kept Latin
+// across both zh locales to keep the row tight; only the
+// dividend-yield label localises (殖利率 / 股息率).
+//
+// Returns "" when fund.Has() is false or when the catalog's
+// dividend-yield label is empty (en defence-in-depth).
+func fundamentalsRow(fund twse.Fundamentals, cat *i18n.Catalog) string {
+	if !fund.Has() || cat.TWSEDividendYield == "" {
+		return ""
+	}
+	var segs []string
+	if fund.DividendYield != 0 {
+		segs = append(segs, fmt.Sprintf("%s %.2f%%", cat.TWSEDividendYield, fund.DividendYield))
+	}
+	if fund.PERatio != 0 {
+		segs = append(segs, fmt.Sprintf("PER %.2f", fund.PERatio))
+	}
+	if fund.PBRatio != 0 {
+		segs = append(segs, fmt.Sprintf("PBR %.2f", fund.PBRatio))
+	}
+	if len(segs) == 0 {
+		return ""
+	}
+	return strings.Join(segs, "  "+cat.Separator+"  ")
+}
+
+// blockTradesRow formats the per-stock 大宗交易 (BFIAUU) summary as
+// a single row when at least one block trade is present:
+//
+//	大宗交易  3 筆  ·  1,001 張  ·  17.79 億
+//
+// Aggregates all matched-trade events for the stock on the resolved
+// publication day: count of events, total share volume converted to
+// 張 (1 張 = 1,000 shares — TWSE convention), and total TWD value
+// expressed in 億 (1億 = 100,000,000 TWD) with 2dp.
+//
+// Returns "" when len(trades) == 0 or when the catalog's block-trades
+// fields are empty (en locale defence-in-depth, though
+// showTWSEEnrichment short-circuits that path before the renderer
+// runs). Most stocks have no block trades on most days, so the empty
+// path is hit far more often than the populated one.
+//
+// Format choice mirrors holdersRows: cat.Separator (·) + double-spaces
+// keep the line as one rendered row. Avoids `(...)` and `[...]`
+// pairs that pylon parses as Ref / Box nodes and re-flows.
+func blockTradesRow(trades []twse.BlockTrade, cat *i18n.Catalog) string {
+	if len(trades) == 0 || cat.TWSEBlockTrades == "" {
+		return ""
+	}
+	var totalVolume, totalValue int64
+	for _, bt := range trades {
+		totalVolume += bt.TradeVolume
+		totalValue += bt.TradeValue
+	}
+	// Convert shares to 張 (1 張 = 1,000 shares) and value to 億.
+	zhang := totalVolume / 1000
+	yi := float64(totalValue) / 1e8
+	return fmt.Sprintf("%s  %d %s  %s  %s %s  %s  %.2f %s",
+		cat.TWSEBlockTrades,
+		len(trades), cat.TWSEBlockTradesUnit,
+		cat.Separator,
+		formatThousands(zhang), cat.TWSEUnitZhang,
+		cat.Separator,
+		yi, cat.TWSEUnitYi)
+}
+
+// holdersDeltaThreshold is the minimum |Δ| (in percentage points) at
+// which the 大戶 line emits a directional ▲/▼ pill. Below the threshold
+// the pill renders as ≈ to signal "stable WoW" without leading the
+// reader to over-interpret rounding-noise drift. 0.05pp matches half
+// of one trailing decimal in the 86.36% display precision — finer
+// than this is upstream rounding artifact, not signal.
+const holdersDeltaThreshold = 0.05
+
 // holdersRows formats the TDCC 集保戶股權分散表 summary as two lines:
 //
-//	大戶    1,721 戶  0.07%  ·  持股 86.36%
+//	大戶    1,721 戶  0.07%  ·  持股 86.36%  ·  ▲0.05pp
 //	總戶數  2,519,187
 //
 // The "大戶" bucket aggregates TDCC tiers 14+15 (≥800k shares) — the
@@ -1012,6 +1128,12 @@ func perStockCreditRows(m twse.StockMargin, l twse.SecuritiesLending, cat *i18n.
 // surfaces. The 總戶數 row is the absolute account count from tier 17
 // (合計) — useful for "newly listed" vs "established" comparison and
 // for change-over-time once historical caching arrives.
+//
+// The trailing pill on the 大戶 line is the week-over-week change in
+// the 持股 percentage (▲ tightening concentration, ▼ loosening, ≈ no
+// material drift). The pill is omitted when h.PrevAsOf is zero (cold
+// start, single-publish window) or when the prior dump has no row for
+// this stock (newly listed mid-week).
 //
 // Returns nil when h is empty (Has() == false) or when the catalog's
 // holders strings are empty (en locale — though the locale gate at
@@ -1040,16 +1162,41 @@ func holdersRows(h twse.HoldersDistribution, cat *i18n.Catalog) []string {
 		bigPctShares = float64(bigShare) / float64(h.TotalShare) * 100
 	}
 	w := maxLabelWidth(cat.TWSEHoldersBig, cat.TWSEHoldersAll)
+	bigLine := fmt.Sprintf("%s  %s %s  %.2f%%  %s  %s %.2f%%",
+		padLabel(cat.TWSEHoldersBig, w),
+		formatThousands(bigCount), cat.TWSEHoldersUnit,
+		bigPctAccounts,
+		cat.Separator,
+		cat.TWSEHoldersHold, bigPctShares)
+	if pill := holdersDeltaPill(h, bigPctShares); pill != "" {
+		bigLine += "  " + cat.Separator + "  " + pill
+	}
 	return []string{
-		fmt.Sprintf("%s  %s %s  %.2f%%  %s  %s %.2f%%",
-			padLabel(cat.TWSEHoldersBig, w),
-			formatThousands(bigCount), cat.TWSEHoldersUnit,
-			bigPctAccounts,
-			cat.Separator,
-			cat.TWSEHoldersHold, bigPctShares),
+		bigLine,
 		fmt.Sprintf("%s  %s",
 			padLabel(cat.TWSEHoldersAll, w),
 			formatThousands(h.TotalCount)),
+	}
+}
+
+// holdersDeltaPill renders the WoW concentration-drift pill (▲/▼/≈
+// + magnitude in pp) for the 大戶 line. Returns "" when no prior
+// snapshot is available (cold start) or when the prior dump has no
+// row for this stock.
+func holdersDeltaPill(h twse.HoldersDistribution, currPct float64) string {
+	if h.PrevAsOf.IsZero() || h.PrevTotalShare == 0 {
+		return ""
+	}
+	prevBigShare := h.PrevTiers[13].Share + h.PrevTiers[14].Share
+	prevPct := float64(prevBigShare) / float64(h.PrevTotalShare) * 100
+	delta := currPct - prevPct
+	switch {
+	case delta > holdersDeltaThreshold:
+		return fmt.Sprintf("▲%.2fpp", delta)
+	case delta < -holdersDeltaThreshold:
+		return fmt.Sprintf("▼%.2fpp", -delta)
+	default:
+		return "≈"
 	}
 }
 

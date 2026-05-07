@@ -11,6 +11,8 @@ duplicate fetches. The cache layer is layered:
 | TWSE per-stock T86 / TWT93U / MARGN | 24h / 30min | Keyed on (stockID, resolved date).                   |
 | TAIFEX retail futures / PCR / VIX   | 24h / 30min | Keyed on resolved date.                              |
 | TDCC holders dispersion (universe)  | 24h         | Single-key bulk dump, parsed once, mapped per stock. |
+| TWSE block trades (BFIAUU)          | 24h / 30min | Single-key daily snapshot; publish-window TTL.       |
+| TWSE fundamentals (BWIBBU_d)        | 24h / 30min | Single-key daily snapshot of yield / PER / PBR.      |
 | Live breadth (universe + MIS)       | 4h / 30s    | Universe 4h; MIS batch 30s.                          |
 | TWSE name lookup                    | forever     | Stable per stock ID; in `sync.Map`.                  |
 | HTML responses                      | per header  | `internal/htmlcache`, LRU 256, text/html only.       |
@@ -41,6 +43,8 @@ directory:
 ├── twse-t86.json
 ├── twse-securities-lending.json
 ├── twse-stock-margin.json
+├── twse-block-trades.json
+├── twse-fundamentals.json
 ├── taifex-retail-futures.json
 ├── taifex-options-pcr.json
 ├── taifex-vix.json

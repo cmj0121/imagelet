@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -338,10 +340,22 @@ const holdersSuccessTTL = 24 * time.Hour
 // Per-stock lookup is a map hit on the parsed dump; concurrent /stock
 // requests for different stocks during the same week converge on a
 // single 9.5 MiB fetch.
+//
+// Concentration-drift rendering (the ▲/▼ pp pill on the 大戶 line)
+// requires the prior week's dump for diff. The cache layer keeps a
+// rotation buffer in-memory: lastDump shadows the latest successful
+// fetch; previous holds whatever lastDump held when a fresh AsOf
+// supersedes it. On cold start (or pod restart without snapshot
+// previous), previous stays zero and the renderer omits the pill —
+// option (b): warm-up rather than fake a baseline.
 type CachedHolders struct {
 	upstream HoldersExactProvider
 	cache    *ttlcache.Cache[string, holdersDump]
 	now      func() time.Time
+
+	mu       sync.Mutex
+	lastDump holdersDump // mirror of latest successful fetch (or restored snapshot)
+	previous holdersDump // rotated-out predecessor; zero until a fresh AsOf supersedes lastDump
 }
 
 // NewCachedHolders returns a cached wrapper around upstream. cap is
@@ -373,9 +387,25 @@ const holdersCacheKey = "latest"
 // shared dump. asOf is informational here — staleness gating against
 // the dump's published AsOf is the renderer's job (see HoldersFreshFor
 // in holders.go).
+//
+// On a fresh fetch with a NEW AsOf (different from lastDump.AsOf), the
+// outgoing lastDump rotates into previous so the renderer can compute
+// week-over-week concentration drift. The rotation runs only inside
+// the fetch closure, so a sustained burst of cache hits doesn't churn
+// the previous slot.
 func (c *CachedHolders) GetHoldersDistribution(ctx context.Context, stockID string, _ time.Time) (HoldersDistribution, error) {
 	dump, found, err := c.cache.GetOrFetch(holdersCacheKey, holdersSuccessTTL, func() (holdersDump, bool, error) {
-		return c.upstream.FetchHoldersExact(ctx)
+		d, ok, ferr := c.upstream.FetchHoldersExact(ctx)
+		if ferr != nil || !ok {
+			return d, ok, ferr
+		}
+		c.mu.Lock()
+		if !c.lastDump.AsOf.IsZero() && !c.lastDump.AsOf.Equal(d.AsOf) {
+			c.previous = c.lastDump
+		}
+		c.lastDump = d
+		c.mu.Unlock()
+		return d, true, nil
 	})
 	if err != nil {
 		return HoldersDistribution{}, err
@@ -383,7 +413,124 @@ func (c *CachedHolders) GetHoldersDistribution(ctx context.Context, stockID stri
 	if !found {
 		return HoldersDistribution{}, ErrUnavailable
 	}
-	return holdersLookup(dump, stockID)
+
+	out, err := holdersLookup(dump, stockID)
+	if err != nil {
+		return out, err
+	}
+
+	c.mu.Lock()
+	prev := c.previous
+	c.mu.Unlock()
+	if !prev.AsOf.IsZero() {
+		if pr, ok := prev.Rows[stockID]; ok {
+			out.PrevAsOf = prev.AsOf
+			out.PrevTiers = pr.Tiers
+			out.PrevTotalCount = pr.TotalCount
+			out.PrevTotalShare = pr.TotalShare
+		}
+	}
+	return out, nil
+}
+
+// CachedBlockTrades wraps a BlockTradesExactProvider with a single-key
+// TTL cache + singleflight (via ttlcache). Like CachedHolders, there
+// is no walkback — the BFIAUU OpenAPI endpoint always serves the
+// latest published snapshot, so one cache key covers all asOf inputs.
+// TTL uses the same publish-window-aware logic as the per-stock daily
+// caches: today before ~17:00 caps to 30 minutes (so the cache flips
+// fresh once afterTrading lands), past dates / post-publish hold for
+// 24h.
+type CachedBlockTrades struct {
+	upstream BlockTradesExactProvider
+	cache    *ttlcache.Cache[string, BlockTradesDay]
+	now      func() time.Time
+}
+
+// NewCachedBlockTrades returns a cached wrapper around upstream. cap
+// is the LRU eviction threshold; pass 0 for ttlcache.DefaultCap. Only
+// one entry is ever held (key=blockTradesCacheKey).
+func NewCachedBlockTrades(upstream BlockTradesExactProvider, capacity int) *CachedBlockTrades {
+	return &CachedBlockTrades{
+		upstream: upstream,
+		cache:    ttlcache.New[string, BlockTradesDay](capacity),
+		now:      time.Now,
+	}
+}
+
+// SetClock overrides the wall-clock for tests.
+func (c *CachedBlockTrades) SetClock(now func() time.Time) {
+	c.now = now
+	c.cache.SetClock(now)
+}
+
+// blockTradesCacheKey is the single key under which the parsed snapshot
+// lives. The dump is universe-wide and date-pinned by upstream, so
+// caching at any other granularity would just waste memory.
+const blockTradesCacheKey = "latest"
+
+// GetBlockTrades implements BlockTradesProvider via the cached snapshot.
+// Concurrent callers for the same publish window converge on one
+// fetch; per-stock lookup is a slice copy from the parsed map.
+// Returns an empty slice (not error) when the stock has no block
+// trades on the resolved date — the renderer treats len(trades) == 0
+// as "no row to render," same as a missing-data case.
+func (c *CachedBlockTrades) GetBlockTrades(ctx context.Context, stockID string, asOf time.Time) (BlockTradesDay, []BlockTrade, error) {
+	asOf = clampAsOfTWAt(asOf, c.now())
+	day, found, err := c.cache.GetOrFetch(blockTradesCacheKey, ttlForAsOf(asOf, c.now()), func() (BlockTradesDay, bool, error) {
+		return c.upstream.FetchBlockTradesExact(ctx, asOf)
+	})
+	if err != nil {
+		return BlockTradesDay{}, nil, err
+	}
+	if !found {
+		return day, nil, nil
+	}
+	return day, day.Rows[strings.TrimSpace(stockID)], nil
+}
+
+// CachedFundamentals wraps a FundamentalsExactProvider with a
+// single-key TTL cache + singleflight (via ttlcache). Same shape as
+// CachedBlockTrades — BWIBBU_d serves only the latest publication, so
+// one cache key covers all asOf inputs and TTL follows the
+// publish-window-aware logic.
+type CachedFundamentals struct {
+	upstream FundamentalsExactProvider
+	cache    *ttlcache.Cache[string, FundamentalsDump]
+	now      func() time.Time
+}
+
+func NewCachedFundamentals(upstream FundamentalsExactProvider, capacity int) *CachedFundamentals {
+	return &CachedFundamentals{
+		upstream: upstream,
+		cache:    ttlcache.New[string, FundamentalsDump](capacity),
+		now:      time.Now,
+	}
+}
+
+func (c *CachedFundamentals) SetClock(now func() time.Time) {
+	c.now = now
+	c.cache.SetClock(now)
+}
+
+const fundamentalsCacheKey = "latest"
+
+func (c *CachedFundamentals) GetFundamentals(ctx context.Context, stockID string, asOf time.Time) (Fundamentals, error) {
+	asOf = clampAsOfTWAt(asOf, c.now())
+	dump, found, err := c.cache.GetOrFetch(fundamentalsCacheKey, ttlForAsOf(asOf, c.now()), func() (FundamentalsDump, bool, error) {
+		return c.upstream.FetchFundamentalsExact(ctx, asOf)
+	})
+	if err != nil {
+		return Fundamentals{}, err
+	}
+	if !found {
+		return Fundamentals{}, ErrUnavailable
+	}
+	f, ok := dump.Rows[strings.TrimSpace(stockID)]
+	if !ok {
+		return Fundamentals{}, ErrUnavailable
+	}
+	return f, nil
 }
 
 // CachedVIX wraps a VIXExactProvider. Walk-back probes ~2 months back
@@ -438,6 +585,8 @@ const (
 	snapshotOptionsPCR    = "taifex-options-pcr.json"
 	snapshotVIX           = "taifex-vix.json"
 	snapshotHolders       = "tdcc-holders.json"
+	snapshotBlockTrades   = "twse-block-trades.json"
+	snapshotFundamentals  = "twse-fundamentals.json"
 )
 
 // LoadSnapshots restores cached entries from JSON files under dir.
@@ -455,6 +604,8 @@ func (c *Cached) LoadSnapshots(dir string) {
 	loadOne(c.taifexPCR, dir, snapshotOptionsPCR)
 	loadOne(c.taifexVIX, dir, snapshotVIX)
 	loadOne(c.cachedHolders, dir, snapshotHolders)
+	loadOne(c.cachedBlockTrades, dir, snapshotBlockTrades)
+	loadOne(c.cachedFundamentals, dir, snapshotFundamentals)
 }
 
 // SaveSnapshots writes each cache's live entries to dir as JSON.
@@ -472,6 +623,8 @@ func (c *Cached) SaveSnapshots(dir string) {
 	saveOne(c.taifexPCR, dir, snapshotOptionsPCR)
 	saveOne(c.taifexVIX, dir, snapshotVIX)
 	saveOne(c.cachedHolders, dir, snapshotHolders)
+	saveOne(c.cachedBlockTrades, dir, snapshotBlockTrades)
+	saveOne(c.cachedFundamentals, dir, snapshotFundamentals)
 }
 
 // snapshotter is the minimal interface every CachedFoo exposes for
@@ -537,5 +690,31 @@ func (c *CachedOptionsPCR) loadFrom(path string) error  { return ttlcache.LoadJS
 func (c *CachedOptionsPCR) saveTo(path string) error    { return ttlcache.SaveJSONFile(c.cache, path) }
 func (c *CachedVIX) loadFrom(path string) error         { return ttlcache.LoadJSONFile(c.cache, path) }
 func (c *CachedVIX) saveTo(path string) error           { return ttlcache.SaveJSONFile(c.cache, path) }
-func (c *CachedHolders) loadFrom(path string) error     { return ttlcache.LoadJSONFile(c.cache, path) }
-func (c *CachedHolders) saveTo(path string) error       { return ttlcache.SaveJSONFile(c.cache, path) }
+// CachedHolders.loadFrom mirrors the restored cache entry into
+// lastDump so a subsequent fresh fetch (with a new AsOf) rotates the
+// pre-restart dump into previous. Without this mirror, a pod restart
+// would silently reset Δ tracking — the next fresh fetch would have
+// no lastDump to rotate, and the warm-up window would extend across
+// two publish cycles instead of one.
+func (c *CachedHolders) loadFrom(path string) error {
+	if err := ttlcache.LoadJSONFile(c.cache, path); err != nil {
+		return err
+	}
+	if e, ok := c.cache.Get(holdersCacheKey); ok && e.Found {
+		c.mu.Lock()
+		c.lastDump = e.Value
+		c.mu.Unlock()
+	}
+	return nil
+}
+func (c *CachedHolders) saveTo(path string) error { return ttlcache.SaveJSONFile(c.cache, path) }
+func (c *CachedBlockTrades) loadFrom(path string) error {
+	return ttlcache.LoadJSONFile(c.cache, path)
+}
+func (c *CachedBlockTrades) saveTo(path string) error { return ttlcache.SaveJSONFile(c.cache, path) }
+func (c *CachedFundamentals) loadFrom(path string) error {
+	return ttlcache.LoadJSONFile(c.cache, path)
+}
+func (c *CachedFundamentals) saveTo(path string) error {
+	return ttlcache.SaveJSONFile(c.cache, path)
+}
