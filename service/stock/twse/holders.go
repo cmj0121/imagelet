@@ -228,6 +228,37 @@ func (p *HTTPProvider) fetchHolders(ctx context.Context, capBytes int64) (holder
 	return out, true, nil
 }
 
+// GetHoldersDistribution implements HoldersProvider via an uncached
+// pass-through to FetchHoldersExact. The production path goes through
+// CachedHolders, which reuses the parsed dump across requests; this
+// direct method exists for symmetry with the T86 / TWT93U pattern
+// (where HTTPProvider satisfies the public *Provider interface) so a
+// Cached wrapper around a non-HTTPProvider Provider still has a
+// fallback to call. Single-flight stampede protection lives in the
+// cache layer, not here — direct callers pay one fetch per request.
+func (p *HTTPProvider) GetHoldersDistribution(ctx context.Context, stockID string, _ time.Time) (HoldersDistribution, error) {
+	dump, found, err := p.FetchHoldersExact(ctx)
+	if err != nil {
+		return HoldersDistribution{}, err
+	}
+	if !found {
+		return HoldersDistribution{}, ErrUnavailable
+	}
+	return holdersLookup(dump, stockID)
+}
+
+// holdersLookup picks the requested stock's row out of a parsed dump,
+// surfacing ErrUnavailable when the stock id is absent (delisted /
+// pre-listing / non-TWSE). Centralised so CachedHolders and the
+// uncached HTTPProvider path share one code path for the lookup.
+func holdersLookup(dump holdersDump, stockID string) (HoldersDistribution, error) {
+	d, ok := dump.Rows[strings.TrimSpace(stockID)]
+	if !ok {
+		return HoldersDistribution{}, ErrUnavailable
+	}
+	return d, nil
+}
+
 // fetchLarge is the body-cap-aware sibling of HTTPProvider.fetch. It
 // constructs a one-shot http.Client with the holders-specific 15s
 // timeout, applies safehttp.BoundBody with the supplied cap (NOT the
