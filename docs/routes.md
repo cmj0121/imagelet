@@ -9,6 +9,8 @@
 - `GET /stock/:symbol` — banner-rendered quote for a caller-specified Yahoo symbol.
 - `GET /github/:user` — banner card for a GitHub user / org login.
 - `GET /github/:user/:repo` — banner card for a GitHub `owner/name` public repository.
+- `GET /dns/:hostname` — banner card for a public hostname's DNS records
+  (A / AAAA / CNAME / MX / NS / TXT / SOA / CAA / SRV).
 - `*` (other) — `404` banner above a fake Python traceback with the requested path inside.
 
 ## Date override
@@ -47,3 +49,23 @@ as 404. The banner is text-only — avatars are deferred indefinitely.
 See [github.md](./github.md) for the field-by-field card layout, the
 glyph substitution table applied to caption text, the per-status
 `Cache-Control` matrix, and the `GITHUB_TOKEN` posture.
+
+## `/dns/:hostname`
+
+`/dns/:hostname` resolves a public hostname against a DNS-over-TLS
+recursive resolver (Cloudflare 1.1.1.1 by default) and renders the
+populated record types as a banner card. Records covered: A, AAAA,
+CNAME, MX, NS, TXT (prefix-classified summary), SOA, CAA, SRV, plus a
+`DNSSEC ✓` row when the upstream's AD bit is set.
+
+Hostnames are normalized (lowercased, trailing-dot trimmed,
+non-ASCII inputs run through `idna.Lookup.ToASCII`). Leading
+underscore per label is allowed so `_dmarc.example.com`,
+`_acme-challenge.example.com`, and `_sip._tcp.example.com` work.
+Reserved suffixes (`.local`, `.localhost`, `.internal`, `.lan`,
+`.example`, `.test`, `.invalid`, `.arpa`) and IP literals are
+refused with `400 Bad Request`.
+
+See [dns.md](./dns.md) for the full record-type list, the per-status
+`Cache-Control` matrix, the private-IP filter caveat, and the
+`DNS_RESOLVER` / `DNS_RESOLVER_SNI` posture.

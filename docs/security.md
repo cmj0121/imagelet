@@ -105,10 +105,11 @@ least-privileged read-only public.
 
 ### `robots.txt`
 
-`GET /robots.txt` serves `User-agent: *` / `Disallow: /github/`.
-High-frequency crawlers honour it; the Disallow dissuades drive-by
-SEO enumeration of GitHub login space. The body is hardcoded in
-`server/server.go`; there is no static directory.
+`GET /robots.txt` serves `User-agent: *` / `Disallow: /github/` /
+`Disallow: /dns/`. High-frequency crawlers honour it; the Disallow
+entries dissuade drive-by SEO enumeration of GitHub login space and
+DNS hostname space. The body is hardcoded in `server/server.go`;
+there is no static directory.
 
 ### `GITHUB_TOKEN` handling
 
@@ -119,3 +120,88 @@ debug logs go through a `redactedHeaders` helper that blanks
 `-vv` run on a misbehaving upstream does not leak the token. The
 startup log records the resolved mode (authed / unauthed) at info
 level.
+
+## `/dns/*`
+
+A public unauthenticated `/dns/*` route is, by construction, a
+DNS-by-proxy enumeration tool — a caller can hide their source IP
+behind imagelet and ask "what does this name resolve to" against
+Cloudflare 1.1.1.1. The mitigations below are the deployed posture;
+tune in code if your topology disagrees.
+
+### Per-IP rate limit (DNS)
+
+`/dns/*` is wrapped by the same `middleware/iplimit` token-bucket
+used on `/github/*`, on its **own** limiter instance (sharing one
+across routes would let a caller's `/github` traffic exhaust their
+`/dns` budget). Cap is **30 requests/min/IP**, burst 30, refill
+1 token every 2s. When a bucket empties, the middleware
+short-circuits to a deterministic banner — status `200`,
+`Cache-Control: public, max-age=60`, body containing `RATE LIMITED`.
+
+The IP source matches `/github/*`: `CF-Connecting-IP` first, then
+the unspoofable TCP peer `RemoteAddr`. Gin's spoofable
+`c.ClientIP()` is intentionally not used.
+
+### Process-global upstream rate gate
+
+The resolver Client carries a `golang.org/x/time/rate.Limiter`
+configured at **100 q/s sustain, 200 burst**, shared across the
+whole process. Each `/dns/*` request fans out into nine parallel
+record-type queries; under attack the per-IP cap × N IPs × 9
+fan-out can flood Cloudflare 1.1.1.1's per-source rate limit and
+break the route for legitimate users. The gate caps egress to the
+upstream BEFORE Cloudflare's per-source budget kicks our IP, so the
+worst that happens is `503 + Cache-Control: public, max-age=60` to
+the caller — distinct from the per-IP `200 + max-age=60` path.
+
+A query denied by the gate returns `ErrSelfThrottled`; a query that
+left the box but came back with a connection-class error or
+SERVFAIL returns `ErrUnavailable`. The two map to different status
+codes (503 vs 502) so dashboards can distinguish self-imposed back-
+pressure from upstream trouble.
+
+### DoT by default
+
+The default upstream resolver is Cloudflare 1.1.1.1:853 over
+DNS-over-TLS, with a TLS handshake against `cloudflare-dns.com`.
+Operators on hostile networks (untrusted resolver path, captive-
+portal middleboxes) get encrypted upstream queries by default; the
+viewer's queried hostname does not appear on the wire in plaintext.
+Plaintext UDP port 53 is opt-in via `DNS_RESOLVER=host:53`.
+
+There is intentionally no `DNS_RESOLVER_INSECURE` knob. Operators
+with a self-signed internal resolver set `DNS_RESOLVER_SNI` to
+match the certificate's CN / SAN — that's an explicit, auditable
+override. A blanket "skip TLS verification" flag is the kind of
+env var that gets set in dev and forgotten in prod; out of scope.
+
+### Private-IP filter (A/AAAA only)
+
+The route strips private, loopback, link-local, unspecified, and
+multicast addresses from the rendered A and AAAA rows. CNAME, NS,
+MX, SRV, and TXT values are passed through verbatim — chasing
+every record-type leak vector is whack-a-mole, and an operator
+who registers `internal.attacker.com` with `IN CNAME internal-srv`
+in a public zone has already disclosed the name. Document the gap
+honestly: the filter is necessary, not sufficient. Operators that
+don't want CNAME / NS / MX targets enumerated should not host them
+in publicly resolvable zones.
+
+### Refused suffixes
+
+The handler rejects hostnames that end in `.local`, `.localhost`,
+`.internal`, `.lan`, `.example`, `.test`, `.invalid`, or `.arpa`
+with `400 Bad Request` and `Cache-Control: no-store`, before any
+wire query is issued. These cover RFC 6762 (mDNS), RFC 2606
+(reserved), RFC 6761 (special use), and reverse-DNS namespaces —
+they have no business resolving over public recursion, and the
+route declines to participate. IP literals (`1.1.1.1`,
+`2606:4700::1111`, trailing-dot variants) and all-numeric rightmost
+labels are refused on the same path.
+
+### `robots.txt` (DNS)
+
+`Disallow: /dns/` is added to the hardcoded `robots.txt` body
+alongside `Disallow: /github/`. High-frequency crawlers honour it;
+the Disallow dissuades SEO enumeration of DNS hostname space.
