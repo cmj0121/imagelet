@@ -39,7 +39,9 @@ const minTTLSentinel = time.Duration(math.MaxUint32) * time.Second
 // Error propagation:
 //
 //   - All resolvers fail preflight → ErrUnavailable (from pickResolver)
-//   - NS query NXDOMAIN OR NS-records-empty-on-success → ErrNotFound
+//   - NS query NXDOMAIN (RcodeNameError) → ErrNotFound. Empty NS
+//     RRset on NOERROR is NOT NXDOMAIN — record-leaf names like
+//     `_dmarc.gmail.com` have TXT but no NS RR.
 //   - NS query connection-class err → ErrUnavailable
 //   - Other 8 query types: per-type errors return nil from the
 //     goroutine (debug-log + row drops); they do NOT propagate
@@ -168,11 +170,12 @@ func (c *Client) Lookup(ctx context.Context, hostname string) (Records, error) {
 			}
 			return err
 		}
-		if len(nss) == 0 {
-			// Empty NS rrset on success = zone doesn't exist (every zone
-			// has an NS rrset).
-			return ErrNotFound
-		}
+		// NS NOERROR with empty answer is NOT NXDOMAIN — record-leaf
+		// names like `_dmarc.gmail.com` have TXT but no NS RR. True
+		// NXDOMAIN comes back as ErrNotFound via classifyTransportErr
+		// (RcodeNameError), already handled in the err branch above.
+		// Just record whatever NS RRs came back (possibly none) and let
+		// other record-type goroutines populate their own rows.
 		mu.Lock()
 		rec.NS = nss
 		mu.Unlock()

@@ -133,13 +133,12 @@ func TestDNS_CaptionRows(t *testing.T) {
 	// where colons would substitute to `;`, but MX/NS/TXT in this
 	// fixture are all alphanumeric.
 	wants := []string{
-		"example.com",                             // FQDN row
-		"93.184.216.34 · 1.1.1.1",                 // A row
-		"2606:2800:220:1::248:1893",               // AAAA row
-		"10 mx1.example.com · 20 mx2.example.com", // MX row
-		"a.iana-servers.net · b.iana-servers.net", // NS row
-		"spf · dmarc · 3 verifications",           // TXT row
-		"DNSSEC ✓",                                // DNSSEC badge
+		"A       93.184.216.34 · 1.1.1.1",                       // A row
+		"AAAA    2606:2800:220:1::248:1893",                     // AAAA row
+		"MX      10 mx1.example.com · 20 mx2.example.com",       // MX row
+		"NS      a.iana-servers.net · b.iana-servers.net",       // NS row
+		"TXT     spf · dmarc · 3 verifications",                 // TXT row
+		"DNSSEC  ✓",                                             // DNSSEC badge
 	}
 	for _, w := range wants {
 		if !strings.Contains(body, w) {
@@ -430,17 +429,22 @@ func TestDNS_IDNCanonicalize(t *testing.T) {
 	}
 }
 
-// --- headline: firstAlphaNumLabel ------------------------------------------
+// --- headline: hostname-as-banner -----------------------------------------
 
-func TestDNS_HeadlineFirstAlphanum(t *testing.T) {
+// TestDNS_HeadlineHostname pins that the banner headline is the
+// hostname itself (not a single first-label). Underscored leaves and
+// bare TLDs both render without a 4xx/5xx; the precise figlet output
+// is asserted via live smoke (banner glyphs land as path elements,
+// not literal text in the SVG).
+func TestDNS_HeadlineHostname(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cases := []struct {
 		name string
 		path string
-		want string // a literal sub-string the SVG body must contain (the FQDN caption)
 	}{
-		{"underscored_leaf", "/dns/_dmarc.example.com", "_dmarc.example.com"},
-		{"bare_tld", "/dns/com", "com"},
+		{"underscored_leaf", "/dns/_dmarc.example.com"},
+		{"bare_tld", "/dns/com"},
+		{"multilabel", "/dns/sub.example.com"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -450,8 +454,11 @@ func TestDNS_HeadlineFirstAlphanum(t *testing.T) {
 			if rec.Code != http.StatusOK {
 				t.Fatalf("%s status = %d, want 200 — body: %s", tc.path, rec.Code, rec.Body.String())
 			}
-			if !strings.Contains(rec.Body.String(), tc.want) {
-				t.Errorf("body missing FQDN caption %q", tc.want)
+			// Body must carry at least one labeled row from freshRecords;
+			// proves the banner+caption pipeline didn't blow up on the
+			// hostname-as-headline shape.
+			if !strings.Contains(rec.Body.String(), "A       93.184.216.34") {
+				t.Errorf("body missing A row for %s", tc.path)
 			}
 		})
 	}

@@ -44,17 +44,17 @@ no-store` and a plain-text body, before any wire query is issued:
 
 ## Card content
 
-Rows render in a fixed order; empty record types drop. The first
-caption row is always the canonical FQDN, so the
-first-alphanumeric-label headline rule below does not lose the full
-hostname:
+Rows render in a fixed order; empty record types drop. Each populated
+row is prefixed with the record-type label padded to 6 characters so
+the values left-align across rows when pylon centers the multi-row
+caption block.
 
-- Headline — first dot-separated label that is purely
-  alphanumeric, uppercased. `_dmarc.example.com` renders as `EXAMPLE`
-  (NOT `_DMARC` — figlet fonts at banner scale don't carry an
-  underscore glyph). Bare `com` renders as `COM`. Pathological
-  all-underscored names render as `?`.
-- FQDN row — the canonical hostname (always present).
+- Headline — the canonical hostname uppercased. `example.com` renders
+  as `EXAMPLE.COM`; `sub.example.com` as `SUB.EXAMPLE.COM`. A leading
+  underscore (RFC 8552 underscored-attribute names like
+  `_dmarc.example.com`) is replaced with a space so pylon doesn't
+  parse it as a directive — the underscored prefix's purpose is
+  conveyed by the rendered TXT row's `dmarc` classification.
 - `A` row — public IPv4 addresses joined with `·`. Private,
   loopback, link-local, unspecified, and multicast addresses are
   filtered before this row is built.

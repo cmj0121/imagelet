@@ -339,12 +339,19 @@ func writeBanner(c *gin.Context, headline string, captions []string, status, max
 	}
 }
 
-// dnsHeadline returns the banner headline for host. Delegates to
-// firstAlphaNumLabel so SRV-shaped names (`_dmarc.example.com`) skip
-// the underscored leaf and surface the parent zone (`EXAMPLE`). Bare
-// TLDs (`com`) work too.
+// dnsHeadline returns the banner headline for host: the full
+// canonicalized hostname uppercased. Pylon's banner figlet renders
+// `.` and `-` as glyphs; leading `_` (RFC 8552 underscored attribute
+// names like `_dmarc.example.com`) is replaced with a space so pylon
+// doesn't parse it as a directive — the underscored prefix conveyed
+// the *purpose* of the lookup, but for the banner display the parent
+// zone is what reads cleanly at figlet scale.
 func dnsHeadline(host string) string {
-	return strings.ToUpper(firstAlphaNumLabel(host))
+	h := strings.ToUpper(host)
+	if strings.HasPrefix(h, "_") {
+		h = " " + h[1:]
+	}
+	return h
 }
 
 // firstAlphaNumLabel returns the first dot-separated label of host
@@ -378,39 +385,57 @@ func firstAlphaNumLabel(host string) string {
 // so the headline-is-first-label fallback doesn't lose the full
 // hostname. Subsequent rows follow PLAN.md R8 / DESIGN.md §6: A, AAAA,
 // CNAME, MX, NS, TXT, SOA, CAA, SRV, then DNSSEC badge.
-func dnsCaptions(host string, r resolver.Records) []string {
-	out := []string{sanitize(host)}
+// dnsCaptions emits one labeled row per populated record type. The
+// banner headline is the hostname itself, so the caption rows here
+// don't repeat it. Each row is prefixed with the canonical record-type
+// label padded to a uniform width so the values left-align across rows
+// when pylon centers the multi-row block.
+func dnsCaptions(_ string, r resolver.Records) []string {
+	type row struct {
+		label, value string
+	}
+	rows := []row{}
 	if s := joinAddrs(r.A); s != "" {
-		out = append(out, s)
+		rows = append(rows, row{"A", s})
 	}
 	if s := joinAddrs(r.AAAA); s != "" {
-		out = append(out, s)
+		rows = append(rows, row{"AAAA", s})
 	}
-	if r.CNAME != "" {
-		if s := sanitize(r.CNAME); s != "" {
-			out = append(out, s)
-		}
+	if s := sanitize(r.CNAME); s != "" {
+		rows = append(rows, row{"CNAME", s})
 	}
 	if s := formatMX(r.MX); s != "" {
-		out = append(out, s)
+		rows = append(rows, row{"MX", s})
 	}
 	if s := formatNS(r.NS); s != "" {
-		out = append(out, s)
+		rows = append(rows, row{"NS", s})
 	}
 	if s := formatTXT(r.TXT); s != "" {
-		out = append(out, s)
+		rows = append(rows, row{"TXT", s})
 	}
 	if s := formatSOA(r.SOA); s != "" {
-		out = append(out, s)
+		rows = append(rows, row{"SOA", s})
 	}
 	if s := formatCAA(r.CAA); s != "" {
-		out = append(out, s)
+		rows = append(rows, row{"CAA", s})
 	}
 	if s := formatSRV(r.SRV); s != "" {
-		out = append(out, s)
+		rows = append(rows, row{"SRV", s})
 	}
 	if r.DNSSECVerified {
-		out = append(out, "DNSSEC ✓")
+		rows = append(rows, row{"DNSSEC", "✓"})
+	}
+	// Two-space gap after the longest label keeps the value column
+	// aligned. CNAME / DNSSEC / AAAA are the longest at 6 / 6 / 4 chars;
+	// pad to 6.
+	const labelWidth = 6
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		pad := labelWidth - len(r.label)
+		if pad < 0 {
+			pad = 0
+		}
+		out = append(out, r.label+strings.Repeat(" ", pad)+"  "+r.value)
 	}
 	return out
 }
