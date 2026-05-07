@@ -305,6 +305,7 @@ type HTTPProvider struct {
 	taifexPCR     string // TAIFEX 臺指選擇權 Put/Call ratio (production-only; empty disables GetOptionsPCR)
 	taifexVIX     string // TAIFEX VIX monthly dump URL template — must contain a single %s for YYYYMM
 	holders       string // TDCC OpenAPI 1-5 集保戶股權分散表 (production-only; empty disables FetchHoldersExact)
+	blockTrades   string // TWSE OpenAPI BFIAUU 大宗交易/配對交易 (production-only; empty disables FetchBlockTradesExact)
 	client        *http.Client
 
 	// Live breadth state — separate plane from the daily Get() pipeline.
@@ -356,6 +357,7 @@ func New() *HTTPProvider {
 	p.taifexPCR = defaultTAIFEXPCREndpoint
 	p.taifexVIX = defaultTAIFEXVIXURLTemplate
 	p.holders = defaultHoldersEndpoint
+	p.blockTrades = defaultBlockTradesEndpoint
 	return p
 }
 
@@ -858,7 +860,8 @@ type Cached struct {
 	taifexFutures   *CachedRetailFutures
 	taifexPCR       *CachedOptionsPCR
 	taifexVIX       *CachedVIX
-	cachedHolders   *CachedHolders
+	cachedHolders     *CachedHolders
+	cachedBlockTrades *CachedBlockTrades
 }
 
 // NewCached returns a Cached wrapper using the default TTLs (4h / 30m)
@@ -897,6 +900,9 @@ func NewCachedWithTTL(inner Provider, successTTL, failureTTL time.Duration) *Cac
 	}
 	if e, ok := inner.(HoldersExactProvider); ok {
 		c.cachedHolders = NewCachedHolders(e, 0)
+	}
+	if e, ok := inner.(BlockTradesExactProvider); ok {
+		c.cachedBlockTrades = NewCachedBlockTrades(e, 0)
 	}
 	return c
 }
@@ -1087,4 +1093,21 @@ func (c *Cached) GetHoldersDistribution(ctx context.Context, stockID string, asO
 		return HoldersDistribution{}, ErrUnavailable
 	}
 	return hp.GetHoldersDistribution(ctx, stockID, asOf)
+}
+
+// GetBlockTrades prefers the single-key BFIAUU dump cache when inner
+// exposes FetchBlockTradesExact; otherwise falls back to inner's raw
+// BlockTradesProvider (uncached). The cached path holds the parsed
+// snapshot for a publish-window-bounded TTL — the same publish-aware
+// logic the per-stock daily caches use, since BFIAUU is a daily file
+// (not weekly like the holders dump).
+func (c *Cached) GetBlockTrades(ctx context.Context, stockID string, asOf time.Time) (BlockTradesDay, []BlockTrade, error) {
+	if c.cachedBlockTrades != nil {
+		return c.cachedBlockTrades.GetBlockTrades(ctx, stockID, asOf)
+	}
+	bp, ok := c.inner.(BlockTradesProvider)
+	if !ok {
+		return BlockTradesDay{}, nil, ErrUnavailable
+	}
+	return bp.GetBlockTrades(ctx, stockID, asOf)
 }

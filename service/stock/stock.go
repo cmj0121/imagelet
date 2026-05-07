@@ -238,6 +238,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	var pcr twse.OptionsPCR
 	var vix twse.VIX
 	var holders twse.HoldersDistribution
+	var blockTrades []twse.BlockTrade
 	if enrichTW && h.twse != nil && showTWSEEnrichment(loc) {
 		ctx := c.Request.Context()
 		switch {
@@ -333,6 +334,18 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 					holders = d
 				} else if !errors.Is(herr, twse.ErrUnavailable) {
 					log.Warn().Err(herr).Str("stock", stockID).Msg("twse holders fetch failed; omitting holders rows")
+				}
+			}
+			// Block trades (BFIAUU) — single-day snapshot, latest publish.
+			// Not gated on (q.IsClosed || dateOverride) because BFIAUU
+			// reports intra-day events (block trades reported during the
+			// session land in the same-day file), so the row stays
+			// meaningful while the market is open.
+			if bp, ok := h.twse.(twse.BlockTradesProvider); ok {
+				if _, trades, berr := bp.GetBlockTrades(ctx, stockID, asOfQuery); berr == nil {
+					blockTrades = trades
+				} else if !errors.Is(berr, twse.ErrUnavailable) {
+					log.Warn().Err(berr).Str("stock", stockID).Msg("twse block-trades fetch failed; omitting row")
 				}
 			}
 		}
@@ -441,7 +454,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	// labels via the ASCII path; honors both Accept: text/pylon and
 	// ?format=pylon for header/query parity.
 	if middleware.WantsPylonSource(c) {
-		bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, holders, stale, loc, cat)
+		bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, holders, blockTrades, stale, loc, cat)
 		c.Data(http.StatusOK, "text/pylon",
 			[]byte(render.BannerSourceBoxes(headline, "", bs.captions, bs.boxes())))
 		return
@@ -455,7 +468,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	// font in render/png.go. The TWSE enrichment rows are gated on
 	// locale via showTWSEEnrichment so en visitors see only the
 	// generic OHLC + MA card.
-	bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, holders, stale, loc, cat)
+	bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, holders, blockTrades, stale, loc, cat)
 
 	renderAt := func(m render.Mode) ([]byte, error) {
 		return render.BannerBoxes(headline, "", bs.captions, bs.boxes(), m)
@@ -583,7 +596,7 @@ func zwspGuard(row string) string {
 // labels inside the TWSE block stay literal — every rendered surface
 // (ASCII / pylon-source / SVG / HTML / PNG) carries CJK coverage now,
 // so there is no tofu-fallback path to gate them on.
-func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse.StockData, live twse.LiveBreadth, retail twse.RetailFutures, lending twse.SecuritiesLending, margin twse.StockMargin, pcr twse.OptionsPCR, vix twse.VIX, holders twse.HoldersDistribution, stale bool, loc i18n.Locale, cat *i18n.Catalog) stockBlocks {
+func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse.StockData, live twse.LiveBreadth, retail twse.RetailFutures, lending twse.SecuritiesLending, margin twse.StockMargin, pcr twse.OptionsPCR, vix twse.VIX, holders twse.HoldersDistribution, blockTrades []twse.BlockTrade, stale bool, loc i18n.Locale, cat *i18n.Catalog) stockBlocks {
 	bs := stockBlocks{captions: make([]string, 0, 3)}
 
 	// Title row: `<symbol> · <name>`. The symbol/name pair contains
@@ -745,6 +758,9 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 		if rows := holdersRows(holders, cat); len(rows) > 0 {
 			groups = append(groups, rows)
 		}
+	}
+	if row := blockTradesRow(blockTrades, cat); row != "" {
+		groups = append(groups, []string{row})
 	}
 	if q.IsClosed && (pcr.Has() || vix.Has()) {
 		groups = append(groups, []string{marketSentimentRow(pcr, vix, cat)})
@@ -997,6 +1013,46 @@ func perStockCreditRows(m twse.StockMargin, l twse.SecuritiesLending, cat *i18n.
 			padLabel(cat.TWSESecLending, w), formatThousands(lots), cat.TWSEUnitZhang))
 	}
 	return rows
+}
+
+// blockTradesRow formats the per-stock 大宗交易 (BFIAUU) summary as
+// a single row when at least one block trade is present:
+//
+//	大宗交易  3 筆  ·  1,001 張  ·  17.79 億
+//
+// Aggregates all matched-trade events for the stock on the resolved
+// publication day: count of events, total share volume converted to
+// 張 (1 張 = 1,000 shares — TWSE convention), and total TWD value
+// expressed in 億 (1億 = 100,000,000 TWD) with 2dp.
+//
+// Returns "" when len(trades) == 0 or when the catalog's block-trades
+// fields are empty (en locale defence-in-depth, though
+// showTWSEEnrichment short-circuits that path before the renderer
+// runs). Most stocks have no block trades on most days, so the empty
+// path is hit far more often than the populated one.
+//
+// Format choice mirrors holdersRows: cat.Separator (·) + double-spaces
+// keep the line as one rendered row. Avoids `(...)` and `[...]`
+// pairs that pylon parses as Ref / Box nodes and re-flows.
+func blockTradesRow(trades []twse.BlockTrade, cat *i18n.Catalog) string {
+	if len(trades) == 0 || cat.TWSEBlockTrades == "" {
+		return ""
+	}
+	var totalVolume, totalValue int64
+	for _, bt := range trades {
+		totalVolume += bt.TradeVolume
+		totalValue += bt.TradeValue
+	}
+	// Convert shares to 張 (1 張 = 1,000 shares) and value to 億.
+	zhang := totalVolume / 1000
+	yi := float64(totalValue) / 1e8
+	return fmt.Sprintf("%s  %d %s  %s  %s %s  %s  %.2f %s",
+		cat.TWSEBlockTrades,
+		len(trades), cat.TWSEBlockTradesUnit,
+		cat.Separator,
+		formatThousands(zhang), cat.TWSEUnitZhang,
+		cat.Separator,
+		yi, cat.TWSEUnitYi)
 }
 
 // holdersDeltaThreshold is the minimum |Δ| (in percentage points) at

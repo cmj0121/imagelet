@@ -81,4 +81,9 @@ type Catalog struct {
 	TWSEHoldersAll  string // 總戶數 / 总户数 — headline 合計 (TDCC tier 17) holder count
 	TWSEHoldersHold string // 持股 / 持股 — share-of-shares prefix on the concentration line
 	TWSEHoldersUnit string // 戶 / 户 — account count unit suffix
+	// TWSE 大宗交易 (BFIAUU) — per-stock daily block-trade summary row.
+	// Renders only when the latest BFIAUU snapshot has at least one
+	// entry for the resolved stock id; most days the row is absent.
+	TWSEBlockTrades     string // 大宗交易 / 大宗交易 — block-trade row label
+	TWSEBlockTradesUnit string // 筆 / 笔 — block-trade count unit
 }

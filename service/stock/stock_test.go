@@ -267,19 +267,22 @@ func (p *histProvider) GetAt(_ context.Context, _ string, asOf time.Time) (quote
 // twse.LiveBreadthProvider + twse.PerStockProvider so the handler can
 // route across all four branches deterministically.
 type histTWSE struct {
-	mu           sync.Mutex
-	live         twse.LiveBreadth
-	dataLive     twse.MarketData
-	dataHist     twse.MarketData
-	perStock     map[string]twse.StockData
-	perStockErr  error
-	holders      map[string]twse.HoldersDistribution
-	holdersErr   error
-	getAtCall    int
-	liveCall     int
-	getCall      int
-	perStockCall int
-	holdersCall  int
+	mu              sync.Mutex
+	live            twse.LiveBreadth
+	dataLive        twse.MarketData
+	dataHist        twse.MarketData
+	perStock        map[string]twse.StockData
+	perStockErr     error
+	holders         map[string]twse.HoldersDistribution
+	holdersErr      error
+	blockTrades     map[string][]twse.BlockTrade
+	blockTradesErr  error
+	getAtCall       int
+	liveCall        int
+	getCall         int
+	perStockCall    int
+	holdersCall     int
+	blockTradesCall int
 }
 
 func (p *histTWSE) Get(_ context.Context) (twse.MarketData, error) {
@@ -333,6 +336,19 @@ func (p *histTWSE) GetHoldersDistribution(_ context.Context, stockID string, _ t
 		return twse.HoldersDistribution{}, twse.ErrUnavailable
 	}
 	return d, nil
+}
+
+// GetBlockTrades implements twse.BlockTradesProvider. Empty map →
+// nil-slice + nil-error (matches "no block trades for this stock"
+// production behaviour, which the renderer treats as "no row").
+func (p *histTWSE) GetBlockTrades(_ context.Context, stockID string, _ time.Time) (twse.BlockTradesDay, []twse.BlockTrade, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.blockTradesCall++
+	if p.blockTradesErr != nil {
+		return twse.BlockTradesDay{}, nil, p.blockTradesErr
+	}
+	return twse.BlockTradesDay{}, p.blockTrades[stockID], nil
 }
 
 // TestServeDateOverrideUsesGetAt pins the contract that ?date=YYYY-MM-DD
@@ -1810,6 +1826,77 @@ func TestServeHoldersOmitsPillOnColdStart(t *testing.T) {
 	// Sanity: 大戶 line still renders, just without the pill suffix.
 	if !strings.Contains(body, "大戶") {
 		t.Errorf("大戶 missing — holders rows should still render without pill\n--- body ---\n%s", body)
+	}
+}
+
+// TestServeBlockTradesRendersZhTW pins that a stock with one or more
+// block trades on the latest BFIAUU snapshot renders the 大宗交易 row
+// with count + 張 + 億 aggregates. Tests the "single trade" case for
+// 2330 with a simple verifiable aggregate.
+func TestServeBlockTradesRendersZhTW(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "2330.TW"
+	q.Currency = "TWD"
+	q.IsClosed = true
+	tw := &histTWSE{
+		dataLive: freshTW(),
+		blockTrades: map[string][]twse.BlockTrade{
+			// Two events: 1.5M shares (1500 張) at 2200 TWD = 3.3B TWD = 33 億
+			//             0.5M shares (500 張) at 2210 TWD = 1.105B TWD ≈ 11.05 億
+			// Aggregates: 2 筆, 2,000 張, 44.05 億
+			"2330": {
+				{StockID: "2330", TradePrice: 2200.0, TradeVolume: 1_500_000, TradeValue: 3_300_000_000},
+				{StockID: "2330", TradePrice: 2210.0, TradeVolume: 500_000, TradeValue: 1_105_000_000},
+			},
+		},
+	}
+	r := newRouterWithTWSE(fakeProvider{q: q}, tw)
+
+	req := httptest.NewRequest(http.MethodGet, "/stock/2330.tw", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"大宗交易", "2 筆", "2,000 張", "44.05 億"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q\n--- body ---\n%s", want, body)
+		}
+	}
+}
+
+// TestServeBlockTradesOmitsRowWhenEmpty pins that a stock with no
+// block trades renders the rest of the card normally without any
+// 大宗交易 line — most days, most stocks fall in this branch.
+func TestServeBlockTradesOmitsRowWhenEmpty(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "2330.TW"
+	q.Currency = "TWD"
+	q.IsClosed = true
+	tw := &histTWSE{
+		dataLive:    freshTW(),
+		blockTrades: map[string][]twse.BlockTrade{}, // 2330 not present → nil slice
+	}
+	r := newRouterWithTWSE(fakeProvider{q: q}, tw)
+
+	req := httptest.NewRequest(http.MethodGet, "/stock/2330.tw", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "大宗交易") {
+		t.Errorf("empty-trades body unexpectedly contains 大宗交易\n--- body ---\n%s", body)
 	}
 }
 

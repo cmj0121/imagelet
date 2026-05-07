@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -432,6 +433,62 @@ func (c *CachedHolders) GetHoldersDistribution(ctx context.Context, stockID stri
 	return out, nil
 }
 
+// CachedBlockTrades wraps a BlockTradesExactProvider with a single-key
+// TTL cache + singleflight (via ttlcache). Like CachedHolders, there
+// is no walkback — the BFIAUU OpenAPI endpoint always serves the
+// latest published snapshot, so one cache key covers all asOf inputs.
+// TTL uses the same publish-window-aware logic as the per-stock daily
+// caches: today before ~17:00 caps to 30 minutes (so the cache flips
+// fresh once afterTrading lands), past dates / post-publish hold for
+// 24h.
+type CachedBlockTrades struct {
+	upstream BlockTradesExactProvider
+	cache    *ttlcache.Cache[string, BlockTradesDay]
+	now      func() time.Time
+}
+
+// NewCachedBlockTrades returns a cached wrapper around upstream. cap
+// is the LRU eviction threshold; pass 0 for ttlcache.DefaultCap. Only
+// one entry is ever held (key=blockTradesCacheKey).
+func NewCachedBlockTrades(upstream BlockTradesExactProvider, capacity int) *CachedBlockTrades {
+	return &CachedBlockTrades{
+		upstream: upstream,
+		cache:    ttlcache.New[string, BlockTradesDay](capacity),
+		now:      time.Now,
+	}
+}
+
+// SetClock overrides the wall-clock for tests.
+func (c *CachedBlockTrades) SetClock(now func() time.Time) {
+	c.now = now
+	c.cache.SetClock(now)
+}
+
+// blockTradesCacheKey is the single key under which the parsed snapshot
+// lives. The dump is universe-wide and date-pinned by upstream, so
+// caching at any other granularity would just waste memory.
+const blockTradesCacheKey = "latest"
+
+// GetBlockTrades implements BlockTradesProvider via the cached snapshot.
+// Concurrent callers for the same publish window converge on one
+// fetch; per-stock lookup is a slice copy from the parsed map.
+// Returns an empty slice (not error) when the stock has no block
+// trades on the resolved date — the renderer treats len(trades) == 0
+// as "no row to render," same as a missing-data case.
+func (c *CachedBlockTrades) GetBlockTrades(ctx context.Context, stockID string, asOf time.Time) (BlockTradesDay, []BlockTrade, error) {
+	asOf = clampAsOfTWAt(asOf, c.now())
+	day, found, err := c.cache.GetOrFetch(blockTradesCacheKey, ttlForAsOf(asOf, c.now()), func() (BlockTradesDay, bool, error) {
+		return c.upstream.FetchBlockTradesExact(ctx, asOf)
+	})
+	if err != nil {
+		return BlockTradesDay{}, nil, err
+	}
+	if !found {
+		return day, nil, nil
+	}
+	return day, day.Rows[strings.TrimSpace(stockID)], nil
+}
+
 // CachedVIX wraps a VIXExactProvider. Walk-back probes ~2 months back
 // (matching the upstream's monthly dump fallback) by walking days and
 // skipping weekends like the other caches.
@@ -484,6 +541,7 @@ const (
 	snapshotOptionsPCR    = "taifex-options-pcr.json"
 	snapshotVIX           = "taifex-vix.json"
 	snapshotHolders       = "tdcc-holders.json"
+	snapshotBlockTrades   = "twse-block-trades.json"
 )
 
 // LoadSnapshots restores cached entries from JSON files under dir.
@@ -501,6 +559,7 @@ func (c *Cached) LoadSnapshots(dir string) {
 	loadOne(c.taifexPCR, dir, snapshotOptionsPCR)
 	loadOne(c.taifexVIX, dir, snapshotVIX)
 	loadOne(c.cachedHolders, dir, snapshotHolders)
+	loadOne(c.cachedBlockTrades, dir, snapshotBlockTrades)
 }
 
 // SaveSnapshots writes each cache's live entries to dir as JSON.
@@ -518,6 +577,7 @@ func (c *Cached) SaveSnapshots(dir string) {
 	saveOne(c.taifexPCR, dir, snapshotOptionsPCR)
 	saveOne(c.taifexVIX, dir, snapshotVIX)
 	saveOne(c.cachedHolders, dir, snapshotHolders)
+	saveOne(c.cachedBlockTrades, dir, snapshotBlockTrades)
 }
 
 // snapshotter is the minimal interface every CachedFoo exposes for
@@ -601,3 +661,7 @@ func (c *CachedHolders) loadFrom(path string) error {
 	return nil
 }
 func (c *CachedHolders) saveTo(path string) error { return ttlcache.SaveJSONFile(c.cache, path) }
+func (c *CachedBlockTrades) loadFrom(path string) error {
+	return ttlcache.LoadJSONFile(c.cache, path)
+}
+func (c *CachedBlockTrades) saveTo(path string) error { return ttlcache.SaveJSONFile(c.cache, path) }
