@@ -95,6 +95,8 @@ type Catalog struct {
 	// holdings percentage. The sector name comes from upstream
 	// (TWSE 產業別 → resolved via static map in the twse package),
 	// always in TW Traditional script — no zh-CN simplification yet.
-	TWSEListingPrefix  string // 上市 — TW shorthand for "listed since" before the year
-	TWSEForeignHolding string // 外資持股 / 外资持股 — total foreign + PRC holdings ratio label
+	TWSEListingPrefix       string // 上市 — TW shorthand for "listed since" before the year
+	TWSEForeignHolding      string // 外資持股 / 外资持股 — total foreign + PRC holdings ratio label
+	TWSEIndustryForeignMean string // 業均 / 业均 — industry-aggregate foreign-holdings overlay
+	TWSEMonthlyRevenue      string // 月營收 / 月营收 — monthly operating-revenue row label
 }

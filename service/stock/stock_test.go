@@ -279,19 +279,31 @@ type histTWSE struct {
 	blockTradesErr   error
 	fundamentals     map[string]twse.Fundamentals
 	fundamentalsErr  error
-	listingInfo      map[string]twse.ListingInfo
-	listingInfoErr   error
-	foreign          map[string]twse.Foreign
-	foreignErr       error
-	getAtCall        int
-	liveCall         int
-	getCall          int
-	perStockCall     int
-	holdersCall      int
-	blockTradesCall  int
-	fundamentalsCall int
-	listingInfoCall  int
-	foreignCall      int
+	listingInfo         map[string]twse.ListingInfo
+	listingInfoErr      error
+	otcListingInfo      map[string]twse.ListingInfo
+	otcListingInfoErr   error
+	foreign             map[string]twse.Foreign
+	foreignErr          error
+	industryForeign     map[string]twse.IndustryForeign
+	industryForeignErr  error
+	revenue             map[string]twse.Revenue
+	revenueErr          error
+	otcRevenue          map[string]twse.Revenue
+	otcRevenueErr       error
+	getAtCall           int
+	liveCall            int
+	getCall             int
+	perStockCall        int
+	holdersCall         int
+	blockTradesCall     int
+	fundamentalsCall    int
+	listingInfoCall     int
+	otcListingInfoCall  int
+	foreignCall         int
+	industryForeignCall int
+	revenueCall         int
+	otcRevenueCall      int
 }
 
 func (p *histTWSE) Get(_ context.Context) (twse.MarketData, error) {
@@ -404,6 +416,66 @@ func (p *histTWSE) GetForeign(_ context.Context, stockID string, _ time.Time) (t
 		return twse.Foreign{}, twse.ErrUnavailable
 	}
 	return f, nil
+}
+
+// GetOTCListingInfo implements twse.OTCListingInfoProvider.
+func (p *histTWSE) GetOTCListingInfo(_ context.Context, stockID string, _ time.Time) (twse.ListingInfo, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.otcListingInfoCall++
+	if p.otcListingInfoErr != nil {
+		return twse.ListingInfo{}, p.otcListingInfoErr
+	}
+	li, ok := p.otcListingInfo[stockID]
+	if !ok {
+		return twse.ListingInfo{}, twse.ErrUnavailable
+	}
+	return li, nil
+}
+
+// GetIndustryForeign implements twse.IndustryForeignProvider.
+func (p *histTWSE) GetIndustryForeign(_ context.Context, industry string, _ time.Time) (twse.IndustryForeign, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.industryForeignCall++
+	if p.industryForeignErr != nil {
+		return twse.IndustryForeign{}, p.industryForeignErr
+	}
+	f, ok := p.industryForeign[industry]
+	if !ok {
+		return twse.IndustryForeign{}, twse.ErrUnavailable
+	}
+	return f, nil
+}
+
+// GetRevenue implements twse.RevenueProvider.
+func (p *histTWSE) GetRevenue(_ context.Context, stockID string, _ time.Time) (twse.Revenue, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.revenueCall++
+	if p.revenueErr != nil {
+		return twse.Revenue{}, p.revenueErr
+	}
+	r, ok := p.revenue[stockID]
+	if !ok {
+		return twse.Revenue{}, twse.ErrUnavailable
+	}
+	return r, nil
+}
+
+// GetOTCRevenue implements twse.OTCRevenueProvider.
+func (p *histTWSE) GetOTCRevenue(_ context.Context, stockID string, _ time.Time) (twse.Revenue, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.otcRevenueCall++
+	if p.otcRevenueErr != nil {
+		return twse.Revenue{}, p.otcRevenueErr
+	}
+	r, ok := p.otcRevenue[stockID]
+	if !ok {
+		return twse.Revenue{}, twse.ErrUnavailable
+	}
+	return r, nil
 }
 
 // TestServeDateOverrideUsesGetAt pins the contract that ?date=YYYY-MM-DD
@@ -1307,10 +1379,14 @@ func TestServeSymbolPerStockOverlaysMarketWide(t *testing.T) {
 	}
 }
 
-// TestServeSymbolPerStockUpstreamMissFallsBack pins that a T86 miss
-// (delisted, OTC-only, etc.) gracefully falls back to the market-wide
-// positioning rows rather than dropping the entire 三大法人 group.
-func TestServeSymbolPerStockUpstreamMissFallsBack(t *testing.T) {
+// TestServeSymbolPerStockUpstreamMissOmitsBlock pins the post-Tier-3
+// behaviour: when T86 has no row for a per-stock view (delisted /
+// OTC-only / 9999), the 三大法人 group is OMITTED entirely rather
+// than falling through to the market-wide TSE-aggregate numbers
+// labelled identically. The previous fallback was misleading on
+// OTC stocks (6488.TWO would show +46.4B labelled "外資籌碼" — the
+// TSE-wide total, not the per-stock figure).
+func TestServeSymbolPerStockUpstreamMissOmitsBlock(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	q := freshQuote()
 	q.Symbol = "9999.TW"
@@ -1323,8 +1399,6 @@ func TestServeSymbolPerStockUpstreamMissFallsBack(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/stock/9999.tw", nil)
 	req.Header.Set("User-Agent", "curl/8.4.0")
-	// TWSE rows are emitted only for non-en locales; pin TW so the
-	// market-wide fallback row actually renders.
 	req.Header.Set("CF-IPCountry", "TW")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -1333,9 +1407,16 @@ func TestServeSymbolPerStockUpstreamMissFallsBack(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	// Market-wide foreign +43.9B from freshTW should appear.
-	if !strings.Contains(body, "+43.9B") {
-		t.Errorf("body missing market-wide fallback +43.9B\n--- body ---\n%s", body)
+	// The market-wide TSE-aggregate +43.9B foreign net MUST NOT
+	// appear on a per-stock view that has no per-stock data — that
+	// was the misleading-fallback bug. Per-stock card omits the
+	// group entirely.
+	if strings.Contains(body, "+43.9B") {
+		t.Errorf("market-wide fallback unexpectedly rendered on per-stock view\n--- body ---\n%s", body)
+	}
+	// Sanity: the rest of the card still renders.
+	if !strings.Contains(body, "9999.TW") {
+		t.Errorf("symbol missing — card collapsed entirely")
 	}
 }
 
@@ -2150,6 +2231,210 @@ func TestServeContextRowOmitsRowWhenAllAbsent(t *testing.T) {
 	}
 	if !strings.Contains(body, "2330.TW") {
 		t.Errorf("symbol missing — card collapsed entirely")
+	}
+}
+
+// TestServeContextRowWithIndustryOverlay pins the 業均 segment: when
+// per-stock 外資持股 is present AND the industry-foreign overlay is
+// available, the row gets a fourth segment.
+func TestServeContextRowWithIndustryOverlay(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "2330.TW"
+	q.Currency = "TWD"
+	q.IsClosed = true
+	tw := &histTWSE{
+		dataLive: freshTW(),
+		listingInfo: map[string]twse.ListingInfo{
+			"2330": {
+				StockID:      "2330",
+				Name:         "台積電",
+				IndustryCode: "24",
+				IndustryName: "半導體業",
+				ListingDate:  time.Date(1994, 9, 5, 0, 0, 0, 0, time.UTC),
+			},
+		},
+		foreign: map[string]twse.Foreign{
+			"2330": {StockID: "2330", HoldingPct: 70.65},
+		},
+		industryForeign: map[string]twse.IndustryForeign{
+			"半導體業": {Industry: "半導體業", HoldingPct: 43.10},
+		},
+	}
+	r := newRouterWithTWSE(fakeProvider{q: q}, tw)
+
+	req := httptest.NewRequest(http.MethodGet, "/stock/2330.tw", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"半導體業", "外資持股 70.65%", "業均 43.10%"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q\n--- body ---\n%s", want, body)
+		}
+	}
+}
+
+// TestServeContextRowSkipsIndustryOverlayWhenNoForeign pins that
+// 業均 is hidden when the per-stock 外資持股 segment is absent (the
+// comparison is meaningless without a comparand).
+func TestServeContextRowSkipsIndustryOverlayWhenNoForeign(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "2330.TW"
+	q.Currency = "TWD"
+	q.IsClosed = true
+	tw := &histTWSE{
+		dataLive: freshTW(),
+		listingInfo: map[string]twse.ListingInfo{
+			"2330": {StockID: "2330", IndustryName: "半導體業"},
+		},
+		// No per-stock foreign data; industry data is present but should be hidden.
+		industryForeign: map[string]twse.IndustryForeign{
+			"半導體業": {Industry: "半導體業", HoldingPct: 43.10},
+		},
+	}
+	r := newRouterWithTWSE(fakeProvider{q: q}, tw)
+
+	req := httptest.NewRequest(http.MethodGet, "/stock/2330.tw", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "業均") {
+		t.Errorf("業均 unexpectedly rendered without per-stock foreign\n--- body ---\n%s", body)
+	}
+}
+
+// TestServeRevenueRowRendersZhTW pins the monthly revenue row.
+func TestServeRevenueRowRendersZhTW(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "2330.TW"
+	q.Currency = "TWD"
+	q.IsClosed = true
+	tw := &histTWSE{
+		dataLive: freshTW(),
+		revenue: map[string]twse.Revenue{
+			"2330": {
+				StockID:    "2330",
+				Name:       "台積電",
+				Industry:   "半導體業",
+				YearMonth:  "11503",
+				CurrentTWD: 415_191_699_000,
+				YoYPct:     45.19,
+				MoMPct:     30.70,
+			},
+		},
+	}
+	r := newRouterWithTWSE(fakeProvider{q: q}, tw)
+
+	req := httptest.NewRequest(http.MethodGet, "/stock/2330.tw", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"2026/03", "月營收", "4151.92 億", "▲45.19%"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q\n--- body ---\n%s", want, body)
+		}
+	}
+}
+
+// TestServeRevenueRowNegativeYoY pins the ▼ branch for negative YoY.
+func TestServeRevenueRowNegativeYoY(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "2330.TW"
+	q.Currency = "TWD"
+	q.IsClosed = true
+	tw := &histTWSE{
+		dataLive: freshTW(),
+		revenue: map[string]twse.Revenue{
+			"2330": {
+				StockID:    "2330",
+				YearMonth:  "11503",
+				CurrentTWD: 100_000_000_000,
+				YoYPct:     -8.5,
+			},
+		},
+	}
+	r := newRouterWithTWSE(fakeProvider{q: q}, tw)
+	req := httptest.NewRequest(http.MethodGet, "/stock/2330.tw", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "▼8.50%") {
+		t.Errorf("body missing ▼8.50%% for negative YoY\n--- body ---\n%s", body)
+	}
+}
+
+// TestServeOTCRoutesToTPEx pins that .TWO symbols hit the OTC
+// listing-info + revenue providers, NOT the TWSE-listed ones.
+func TestServeOTCRoutesToTPEx(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "6488.TWO"
+	q.Currency = "TWD"
+	q.IsClosed = true
+	tw := &histTWSE{
+		dataLive: freshTW(),
+		// Note: listingInfo (TWSE) is empty for 6488 — TPEx-only.
+		otcListingInfo: map[string]twse.ListingInfo{
+			"6488": {
+				StockID:      "6488",
+				Name:         "環球晶",
+				IndustryCode: "24",
+				IndustryName: "半導體業",
+				ListingDate:  time.Date(2015, 9, 25, 0, 0, 0, 0, time.UTC),
+			},
+		},
+		otcRevenue: map[string]twse.Revenue{
+			"6488": {
+				StockID:    "6488",
+				YearMonth:  "11503",
+				CurrentTWD: 5_445_917_000,
+				YoYPct:     0.09,
+			},
+		},
+	}
+	r := newRouterWithTWSE(fakeProvider{q: q}, tw)
+
+	req := httptest.NewRequest(http.MethodGet, "/stock/6488.two", nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"半導體業", "上市 2015", "月營收"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("OTC body missing %q\n--- body ---\n%s", want, body)
+		}
+	}
+	if tw.otcListingInfoCall == 0 {
+		t.Errorf("otcListingInfoCall = 0 — expected OTC route to invoke OTC provider")
+	}
+	if tw.listingInfoCall != 0 {
+		t.Errorf("listingInfoCall = %d — TWSE provider invoked for .TWO symbol", tw.listingInfoCall)
 	}
 }
 

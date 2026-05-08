@@ -242,6 +242,8 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	var fundamentals twse.Fundamentals
 	var listingInfo twse.ListingInfo
 	var foreign twse.Foreign
+	var industryForeign twse.IndustryForeign
+	var revenue twse.Revenue
 	if enrichTW && h.twse != nil && showTWSEEnrichment(loc) {
 		ctx := c.Request.Context()
 		switch {
@@ -364,27 +366,71 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 					log.Warn().Err(ferr).Str("stock", stockID).Msg("twse fundamentals fetch failed; omitting row")
 				}
 			}
-			// Listing info (t187ap03_L) — TWSE-listed company basic
-			// info: sector tag + listing date. Static-ish data
-			// (changes only on IPO / corporate rename), so 24h cache.
-			// ETFs are absent from t187ap03_L; their lookup falls
-			// through to ErrUnavailable and the row is omitted.
-			if lp, ok := h.twse.(twse.ListingInfoProvider); ok {
-				if li, lerr := lp.GetListingInfo(ctx, stockID, asOfQuery); lerr == nil {
-					listingInfo = li
-				} else if !errors.Is(lerr, twse.ErrUnavailable) {
-					log.Warn().Err(lerr).Str("stock", stockID).Msg("twse listing-info fetch failed; omitting row")
+			// Listing info — route based on listing type. .TW symbols
+			// hit TWSE OpenAPI (t187ap03_L); .TWO symbols hit TPEx
+			// (mopsfin_t187ap03_O). Both populate the same ListingInfo
+			// struct so the renderer is symbol-type-agnostic.
+			isOTC := strings.HasSuffix(symbol, ".TWO")
+			if isOTC {
+				if lp, ok := h.twse.(twse.OTCListingInfoProvider); ok {
+					if li, lerr := lp.GetOTCListingInfo(ctx, stockID, asOfQuery); lerr == nil {
+						listingInfo = li
+					} else if !errors.Is(lerr, twse.ErrUnavailable) {
+						log.Warn().Err(lerr).Str("stock", stockID).Msg("tpex otc listing-info fetch failed; omitting row")
+					}
+				}
+			} else {
+				if lp, ok := h.twse.(twse.ListingInfoProvider); ok {
+					if li, lerr := lp.GetListingInfo(ctx, stockID, asOfQuery); lerr == nil {
+						listingInfo = li
+					} else if !errors.Is(lerr, twse.ErrUnavailable) {
+						log.Warn().Err(lerr).Str("stock", stockID).Msg("twse listing-info fetch failed; omitting row")
+					}
 				}
 			}
-			// Foreign holdings (rwd MI_QFIIS) — full universe per day
-			// with walkback. Headline ratio comes from col 7
-			// (全體外資及陸資持股比率%). OTC stocks are absent and
-			// fall through to ErrUnavailable silently.
-			if fp, ok := h.twse.(twse.ForeignProvider); ok {
-				if fh, ferr := fp.GetForeign(ctx, stockID, asOfQuery); ferr == nil {
-					foreign = fh
-				} else if !errors.Is(ferr, twse.ErrUnavailable) {
-					log.Warn().Err(ferr).Str("stock", stockID).Msg("twse foreign-holdings fetch failed; omitting row")
+			// Foreign holdings (rwd MI_QFIIS) — TWSE-listed only;
+			// TPEx OpenAPI doesn't expose per-stock foreign holdings
+			// for OTC. Skip for .TWO; the row's segment falls
+			// through to "" silently.
+			if !isOTC {
+				if fp, ok := h.twse.(twse.ForeignProvider); ok {
+					if fh, ferr := fp.GetForeign(ctx, stockID, asOfQuery); ferr == nil {
+						foreign = fh
+					} else if !errors.Is(ferr, twse.ErrUnavailable) {
+						log.Warn().Err(ferr).Str("stock", stockID).Msg("twse foreign-holdings fetch failed; omitting row")
+					}
+				}
+			}
+			// Industry-aggregate foreign overlay — keyed by the
+			// resolved sector NAME from listingInfo.IndustryName, not
+			// by stock id. Works for BOTH listed and OTC stocks
+			// because both share the same industry-name namespace.
+			if listingInfo.IndustryName != "" {
+				if ip, ok := h.twse.(twse.IndustryForeignProvider); ok {
+					if ifgn, ierr := ip.GetIndustryForeign(ctx, listingInfo.IndustryName, asOfQuery); ierr == nil {
+						industryForeign = ifgn
+					} else if !errors.Is(ierr, twse.ErrUnavailable) {
+						log.Warn().Err(ierr).Str("industry", listingInfo.IndustryName).Msg("twse industry-foreign fetch failed; omitting overlay")
+					}
+				}
+			}
+			// Monthly revenue — route by listing type, same as
+			// listing-info.
+			if isOTC {
+				if rp, ok := h.twse.(twse.OTCRevenueProvider); ok {
+					if rv, rerr := rp.GetOTCRevenue(ctx, stockID, asOfQuery); rerr == nil {
+						revenue = rv
+					} else if !errors.Is(rerr, twse.ErrUnavailable) {
+						log.Warn().Err(rerr).Str("stock", stockID).Msg("tpex otc revenue fetch failed; omitting row")
+					}
+				}
+			} else {
+				if rp, ok := h.twse.(twse.RevenueProvider); ok {
+					if rv, rerr := rp.GetRevenue(ctx, stockID, asOfQuery); rerr == nil {
+						revenue = rv
+					} else if !errors.Is(rerr, twse.ErrUnavailable) {
+						log.Warn().Err(rerr).Str("stock", stockID).Msg("twse revenue fetch failed; omitting row")
+					}
 				}
 			}
 		}
@@ -493,7 +539,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	// labels via the ASCII path; honors both Accept: text/pylon and
 	// ?format=pylon for header/query parity.
 	if middleware.WantsPylonSource(c) {
-		bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, holders, blockTrades, fundamentals, listingInfo, foreign, stale, loc, cat)
+		bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, holders, blockTrades, fundamentals, listingInfo, foreign, industryForeign, revenue, stale, loc, cat)
 		c.Data(http.StatusOK, "text/pylon",
 			[]byte(render.BannerSourceBoxes(headline, "", bs.captions, bs.boxes())))
 		return
@@ -507,7 +553,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	// font in render/png.go. The TWSE enrichment rows are gated on
 	// locale via showTWSEEnrichment so en visitors see only the
 	// generic OHLC + MA card.
-	bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, holders, blockTrades, fundamentals, listingInfo, foreign, stale, loc, cat)
+	bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, holders, blockTrades, fundamentals, listingInfo, foreign, industryForeign, revenue, stale, loc, cat)
 
 	renderAt := func(m render.Mode) ([]byte, error) {
 		return render.BannerBoxes(headline, "", bs.captions, bs.boxes(), m)
@@ -635,7 +681,7 @@ func zwspGuard(row string) string {
 // labels inside the TWSE block stay literal — every rendered surface
 // (ASCII / pylon-source / SVG / HTML / PNG) carries CJK coverage now,
 // so there is no tofu-fallback path to gate them on.
-func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse.StockData, live twse.LiveBreadth, retail twse.RetailFutures, lending twse.SecuritiesLending, margin twse.StockMargin, pcr twse.OptionsPCR, vix twse.VIX, holders twse.HoldersDistribution, blockTrades []twse.BlockTrade, fundamentals twse.Fundamentals, listingInfo twse.ListingInfo, foreign twse.Foreign, stale bool, loc i18n.Locale, cat *i18n.Catalog) stockBlocks {
+func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse.StockData, live twse.LiveBreadth, retail twse.RetailFutures, lending twse.SecuritiesLending, margin twse.StockMargin, pcr twse.OptionsPCR, vix twse.VIX, holders twse.HoldersDistribution, blockTrades []twse.BlockTrade, fundamentals twse.Fundamentals, listingInfo twse.ListingInfo, foreign twse.Foreign, industryForeign twse.IndustryForeign, revenue twse.Revenue, stale bool, loc i18n.Locale, cat *i18n.Catalog) stockBlocks {
 	bs := stockBlocks{captions: make([]string, 0, 3)}
 
 	// Title row: `<symbol> · <name>`. The symbol/name pair contains
@@ -771,10 +817,16 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 	// the panel only carries rows about the queried ticker.
 	isPerStock := twStockID(symbol) != ""
 	var groups [][]string
+	// 三大法人 positioning: per-stock view shows ONLY per-stock T86
+	// data (or nothing); market view shows ONLY market-wide BFI82U.
+	// The previous fallthrough — "per-stock data missing → render
+	// market-wide" — produced misleading output on OTC stocks where
+	// T86 has no per-stock row: 6488.TWO would show TSE-wide numbers
+	// (+46.4B foreign net) labelled identically to a per-stock view.
 	switch {
-	case q.IsClosed && perStock.HasFlow():
+	case q.IsClosed && isPerStock && perStock.HasFlow():
 		groups = append(groups, perStockPositioningRows(perStock, q, cat))
-	case q.IsClosed && tw.HasInstitutional():
+	case q.IsClosed && !isPerStock && tw.HasInstitutional():
 		groups = append(groups, positioningRows(tw, cat))
 	}
 	if !isPerStock {
@@ -782,35 +834,59 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 			groups = append(groups, rows)
 		}
 	}
-	if q.IsClosed && tw.HasMargin() {
+	// Credit balance: same per-stock-vs-market split as 三大法人.
+	// Market-wide 信用餘額 (融資/融券 in 億/萬張) and per-stock
+	// 融資/融券/借券 (in 張) had been rendering as TWO adjacent groups
+	// on per-stock views, with very similar 融資/融券 prefixes —
+	// confusing. Now: per-stock view shows only the per-stock block;
+	// market view shows only the market-wide.
+	if q.IsClosed && !isPerStock && tw.HasMargin() {
 		groups = append(groups, creditRows(tw, cat))
 	}
-	if q.IsClosed && (margin.Has() || lending.Has()) {
+	if q.IsClosed && isPerStock && (margin.Has() || lending.Has()) {
 		groups = append(groups, perStockCreditRows(margin, lending, cat))
 	}
-	// Holders rows render regardless of market-state — TDCC publishes
-	// weekly so the dispersion is meaningful intra-day too. Has() gate
-	// covers both "no upstream data" and "staleness gate suppressed it
-	// at the handler boundary" (the handler zeros out the struct on a
-	// stale ?date= so we don't have to re-thread reqAsOf through here).
+	// Per-stock TW enrichment block — collapse all the single-row
+	// signals (block trades, fundamentals, sector/listing/foreign,
+	// monthly revenue) plus the holders pair into ONE rendered group.
+	// They're all per-stock slow-moving signals; the previous
+	// per-row-as-its-own-group layout consumed a blank separator
+	// between every single line, ballooning the card height for no
+	// semantic gain. One group = one preceding blank separator,
+	// related rows flow as a block.
+	//
+	// Order is deliberate: shareholder dispersion (大戶/總戶數) →
+	// today's trading flow (大宗交易) → daily-stable valuation
+	// (殖利率/PER/PBR) → company profile (sector + listing year +
+	// foreign + 業均) → recent revenue (月營收 + YoY).
+	var perStockRows []string
 	if holders.Has() {
-		if rows := holdersRows(holders, cat); len(rows) > 0 {
-			groups = append(groups, rows)
-		}
+		perStockRows = append(perStockRows, holdersRows(holders, cat)...)
 	}
 	if row := blockTradesRow(blockTrades, cat); row != "" {
-		groups = append(groups, []string{row})
+		perStockRows = append(perStockRows, row)
 	}
 	if row := fundamentalsRow(fundamentals, cat); row != "" {
-		groups = append(groups, []string{row})
+		perStockRows = append(perStockRows, row)
 	}
-	if row := contextRow(listingInfo, foreign, cat); row != "" {
-		groups = append(groups, []string{row})
+	if row := contextRow(listingInfo, foreign, industryForeign, cat); row != "" {
+		perStockRows = append(perStockRows, row)
 	}
-	if q.IsClosed && (pcr.Has() || vix.Has()) {
+	if row := revenueRow(revenue, cat); row != "" {
+		perStockRows = append(perStockRows, row)
+	}
+	if len(perStockRows) > 0 {
+		groups = append(groups, perStockRows)
+	}
+	// Market sentiment (PCR / VIX) and 散戶 retail futures are
+	// market-wide signals — keep them ON the market view, hide on
+	// per-stock views to keep the per-stock card focused on the
+	// queried ticker. Same logic as 三大法人 / 信用餘額 above:
+	// per-stock card panels only carry rows about the queried stock.
+	if !isPerStock && q.IsClosed && (pcr.Has() || vix.Has()) {
 		groups = append(groups, []string{marketSentimentRow(pcr, vix, cat)})
 	}
-	if q.IsClosed && retail.HasAny() {
+	if !isPerStock && q.IsClosed && retail.HasAny() {
 		groups = append(groups, retailFuturesRows(retail, cat))
 	}
 	for i, g := range groups {
@@ -1061,23 +1137,24 @@ func perStockCreditRows(m twse.StockMargin, l twse.SecuritiesLending, cat *i18n.
 }
 
 // contextRow formats the per-stock context row combining sector
-// (產業別), listing year, and total foreign holdings:
+// (產業別), listing year, total foreign holdings, and the
+// industry-aggregate foreign-mean overlay:
 //
-//	半導體業  ·  上市 1994  ·  外資持股 70.65%
+//	半導體業  ·  上市 1994  ·  外資持股 70.65%  ·  業均 43.10%
 //
-// Per-segment skip: each of the three signals renders only when the
-// corresponding upstream produced data. A stock with sector but no
-// listing-date or foreign-holdings still gets the truncated row;
-// a stock with NONE of the three returns "" and the row is omitted
-// entirely.
+// Per-segment skip: each signal renders only when its upstream
+// produced data. The 業均 segment is hidden unless industryForeign
+// has a row AND the per-stock 外資持股 segment is present (showing
+// industry mean without a per-stock comparand reads as floating
+// trivia; only meaningful relative to per-stock data).
 //
 // Listing year is the 4-digit year from listingInfo.ListingDate
 // (e.g. 1994 for TSMC). Surfacing the full date felt clunky; year
 // is enough context for the "established vs. recent IPO" read.
 //
-// Returns "" when none of the three has data, or when the catalog's
-// listing/foreign labels are empty (en defence-in-depth).
-func contextRow(li twse.ListingInfo, fh twse.Foreign, cat *i18n.Catalog) string {
+// Returns "" when none of the segments has data, or when the
+// catalog's listing/foreign labels are empty (en defence-in-depth).
+func contextRow(li twse.ListingInfo, fh twse.Foreign, ifgn twse.IndustryForeign, cat *i18n.Catalog) string {
 	if cat.TWSEListingPrefix == "" || cat.TWSEForeignHolding == "" {
 		return ""
 	}
@@ -1088,13 +1165,75 @@ func contextRow(li twse.ListingInfo, fh twse.Foreign, cat *i18n.Catalog) string 
 	if li.Has() && !li.ListingDate.IsZero() {
 		segs = append(segs, fmt.Sprintf("%s %d", cat.TWSEListingPrefix, li.ListingDate.Year()))
 	}
-	if fh.Has() && fh.HoldingPct > 0 {
+	hasPerStockForeign := fh.Has() && fh.HoldingPct > 0
+	if hasPerStockForeign {
 		segs = append(segs, fmt.Sprintf("%s %.2f%%", cat.TWSEForeignHolding, fh.HoldingPct))
+	}
+	// Industry-aggregate overlay: only render when per-stock foreign
+	// is present (otherwise the comparison is empty), industry data
+	// is available, and the industry pct is meaningful.
+	if hasPerStockForeign && ifgn.Has() && ifgn.HoldingPct > 0 {
+		segs = append(segs, fmt.Sprintf("%s %.2f%%", cat.TWSEIndustryForeignMean, ifgn.HoldingPct))
 	}
 	if len(segs) == 0 {
 		return ""
 	}
 	return strings.Join(segs, "  "+cat.Separator+"  ")
+}
+
+// revenueRow formats the per-stock monthly revenue row with the
+// upstream-pre-computed YoY pct:
+//
+//	2026/03 月營收 4,151億  ·  YoY ▲45.19%
+//
+// YearMonth is the upstream ROC-encoded "11503" → "2026/03" via
+// rocYearMonthLabel. Revenue is converted to 億 units (NTD 億) for
+// readability — 4,151億 reads better than 415,191,699,000.
+//
+// YoY direction: ▲ for non-negative, ▼ for negative. Magnitude is
+// always the absolute value formatted with 2dp.
+//
+// Returns "" when revenue.Has() is false or the catalog's revenue
+// label is empty (en defence-in-depth).
+func revenueRow(r twse.Revenue, cat *i18n.Catalog) string {
+	if !r.Has() || cat.TWSEMonthlyRevenue == "" {
+		return ""
+	}
+	period := rocYearMonthLabel(r.YearMonth)
+	if period == "" {
+		period = r.YearMonth // fall back to upstream literal on parse failure
+	}
+	yi := float64(r.CurrentTWD) / 1e8
+	arrow := "▲"
+	yoy := r.YoYPct
+	if yoy < 0 {
+		arrow = "▼"
+		yoy = -yoy
+	}
+	return fmt.Sprintf("%s %s %.2f %s  %s  YoY %s%.2f%%",
+		period,
+		cat.TWSEMonthlyRevenue, yi, cat.TWSEUnitYi,
+		cat.Separator,
+		arrow, yoy)
+}
+
+// rocYearMonthLabel converts upstream ROC-encoded YYYMM (e.g. "11503")
+// to a Gregorian "YYYY/MM" label (→ "2026/03"). ROC year + 1911 =
+// Gregorian year. Returns "" on malformed input.
+func rocYearMonthLabel(rocYM string) string {
+	rocYM = strings.TrimSpace(rocYM)
+	if len(rocYM) < 4 {
+		return ""
+	}
+	// Last 2 digits = month; everything before = ROC year.
+	yearPart := rocYM[:len(rocYM)-2]
+	monthPart := rocYM[len(rocYM)-2:]
+	rocYear, err1 := strconv.Atoi(yearPart)
+	month, err2 := strconv.Atoi(monthPart)
+	if err1 != nil || err2 != nil || month < 1 || month > 12 {
+		return ""
+	}
+	return fmt.Sprintf("%d/%02d", rocYear+1911, month)
 }
 
 // fundamentalsRow formats the per-stock 殖利率 / 本益比 / PBR row from
