@@ -817,10 +817,16 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 	// the panel only carries rows about the queried ticker.
 	isPerStock := twStockID(symbol) != ""
 	var groups [][]string
+	// 三大法人 positioning: per-stock view shows ONLY per-stock T86
+	// data (or nothing); market view shows ONLY market-wide BFI82U.
+	// The previous fallthrough — "per-stock data missing → render
+	// market-wide" — produced misleading output on OTC stocks where
+	// T86 has no per-stock row: 6488.TWO would show TSE-wide numbers
+	// (+46.4B foreign net) labelled identically to a per-stock view.
 	switch {
-	case q.IsClosed && perStock.HasFlow():
+	case q.IsClosed && isPerStock && perStock.HasFlow():
 		groups = append(groups, perStockPositioningRows(perStock, q, cat))
-	case q.IsClosed && tw.HasInstitutional():
+	case q.IsClosed && !isPerStock && tw.HasInstitutional():
 		groups = append(groups, positioningRows(tw, cat))
 	}
 	if !isPerStock {
@@ -828,38 +834,59 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 			groups = append(groups, rows)
 		}
 	}
-	if q.IsClosed && tw.HasMargin() {
+	// Credit balance: same per-stock-vs-market split as 三大法人.
+	// Market-wide 信用餘額 (融資/融券 in 億/萬張) and per-stock
+	// 融資/融券/借券 (in 張) had been rendering as TWO adjacent groups
+	// on per-stock views, with very similar 融資/融券 prefixes —
+	// confusing. Now: per-stock view shows only the per-stock block;
+	// market view shows only the market-wide.
+	if q.IsClosed && !isPerStock && tw.HasMargin() {
 		groups = append(groups, creditRows(tw, cat))
 	}
-	if q.IsClosed && (margin.Has() || lending.Has()) {
+	if q.IsClosed && isPerStock && (margin.Has() || lending.Has()) {
 		groups = append(groups, perStockCreditRows(margin, lending, cat))
 	}
-	// Holders rows render regardless of market-state — TDCC publishes
-	// weekly so the dispersion is meaningful intra-day too. Has() gate
-	// covers both "no upstream data" and "staleness gate suppressed it
-	// at the handler boundary" (the handler zeros out the struct on a
-	// stale ?date= so we don't have to re-thread reqAsOf through here).
+	// Per-stock TW enrichment block — collapse all the single-row
+	// signals (block trades, fundamentals, sector/listing/foreign,
+	// monthly revenue) plus the holders pair into ONE rendered group.
+	// They're all per-stock slow-moving signals; the previous
+	// per-row-as-its-own-group layout consumed a blank separator
+	// between every single line, ballooning the card height for no
+	// semantic gain. One group = one preceding blank separator,
+	// related rows flow as a block.
+	//
+	// Order is deliberate: shareholder dispersion (大戶/總戶數) →
+	// today's trading flow (大宗交易) → daily-stable valuation
+	// (殖利率/PER/PBR) → company profile (sector + listing year +
+	// foreign + 業均) → recent revenue (月營收 + YoY).
+	var perStockRows []string
 	if holders.Has() {
-		if rows := holdersRows(holders, cat); len(rows) > 0 {
-			groups = append(groups, rows)
-		}
+		perStockRows = append(perStockRows, holdersRows(holders, cat)...)
 	}
 	if row := blockTradesRow(blockTrades, cat); row != "" {
-		groups = append(groups, []string{row})
+		perStockRows = append(perStockRows, row)
 	}
 	if row := fundamentalsRow(fundamentals, cat); row != "" {
-		groups = append(groups, []string{row})
+		perStockRows = append(perStockRows, row)
 	}
 	if row := contextRow(listingInfo, foreign, industryForeign, cat); row != "" {
-		groups = append(groups, []string{row})
+		perStockRows = append(perStockRows, row)
 	}
 	if row := revenueRow(revenue, cat); row != "" {
-		groups = append(groups, []string{row})
+		perStockRows = append(perStockRows, row)
 	}
-	if q.IsClosed && (pcr.Has() || vix.Has()) {
+	if len(perStockRows) > 0 {
+		groups = append(groups, perStockRows)
+	}
+	// Market sentiment (PCR / VIX) and 散戶 retail futures are
+	// market-wide signals — keep them ON the market view, hide on
+	// per-stock views to keep the per-stock card focused on the
+	// queried ticker. Same logic as 三大法人 / 信用餘額 above:
+	// per-stock card panels only carry rows about the queried stock.
+	if !isPerStock && q.IsClosed && (pcr.Has() || vix.Has()) {
 		groups = append(groups, []string{marketSentimentRow(pcr, vix, cat)})
 	}
-	if q.IsClosed && retail.HasAny() {
+	if !isPerStock && q.IsClosed && retail.HasAny() {
 		groups = append(groups, retailFuturesRows(retail, cat))
 	}
 	for i, g := range groups {

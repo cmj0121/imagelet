@@ -1379,10 +1379,14 @@ func TestServeSymbolPerStockOverlaysMarketWide(t *testing.T) {
 	}
 }
 
-// TestServeSymbolPerStockUpstreamMissFallsBack pins that a T86 miss
-// (delisted, OTC-only, etc.) gracefully falls back to the market-wide
-// positioning rows rather than dropping the entire 三大法人 group.
-func TestServeSymbolPerStockUpstreamMissFallsBack(t *testing.T) {
+// TestServeSymbolPerStockUpstreamMissOmitsBlock pins the post-Tier-3
+// behaviour: when T86 has no row for a per-stock view (delisted /
+// OTC-only / 9999), the 三大法人 group is OMITTED entirely rather
+// than falling through to the market-wide TSE-aggregate numbers
+// labelled identically. The previous fallback was misleading on
+// OTC stocks (6488.TWO would show +46.4B labelled "外資籌碼" — the
+// TSE-wide total, not the per-stock figure).
+func TestServeSymbolPerStockUpstreamMissOmitsBlock(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	q := freshQuote()
 	q.Symbol = "9999.TW"
@@ -1395,8 +1399,6 @@ func TestServeSymbolPerStockUpstreamMissFallsBack(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/stock/9999.tw", nil)
 	req.Header.Set("User-Agent", "curl/8.4.0")
-	// TWSE rows are emitted only for non-en locales; pin TW so the
-	// market-wide fallback row actually renders.
 	req.Header.Set("CF-IPCountry", "TW")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -1405,9 +1407,16 @@ func TestServeSymbolPerStockUpstreamMissFallsBack(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	// Market-wide foreign +43.9B from freshTW should appear.
-	if !strings.Contains(body, "+43.9B") {
-		t.Errorf("body missing market-wide fallback +43.9B\n--- body ---\n%s", body)
+	// The market-wide TSE-aggregate +43.9B foreign net MUST NOT
+	// appear on a per-stock view that has no per-stock data — that
+	// was the misleading-fallback bug. Per-stock card omits the
+	// group entirely.
+	if strings.Contains(body, "+43.9B") {
+		t.Errorf("market-wide fallback unexpectedly rendered on per-stock view\n--- body ---\n%s", body)
+	}
+	// Sanity: the rest of the card still renders.
+	if !strings.Contains(body, "9999.TW") {
+		t.Errorf("symbol missing — card collapsed entirely")
 	}
 }
 
