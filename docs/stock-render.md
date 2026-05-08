@@ -172,26 +172,46 @@ The new rows sit beneath the existing per-stock TW enrichment groups
 and above the 散戶 group on market-wide views:
 
 ```text
-外資籌碼  ░░░░░░░░░░│████████░░  +43.9B
-投信籌碼  ░░░░░░░░░░│░░░░░░░░░░  +2.2B
-自營籌碼  ░░░░░░░░░░│██░░░░░░░░  +8.9B
-合計籌碼  ░░░░░░░░░░│██████████  +55.0B  ▲
+外資籌碼  ░░░░░░░░░░│████████░░  +9.0B
+投信籌碼  ░░░░░░░░░░│███░░░░░░░  +3.3B
+自營籌碼  ░░░░░░░░░░│░░░░░░░░░░  +0.3B
+合計籌碼  ░░░░░░░░░░│██████████  +12.6B  ▲
 
-信用餘額  融資 4,409億   融券 19.1萬張
+融資餘額  26,840 張
+融券餘額  119 張
+借券賣出  4,492 張
 
 大戶    1,721 戶  0.07%  ·  持股 86.36%  ·  ▲0.05pp
 總戶數  2,519,187
-
-大宗交易  2 筆  ·  2,000 張  ·  44.05 億
-
-殖利率 0.98%  ·  PER 33.97  ·  PBR 10.77
-
-半導體業  ·  上市 1994  ·  外資持股 70.65%  ·  業均 43.10%
+大宗交易  10 筆  ·  4,309 張  ·  99.81 億
+殖利率 0.95%  ·  PER 34.87  ·  PBR 11.05
+半導體業  ·  上市 1994  ·  外資持股 70.66%  ·  業均 43.13%
 2026/03 月營收 4,151.92 億  ·  YoY ▲45.19%
 ```
 
-Each group is separated by a zero-width-space row so pylon's row
-parser keeps them distinct without trimming the gap.
+Groups are separated by zero-width-space rows so pylon's row parser
+keeps them distinct without trimming the gap. The bottom block
+(holders + 大宗交易 + 殖利率 + sector + 月營收) is rendered as a
+SINGLE group — they're all per-stock slow-moving signals, and a
+blank between every line was structural noise.
+
+### Per-stock vs market scope
+
+The per-stock card panel only carries rows about the queried
+ticker. Market-wide rows (`漲跌家數` breadth, market 信用餘額,
+市場 三大法人 fallback, 市場情緒 PCR/VIX, 散戶 retail futures)
+render only on `/stock` (regional index); they're hidden on
+`/stock/:symbol` views.
+
+This means a per-stock view with no per-stock institutional flow
+(delisted, OTC where T86 has no row) **omits the 三大法人 group
+entirely** rather than substituting market-wide totals labelled
+identically — a 6488.TWO card no longer shows `+46.4B 外資籌碼`
+that's actually the TSE-wide aggregate. Same logic for credit
+balance: per-stock view shows `融資餘額 / 融券餘額 / 借券賣出`
+(in 張) only; market view shows `信用餘額 融資 4,409億 融券
+19.1萬張` (in 億 / 萬張) only. No more dual blocks with similar
+prefixes.
 
 ### Holders weekly Δ pill
 
