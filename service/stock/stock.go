@@ -229,37 +229,23 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	//    MIS across the listed-equity universe) and stamp just the
 	//    breadth fields onto MarketData. The renderer then shows the
 	//    breadth row alone, gated as before.
-	var tw twse.MarketData
-	var perStock twse.StockData
-	var live twse.LiveBreadth
-	var retail twse.RetailFutures
-	var lending twse.SecuritiesLending
-	var margin twse.StockMargin
-	var pcr twse.OptionsPCR
-	var vix twse.VIX
-	var holders twse.HoldersDistribution
-	var blockTrades []twse.BlockTrade
-	var fundamentals twse.Fundamentals
-	var listingInfo twse.ListingInfo
-	var foreign twse.Foreign
-	var industryForeign twse.IndustryForeign
-	var revenue twse.Revenue
+	in := stockRenderInput{stale: stale}
 	if enrichTW && h.twse != nil && showTWSEEnrichment(loc) {
 		ctx := c.Request.Context()
 		switch {
 		case dateOverride:
 			if hp, ok := h.twse.(twse.HistoricalProvider); ok {
-				tw, err = hp.GetAt(ctx, asOf)
+				in.tw, err = hp.GetAt(ctx, asOf)
 				if err != nil {
 					log.Warn().Err(err).Time("asOf", asOf).Msg("twse historical fetch failed; omitting TW enrichment block")
-					tw = twse.MarketData{}
+					in.tw = twse.MarketData{}
 				}
 			}
 		case q.IsClosed:
-			tw, err = h.twse.Get(ctx)
+			in.tw, err = h.twse.Get(ctx)
 			if err != nil {
 				log.Warn().Err(err).Msg("twse upstream failed; omitting TW enrichment block")
-				tw = twse.MarketData{}
+				in.tw = twse.MarketData{}
 			}
 		default:
 			if lbp, ok := h.twse.(twse.LiveBreadthProvider); ok {
@@ -267,7 +253,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 				if lerr != nil {
 					log.Warn().Err(lerr).Msg("twse live breadth failed; omitting breadth row")
 				} else {
-					live = b
+					in.live = b
 				}
 			}
 		}
@@ -290,7 +276,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 				if perr != nil {
 					log.Warn().Err(perr).Str("stock", stockID).Msg("twse per-stock fetch failed; falling back to market-wide positioning")
 				} else {
-					perStock = ps
+					in.perStock = ps
 				}
 			}
 		}
@@ -306,8 +292,8 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 		// best-effort: log and keep Yahoo's Latin name as fallback.
 		if stockID != "" {
 			switch {
-			case perStock.Name != "":
-				q.Name = perStock.Name
+			case in.perStock.Name != "":
+				q.Name = in.perStock.Name
 			default:
 				if np, ok := h.twse.(twse.NameProvider); ok {
 					isOTC := strings.HasSuffix(symbol, ".TWO")
@@ -336,7 +322,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 			}
 			if hp, ok := h.twse.(twse.HoldersProvider); ok {
 				if d, herr := hp.GetHoldersDistribution(ctx, stockID, asOfQuery); herr == nil {
-					holders = d
+					in.holders = d
 				} else if !errors.Is(herr, twse.ErrUnavailable) {
 					log.Warn().Err(herr).Str("stock", stockID).Msg("twse holders fetch failed; omitting holders rows")
 				}
@@ -348,7 +334,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 			// meaningful while the market is open.
 			if bp, ok := h.twse.(twse.BlockTradesProvider); ok {
 				if _, trades, berr := bp.GetBlockTrades(ctx, stockID, asOfQuery); berr == nil {
-					blockTrades = trades
+					in.blockTrades = trades
 				} else if !errors.Is(berr, twse.ErrUnavailable) {
 					log.Warn().Err(berr).Str("stock", stockID).Msg("twse block-trades fetch failed; omitting row")
 				}
@@ -361,7 +347,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 			// enough during the session to render alongside live price.
 			if fp, ok := h.twse.(twse.FundamentalsProvider); ok {
 				if f, ferr := fp.GetFundamentals(ctx, stockID, asOfQuery); ferr == nil {
-					fundamentals = f
+					in.fundamentals = f
 				} else if !errors.Is(ferr, twse.ErrUnavailable) {
 					log.Warn().Err(ferr).Str("stock", stockID).Msg("twse fundamentals fetch failed; omitting row")
 				}
@@ -374,7 +360,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 			if isOTC {
 				if lp, ok := h.twse.(twse.OTCListingInfoProvider); ok {
 					if li, lerr := lp.GetOTCListingInfo(ctx, stockID, asOfQuery); lerr == nil {
-						listingInfo = li
+						in.listingInfo = li
 					} else if !errors.Is(lerr, twse.ErrUnavailable) {
 						log.Warn().Err(lerr).Str("stock", stockID).Msg("tpex otc listing-info fetch failed; omitting row")
 					}
@@ -382,7 +368,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 			} else {
 				if lp, ok := h.twse.(twse.ListingInfoProvider); ok {
 					if li, lerr := lp.GetListingInfo(ctx, stockID, asOfQuery); lerr == nil {
-						listingInfo = li
+						in.listingInfo = li
 					} else if !errors.Is(lerr, twse.ErrUnavailable) {
 						log.Warn().Err(lerr).Str("stock", stockID).Msg("twse listing-info fetch failed; omitting row")
 					}
@@ -395,7 +381,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 			if !isOTC {
 				if fp, ok := h.twse.(twse.ForeignProvider); ok {
 					if fh, ferr := fp.GetForeign(ctx, stockID, asOfQuery); ferr == nil {
-						foreign = fh
+						in.foreign = fh
 					} else if !errors.Is(ferr, twse.ErrUnavailable) {
 						log.Warn().Err(ferr).Str("stock", stockID).Msg("twse foreign-holdings fetch failed; omitting row")
 					}
@@ -405,12 +391,12 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 			// resolved sector NAME from listingInfo.IndustryName, not
 			// by stock id. Works for BOTH listed and OTC stocks
 			// because both share the same industry-name namespace.
-			if listingInfo.IndustryName != "" {
+			if in.listingInfo.IndustryName != "" {
 				if ip, ok := h.twse.(twse.IndustryForeignProvider); ok {
-					if ifgn, ierr := ip.GetIndustryForeign(ctx, listingInfo.IndustryName, asOfQuery); ierr == nil {
-						industryForeign = ifgn
+					if ifgn, ierr := ip.GetIndustryForeign(ctx, in.listingInfo.IndustryName, asOfQuery); ierr == nil {
+						in.industryForeign = ifgn
 					} else if !errors.Is(ierr, twse.ErrUnavailable) {
-						log.Warn().Err(ierr).Str("industry", listingInfo.IndustryName).Msg("twse industry-foreign fetch failed; omitting overlay")
+						log.Warn().Err(ierr).Str("industry", in.listingInfo.IndustryName).Msg("twse industry-foreign fetch failed; omitting overlay")
 					}
 				}
 			}
@@ -419,7 +405,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 			if isOTC {
 				if rp, ok := h.twse.(twse.OTCRevenueProvider); ok {
 					if rv, rerr := rp.GetOTCRevenue(ctx, stockID, asOfQuery); rerr == nil {
-						revenue = rv
+						in.revenue = rv
 					} else if !errors.Is(rerr, twse.ErrUnavailable) {
 						log.Warn().Err(rerr).Str("stock", stockID).Msg("tpex otc revenue fetch failed; omitting row")
 					}
@@ -427,7 +413,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 			} else {
 				if rp, ok := h.twse.(twse.RevenueProvider); ok {
 					if rv, rerr := rp.GetRevenue(ctx, stockID, asOfQuery); rerr == nil {
-						revenue = rv
+						in.revenue = rv
 					} else if !errors.Is(rerr, twse.ErrUnavailable) {
 						log.Warn().Err(rerr).Str("stock", stockID).Msg("twse revenue fetch failed; omitting row")
 					}
@@ -457,14 +443,14 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 				// would just be noise alongside a single ticker.
 				if slp, ok := h.twse.(twse.SecuritiesLendingProvider); ok {
 					if l, lerr := slp.GetSecuritiesLending(ctx, stockID, asOfQuery); lerr == nil {
-						lending = l
+						in.lending = l
 					} else if !errors.Is(lerr, twse.ErrUnavailable) {
 						log.Warn().Err(lerr).Str("stock", stockID).Msg("twse securities-lending fetch failed; omitting securities-lending row")
 					}
 				}
 				if smp, ok := h.twse.(twse.StockMarginProvider); ok {
 					if m, merr := smp.GetStockMargin(ctx, stockID, asOfQuery); merr == nil {
-						margin = m
+						in.margin = m
 					} else if !errors.Is(merr, twse.ErrUnavailable) {
 						log.Warn().Err(merr).Str("stock", stockID).Msg("twse stock-margin fetch failed; omitting margin/short row")
 					}
@@ -472,21 +458,21 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 			} else {
 				if rfp, ok := h.twse.(twse.RetailFuturesProvider); ok {
 					if r, rerr := rfp.GetRetailFutures(ctx, asOfQuery); rerr == nil {
-						retail = r
+						in.retail = r
 					} else if !errors.Is(rerr, twse.ErrUnavailable) {
 						log.Warn().Err(rerr).Msg("taifex retail futures fetch failed; omitting retail-futures group")
 					}
 				}
 				if op, ok := h.twse.(twse.OptionsPCRProvider); ok {
 					if v, perr := op.GetOptionsPCR(ctx, asOfQuery); perr == nil {
-						pcr = v
+						in.pcr = v
 					} else if !errors.Is(perr, twse.ErrUnavailable) {
 						log.Warn().Err(perr).Msg("taifex pcr fetch failed; omitting PCR row")
 					}
 				}
 				if vp, ok := h.twse.(twse.VIXProvider); ok {
 					if v, verr := vp.GetVIX(ctx, asOfQuery); verr == nil {
-						vix = v
+						in.vix = v
 					} else if !errors.Is(verr, twse.ErrUnavailable) {
 						log.Warn().Err(verr).Msg("taifex vix fetch failed; omitting VIX row")
 					}
@@ -504,8 +490,8 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 		if dateOverride {
 			reqAsOf = asOf
 		}
-		if holders.Has() && !twse.HoldersFreshFor(reqAsOf, holders.AsOf) {
-			holders = twse.HoldersDistribution{}
+		if in.holders.Has() && !twse.HoldersFreshFor(reqAsOf, in.holders.AsOf) {
+			in.holders = twse.HoldersDistribution{}
 		}
 	}
 
@@ -539,7 +525,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	// labels via the ASCII path; honors both Accept: text/pylon and
 	// ?format=pylon for header/query parity.
 	if middleware.WantsPylonSource(c) {
-		bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, holders, blockTrades, fundamentals, listingInfo, foreign, industryForeign, revenue, stale, loc, cat)
+		bs := buildBlocks(symbol, q, in, loc, cat)
 		c.Data(http.StatusOK, "text/pylon",
 			[]byte(render.BannerSourceBoxes(headline, "", bs.captions, bs.boxes())))
 		return
@@ -553,7 +539,7 @@ func (h *handler) renderSymbol(c *gin.Context, symbol string, enrichTW bool) {
 	// font in render/png.go. The TWSE enrichment rows are gated on
 	// locale via showTWSEEnrichment so en visitors see only the
 	// generic OHLC + MA card.
-	bs := buildBlocks(symbol, q, tw, perStock, live, retail, lending, margin, pcr, vix, holders, blockTrades, fundamentals, listingInfo, foreign, industryForeign, revenue, stale, loc, cat)
+	bs := buildBlocks(symbol, q, in, loc, cat)
 
 	renderAt := func(m render.Mode) ([]byte, error) {
 		return render.BannerBoxes(headline, "", bs.captions, bs.boxes(), m)
@@ -612,6 +598,43 @@ func ogDescription(q quote.Quote) string {
 	}
 	return fmt.Sprintf("%s %+.2f%%  %s %s",
 		arrow, q.ChangePercent(), formatPrice(q.Last), q.Currency)
+}
+
+// stockRenderInput bundles the optional TW market-data signals passed
+// to buildBlocks. Every field is optional — the zero value means "not
+// available" and the renderer silently skips the corresponding row,
+// gated by the Has* / HasFlow / HasAny methods on each type. This
+// replaces the previous 17-parameter flat signature, eliminating
+// compile-time positional ordering risk and making future additions
+// a struct-field change rather than a signature change at every call
+// site.
+//
+// stale mirrors the quote-upstream error state: true when the quote
+// was served from a stale in-memory cache after an upstream failure.
+type stockRenderInput struct {
+	// Market-wide TWSE daily signals (afterTrading endpoints).
+	tw   twse.MarketData
+	live twse.LiveBreadth
+
+	// Per-stock TWSE signals (gated on isTWSymbol && stockID != "").
+	perStock        twse.StockData
+	holders         twse.HoldersDistribution
+	blockTrades     []twse.BlockTrade
+	fundamentals    twse.Fundamentals
+	listingInfo     twse.ListingInfo
+	foreign         twse.Foreign
+	industryForeign twse.IndustryForeign
+	revenue         twse.Revenue
+	lending         twse.SecuritiesLending
+	margin          twse.StockMargin
+
+	// Market-wide TAIFEX signals (closed market, market-wide view only).
+	retail twse.RetailFutures
+	pcr    twse.OptionsPCR
+	vix    twse.VIX
+
+	// stale is true when the quote came from cache after an upstream failure.
+	stale bool
 }
 
 // stockBlocks is the per-surface render content for render.BannerSourceBoxes.
@@ -681,7 +704,7 @@ func zwspGuard(row string) string {
 // labels inside the TWSE block stay literal — every rendered surface
 // (ASCII / pylon-source / SVG / HTML / PNG) carries CJK coverage now,
 // so there is no tofu-fallback path to gate them on.
-func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse.StockData, live twse.LiveBreadth, retail twse.RetailFutures, lending twse.SecuritiesLending, margin twse.StockMargin, pcr twse.OptionsPCR, vix twse.VIX, holders twse.HoldersDistribution, blockTrades []twse.BlockTrade, fundamentals twse.Fundamentals, listingInfo twse.ListingInfo, foreign twse.Foreign, industryForeign twse.IndustryForeign, revenue twse.Revenue, stale bool, loc i18n.Locale, cat *i18n.Catalog) stockBlocks {
+func buildBlocks(symbol string, q quote.Quote, in stockRenderInput, loc i18n.Locale, cat *i18n.Catalog) stockBlocks {
 	bs := stockBlocks{captions: make([]string, 0, 3)}
 
 	// Title row: `<symbol> · <name>`. The symbol/name pair contains
@@ -691,7 +714,7 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 
 	prefix := ""
 	switch {
-	case stale:
+	case in.stale:
 		prefix = cat.StaleTag + " · "
 	case q.IsClosed:
 		prefix = cat.ClosedTag + " · "
@@ -824,13 +847,13 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 	// T86 has no per-stock row: 6488.TWO would show TSE-wide numbers
 	// (+46.4B foreign net) labelled identically to a per-stock view.
 	switch {
-	case q.IsClosed && isPerStock && perStock.HasFlow():
-		groups = append(groups, perStockPositioningRows(perStock, q, cat))
-	case q.IsClosed && !isPerStock && tw.HasInstitutional():
-		groups = append(groups, positioningRows(tw, cat))
+	case q.IsClosed && isPerStock && in.perStock.HasFlow():
+		groups = append(groups, perStockPositioningRows(in.perStock, q, cat))
+	case q.IsClosed && !isPerStock && in.tw.HasInstitutional():
+		groups = append(groups, positioningRows(in.tw, cat))
 	}
 	if !isPerStock {
-		if rows := breadthRows(tw, live, q.IsClosed, cat); len(rows) > 0 {
+		if rows := breadthRows(in.tw, in.live, q.IsClosed, cat); len(rows) > 0 {
 			groups = append(groups, rows)
 		}
 	}
@@ -840,11 +863,11 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 	// on per-stock views, with very similar 融資/融券 prefixes —
 	// confusing. Now: per-stock view shows only the per-stock block;
 	// market view shows only the market-wide.
-	if q.IsClosed && !isPerStock && tw.HasMargin() {
-		groups = append(groups, creditRows(tw, cat))
+	if q.IsClosed && !isPerStock && in.tw.HasMargin() {
+		groups = append(groups, creditRows(in.tw, cat))
 	}
-	if q.IsClosed && isPerStock && (margin.Has() || lending.Has()) {
-		groups = append(groups, perStockCreditRows(margin, lending, cat))
+	if q.IsClosed && isPerStock && (in.margin.Has() || in.lending.Has()) {
+		groups = append(groups, perStockCreditRows(in.margin, in.lending, cat))
 	}
 	// Per-stock TW enrichment block — collapse all the single-row
 	// signals (block trades, fundamentals, sector/listing/foreign,
@@ -860,19 +883,19 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 	// (殖利率/PER/PBR) → company profile (sector + listing year +
 	// foreign + 業均) → recent revenue (月營收 + YoY).
 	var perStockRows []string
-	if holders.Has() {
-		perStockRows = append(perStockRows, holdersRows(holders, cat)...)
+	if in.holders.Has() {
+		perStockRows = append(perStockRows, holdersRows(in.holders, cat)...)
 	}
-	if row := blockTradesRow(blockTrades, cat); row != "" {
+	if row := blockTradesRow(in.blockTrades, cat); row != "" {
 		perStockRows = append(perStockRows, row)
 	}
-	if row := fundamentalsRow(fundamentals, cat); row != "" {
+	if row := fundamentalsRow(in.fundamentals, cat); row != "" {
 		perStockRows = append(perStockRows, row)
 	}
-	if row := contextRow(listingInfo, foreign, industryForeign, cat); row != "" {
+	if row := contextRow(in.listingInfo, in.foreign, in.industryForeign, cat); row != "" {
 		perStockRows = append(perStockRows, row)
 	}
-	if row := revenueRow(revenue, cat); row != "" {
+	if row := revenueRow(in.revenue, cat); row != "" {
 		perStockRows = append(perStockRows, row)
 	}
 	if len(perStockRows) > 0 {
@@ -883,11 +906,11 @@ func buildBlocks(symbol string, q quote.Quote, tw twse.MarketData, perStock twse
 	// per-stock views to keep the per-stock card focused on the
 	// queried ticker. Same logic as 三大法人 / 信用餘額 above:
 	// per-stock card panels only carry rows about the queried stock.
-	if !isPerStock && q.IsClosed && (pcr.Has() || vix.Has()) {
-		groups = append(groups, []string{marketSentimentRow(pcr, vix, cat)})
+	if !isPerStock && q.IsClosed && (in.pcr.Has() || in.vix.Has()) {
+		groups = append(groups, []string{marketSentimentRow(in.pcr, in.vix, cat)})
 	}
-	if !isPerStock && q.IsClosed && retail.HasAny() {
-		groups = append(groups, retailFuturesRows(retail, cat))
+	if !isPerStock && q.IsClosed && in.retail.HasAny() {
+		groups = append(groups, retailFuturesRows(in.retail, cat))
 	}
 	for i, g := range groups {
 		if i > 0 {

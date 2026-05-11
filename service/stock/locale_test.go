@@ -160,6 +160,69 @@ func fetchLocaleRaw(t *testing.T, q quote.Quote, lang, format string) *httptest.
 	return rec
 }
 
+// TestBareZhResolvesToZhTW asserts that ?lang=zh maps to zh-TW (Traditional
+// Chinese), not zh-CN. This is intentional: the deployment targets a
+// TW-market audience, so bare zh should default to Traditional. A regression
+// here would cause the zh-CN Simplified labels to appear instead.
+func TestBareZhResolvesToZhTW(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "^TWII"
+	q.Currency = "TWD"
+	q.IsClosed = true
+
+	body := fetchLocale(t, q, "zh", "ascii")
+	// zh-TW uses Traditional script; zh-CN uses Simplified.
+	// "開:" is Traditional; "开:" is Simplified.
+	if !strings.Contains(body, "開:") {
+		t.Errorf("?lang=zh: body missing Traditional OHLC label '開:'; got Simplified or en\n--- body ---\n%s", body)
+	}
+	if strings.Contains(body, "开:") {
+		t.Errorf("?lang=zh: body contains Simplified OHLC label '开:'; bare zh should resolve to zh-TW\n--- body ---\n%s", body)
+	}
+}
+
+// TestCFIPCountryLocaleResolution checks that the CF-IPCountry header drives
+// locale when no ?lang= is given: TW → zh-TW, CN → zh-CN, US → en.
+func TestCFIPCountryLocaleResolution(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := freshQuote()
+	q.Symbol = "^TWII"
+	q.Currency = "TWD"
+	q.IsClosed = true
+
+	cases := []struct {
+		country    string
+		wantLabel  string
+		bannedLabel string
+	}{
+		{"TW", "開:", "开:"},
+		{"HK", "開:", "开:"},
+		{"CN", "开:", "開:"},
+		{"SG", "开:", "開:"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.country, func(t *testing.T) {
+			r := newRouterWithTWSE(fakeProvider{q: q}, fakeTWSE{d: freshTW()})
+			req := httptest.NewRequest(http.MethodGet, "/stock?region=TW&format=ascii", nil)
+			req.Header.Set("User-Agent", "curl/8.4.0")
+			req.Header.Set("CF-IPCountry", tc.country)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("CF-IPCountry=%s: status = %d, want 200", tc.country, rec.Code)
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, tc.wantLabel) {
+				t.Errorf("CF-IPCountry=%s: body missing %q\n--- body ---\n%s", tc.country, tc.wantLabel, body)
+			}
+			if strings.Contains(body, tc.bannedLabel) {
+				t.Errorf("CF-IPCountry=%s: body contains banned %q (wrong locale)\n--- body ---\n%s", tc.country, tc.bannedLabel, body)
+			}
+		})
+	}
+}
+
 func assertLocaleSurface(t *testing.T, body, wantOHLCOpen string, wantTWSE, bannedTWSE []string) {
 	t.Helper()
 	if !strings.Contains(body, wantOHLCOpen) {
