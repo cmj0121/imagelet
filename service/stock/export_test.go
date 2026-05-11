@@ -11,3 +11,12 @@ var FormatPriceForTest = formatPrice
 // TitleForTest exposes titleFor for the external test package.
 // Not part of the public API.
 var TitleForTest = titleFor
+
+// FormatThousandsForTest exposes formatThousands for the external test package.
+var FormatThousandsForTest = formatThousands
+
+// FormatLargeNumberForTest exposes formatLargeNumber for the external test package.
+var FormatLargeNumberForTest = formatLargeNumber
+
+// RocYearMonthLabelForTest exposes rocYearMonthLabel for the external test package.
+var RocYearMonthLabelForTest = rocYearMonthLabel
