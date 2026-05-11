@@ -164,30 +164,32 @@ prefer English over the wrong CJK script).
 The locale is resolved per request, in this order:
 
 1. `?lang=` query parameter — `en`, `zh`, `zh-TW`, `zh-Hant`, `zh-CN`,
-   `zh-Hans` (case-insensitive). Bare `zh` resolves to `zh-CN` per CLDR
-   convention.
-2. `Accept-Language` request header — parsed via
-   `golang.org/x/text/language.NewMatcher` over the supported set.
-3. `CF-IPCountry` request header — TW / HK / MO → `zh-TW`; CN / SG →
+   `zh-Hans` (case-insensitive). Unrecognized values (including `ja`)
+   are ignored and the chain proceeds.
+2. `CF-IPCountry` request header — TW / HK / MO → `zh-TW`; CN / SG →
    `zh-CN`; everything else falls through.
-4. Fallback: `en`.
+3. Fallback: `en`.
 
 | Locale              | BCP-47 tag(s) accepted   | Country defaults              |
 | ------------------- | ------------------------ | ----------------------------- |
 | English             | `en`                     | (anything not below; default) |
-| Traditional Chinese | `zh-TW`, `zh-Hant`       | TW, HK, MO                    |
-| Simplified Chinese  | `zh-CN`, `zh-Hans`, `zh` | CN, SG                        |
+| Traditional Chinese | `zh-TW`, `zh-Hant`, `zh` | TW, HK, MO                    |
+| Simplified Chinese  | `zh-CN`, `zh-Hans`       | CN, SG                        |
 
-Bare `zh` collapses onto `zh-CN` because the Unicode CLDR project treats
-simplified as the script-default for ambiguous `zh` inputs. Visitors who
-want traditional must say `zh-TW` or `zh-Hant`.
+Bare `?lang=zh` resolves to `zh-TW`. This deployment intentionally
+deviates from the CLDR default (which maps bare `zh` to Simplified)
+because its primary CJK audience reads Traditional script. Callers who
+want Simplified must say `?lang=zh-CN` or `?lang=zh-Hans` explicitly.
+
+`Accept-Language` is not consulted. A TW visitor on an English-UI
+browser sends `Accept-Language: en-US,en;q=0.9`; a CLDR matcher would
+lock that to `en` and never reach the CF-IPCountry step, defeating the
+geo-default. Trusting Cloudflare's geo signal matches the deployment's
+TW-market focus; users who want a different locale say so via `?lang=`.
 
 ```bash
 # explicit override
 curl https://imagelet.example.com/stock/2330.TW?lang=zh-TW
-
-# browser-style negotiation
-curl -H 'Accept-Language: zh-TW' https://imagelet.example.com/stock/2330.TW
 
 # CDN geo default
 curl -H 'CF-IPCountry: TW' https://imagelet.example.com/stock/2330.TW
@@ -202,10 +204,10 @@ Behavioral notes:
   omitting them.
 - `zh-TW` and `zh-CN` visitors see the full TWSE enrichment with
   localized labels (Traditional / Simplified script respectively).
-- `Vary: Accept-Language` is set **only** when `Accept-Language`
-  actually picked the locale. `?lang=` overrides skip the Vary header
-  (the URL itself differentiates), and so do CF-IPCountry-only matches.
-  This bounds CDN cache fragmentation.
+- `Vary: Accept-Language` is **not** emitted. The locale only varies
+  with `?lang=` (part of the URL, already distinct) and `CF-IPCountry`
+  (geo-sticky per visitor). Skipping the header avoids fragmenting CDN
+  edge caches by raw Accept-Language value.
 - The HTML response cache key includes the resolved locale, so three
   locales × URL = at most 3× the working set. The LRU is sized
   accordingly.
