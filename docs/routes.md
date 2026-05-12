@@ -7,6 +7,10 @@
 - `GET /now` — banner-rendered current time with date / weekday / zone caption.
 - `GET /stock` — banner-rendered regional stock-index quote.
 - `GET /stock/:symbol` — banner-rendered quote for a caller-specified Yahoo symbol.
+- `GET /qr` — QR code encoding `?text=` (default `https://imglet.sh`); `?ec=L|M|Q|H`.
+- `GET /sysinfo` — banner card with hostname, OS, kernel, CPU, RAM, uptime, and load
+  average. **Disabled by default** — requires `--sysinfo` flag; see
+  [`docs/security.md`](./security.md#sysinfo--opt-in-infrastructure-disclosure).
 - `GET /github/:user` — banner card for a GitHub user / org login.
 - `GET /github/:user/:repo` — banner card for a GitHub `owner/name` public repository.
 - `GET /dns/:hostname` — banner card for a public hostname's DNS records

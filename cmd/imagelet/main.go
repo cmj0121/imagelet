@@ -39,6 +39,7 @@ import (
 	"github.com/cmj0121/imagelet/service/now"
 	"github.com/cmj0121/imagelet/service/qr"
 	"github.com/cmj0121/imagelet/service/stock"
+	"github.com/cmj0121/imagelet/service/sysinfo"
 	"github.com/cmj0121/imagelet/service/stock/quote/cached"
 	"github.com/cmj0121/imagelet/service/stock/quote/yahoo"
 	"github.com/cmj0121/imagelet/service/stock/twse"
@@ -57,6 +58,7 @@ type cli struct {
 	Port     int    `short:"p" help:"TCP port to listen on." default:"8080"`
 	Verbose  int    `short:"v" type:"counter" help:"Increase log verbosity (-v for debug, -vv for trace)."`
 	CacheDir string `name:"cache-dir" help:"Persist per-stock + TAIFEX cache snapshots to this directory; restored on startup, saved on graceful shutdown. Empty (default) disables disk persistence."`
+	Sysinfo  bool   `name:"sysinfo" help:"Enable GET /sysinfo (hostname, OS, kernel, CPU, RAM, uptime, load). Disabled by default — /sysinfo exposes local infrastructure details."`
 }
 
 func main() {
@@ -110,6 +112,10 @@ func main() {
 	index.Register(r, version)
 	now.Register(r)
 	qr.Register(r)
+	var sysinfoHandler *sysinfo.Handler
+	if c.Sysinfo {
+		sysinfoHandler = sysinfo.Register(r, sysinfo.RealCollector{})
+	}
 
 	// Build the cached Yahoo provider once so the in-memory cache (and its
 	// singleflight stampede control) is shared across all /stock requests;
@@ -134,6 +140,12 @@ func main() {
 	// is benign.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Bind the sysinfo background refresher to the shutdown context so the
+	// goroutine drains on SIGINT/SIGTERM (mirrors userCache.LogHourly(ctx)).
+	if sysinfoHandler != nil {
+		sysinfoHandler.Start(ctx)
+	}
 
 	// /github routes — shared upstream Client + per-route Providers,
 	// wrapped by per-IP rate limit middleware (R10). The rate-limited
