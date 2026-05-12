@@ -231,3 +231,9 @@ OAuth, IP allowlist). The route carries `Cache-Control: max-age=5`
 and will be cached by any CDN that caches without a cache-key on
 auth headers — ensure your CDN strips or bypasses caching for
 `/sysinfo` when auth is in use.
+
+## `/metrics` — opt-in route analytics
+
+`GET /metrics` shows the count of requests served per route since startup.
+Route patterns (e.g. `/stock/:symbol`) are visible in the output. Disabled
+by default; enable with `--metrics`.

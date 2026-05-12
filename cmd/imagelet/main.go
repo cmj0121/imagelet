@@ -26,6 +26,7 @@ import (
 	"github.com/cmj0121/imagelet/internal/safehttp"
 	"github.com/cmj0121/imagelet/logger"
 	"github.com/cmj0121/imagelet/middleware/iplimit"
+	"github.com/cmj0121/imagelet/middleware/reqcounter"
 	"github.com/cmj0121/imagelet/server"
 	"github.com/cmj0121/imagelet/service/dns"
 	dnsresolver "github.com/cmj0121/imagelet/service/dns/resolver"
@@ -35,6 +36,7 @@ import (
 	githubprofile "github.com/cmj0121/imagelet/service/github/profile"
 	githubcached "github.com/cmj0121/imagelet/service/github/profile/cached"
 	"github.com/cmj0121/imagelet/service/index"
+	"github.com/cmj0121/imagelet/service/metrics"
 	"github.com/cmj0121/imagelet/service/notfound"
 	"github.com/cmj0121/imagelet/service/now"
 	"github.com/cmj0121/imagelet/service/qr"
@@ -59,6 +61,7 @@ type cli struct {
 	Verbose  int    `short:"v" type:"counter" help:"Increase log verbosity (-v for debug, -vv for trace)."`
 	CacheDir string `name:"cache-dir" help:"Persist per-stock + TAIFEX cache snapshots to this directory; restored on startup, saved on graceful shutdown. Empty (default) disables disk persistence."`
 	Sysinfo  bool   `name:"sysinfo" help:"Enable GET /sysinfo (hostname, OS, kernel, CPU, RAM, uptime, load). Disabled by default — /sysinfo exposes local infrastructure details."`
+	Metrics  bool   `name:"metrics" help:"Enable GET /metrics (per-route request counts since startup). Disabled by default."`
 }
 
 func main() {
@@ -96,6 +99,8 @@ func main() {
 	gin.DefaultErrorWriter = log.Logger
 
 	r := server.New()
+	ctr := reqcounter.New()
+	r.Use(ctr.Middleware())
 	// In-process HTML response cache: a middleware that respects the
 	// handlers' own Cache-Control: max-age headers. Routes that emit
 	// no-store (/now, /404) opt out automatically; / and /stock
@@ -115,6 +120,9 @@ func main() {
 	var sysinfoHandler *sysinfo.Handler
 	if c.Sysinfo {
 		sysinfoHandler = sysinfo.Register(r, sysinfo.RealCollector{})
+	}
+	if c.Metrics {
+		metrics.Register(r, ctr)
 	}
 
 	// Build the cached Yahoo provider once so the in-memory cache (and its
