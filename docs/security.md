@@ -232,12 +232,12 @@ and will be cached by any CDN that caches without a cache-key on
 auth headers — ensure your CDN strips or bypasses caching for
 `/sysinfo` when auth is in use.
 
-## `/metrics` — opt-in route analytics
+## `/metrics` — route analytics
 
 `GET /metrics` shows the count of requests served per route since startup.
-Route patterns (e.g. `/stock/:symbol`) are visible in the output. Disabled
-by default; enable with `--metrics`.
+Route patterns (e.g. `/stock/:symbol`) are visible in the output. Always
+enabled — no flag required.
 
 `/healthz` and `/robots.txt` are registered before the counter middleware
 and are excluded from the counts — they will not appear in the `/metrics`
-output even when the flag is enabled.
+output.
