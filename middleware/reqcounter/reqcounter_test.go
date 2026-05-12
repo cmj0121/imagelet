@@ -117,3 +117,28 @@ func TestUptimeIncreases(t *testing.T) {
 		t.Errorf("Uptime() = %v, want > 0", d)
 	}
 }
+
+// TestConcurrentIncrement verifies no data race when many goroutines increment
+// the same route counter simultaneously. Run with -race to catch violations.
+func TestConcurrentIncrement(t *testing.T) {
+	ctr := reqcounter.New()
+	r := newTestRouter(ctr)
+
+	const goroutines = 50
+	done := make(chan struct{}, goroutines)
+	for range goroutines {
+		go func() {
+			req := httptest.NewRequest(http.MethodGet, "/foo", nil)
+			r.ServeHTTP(httptest.NewRecorder(), req)
+			done <- struct{}{}
+		}()
+	}
+	for range goroutines {
+		<-done
+	}
+
+	snap := ctr.Snapshot()
+	if len(snap) != 1 || snap[0].Count != goroutines {
+		t.Errorf("Snapshot() = %+v, want [{/foo %d}]", snap, goroutines)
+	}
+}
