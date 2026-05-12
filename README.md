@@ -72,7 +72,9 @@ from a CLI flag — so it stays out of `ps -ef` and shell history. See
   average. **Disabled by default** — requires `--sysinfo` flag; see
   [`docs/security.md`](./docs/security.md#sysinfo--opt-in-infrastructure-disclosure).
 - `GET /metrics` — banner card with per-route request counts since startup.
-  **Disabled by default** — requires `--metrics` flag.
+  **Disabled by default** — requires `--metrics` flag. Note: `/healthz` and
+  `/robots.txt` are infra endpoints registered before the counter middleware
+  and are not included in the counts.
 - `GET /github/:user` — banner card for a GitHub user / org login.
 - `GET /github/:user/:repo` — banner card for a GitHub `owner/name` public repository.
 - `GET /dns/:hostname` — banner card for a public hostname's DNS records

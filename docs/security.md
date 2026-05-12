@@ -237,3 +237,7 @@ auth headers — ensure your CDN strips or bypasses caching for
 `GET /metrics` shows the count of requests served per route since startup.
 Route patterns (e.g. `/stock/:symbol`) are visible in the output. Disabled
 by default; enable with `--metrics`.
+
+`/healthz` and `/robots.txt` are registered before the counter middleware
+and are excluded from the counts — they will not appear in the `/metrics`
+output even when the flag is enabled.
