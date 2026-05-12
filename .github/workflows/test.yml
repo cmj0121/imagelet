@@ -25,4 +25,9 @@ jobs:
 
       - run: go build ./...
 
+      # Cross-compile darwin build to catch sysinfo build-tag regressions
+      # without a macOS runner. The Linux runner compiles the darwin-tagged
+      # files, catching syntax and import errors cheaply.
+      - run: GOOS=darwin go build ./...
+
       - run: go test ./... -count=1

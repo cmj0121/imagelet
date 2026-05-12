@@ -209,3 +209,25 @@ labels are refused on the same path.
 `Disallow: /dns/` is added to the hardcoded `robots.txt` body
 alongside `Disallow: /github/`. High-frequency crawlers honour it;
 the Disallow dissuades SEO enumeration of DNS hostname space.
+
+## `/sysinfo` — opt-in infrastructure disclosure
+
+`GET /sysinfo` returns the server's **hostname, OS name + version,
+kernel version, CPU model + core count, total RAM, uptime, and load
+average**. This data is enough for an attacker to fingerprint the
+exact cloud instance type, kernel patch level, and architecture, then
+cross-reference unpatched CVEs.
+
+The route is **disabled by default**. It is only registered when the
+binary is started with the `--sysinfo` flag:
+
+```bash
+imagelet --sysinfo
+```
+
+Do not enable `--sysinfo` on a publicly reachable deployment unless
+the endpoint is protected by a reverse-proxy auth layer (Basic Auth,
+OAuth, IP allowlist). The route carries `Cache-Control: max-age=5`
+and will be cached by any CDN that caches without a cache-key on
+auth headers — ensure your CDN strips or bypasses caching for
+`/sysinfo` when auth is in use.

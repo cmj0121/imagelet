@@ -32,6 +32,11 @@ Flags:
                           to this directory; restored on startup, saved
                           on graceful shutdown. Empty (default) disables
                           disk persistence.
+      --sysinfo           Enable GET /sysinfo (hostname, OS, kernel, CPU,
+                          RAM, uptime, load). Disabled by default —
+                          /sysinfo exposes local infrastructure details.
+                          See docs/security.md before enabling on a
+                          public deployment.
 ```
 
 ### Environment variables
@@ -61,6 +66,9 @@ from a CLI flag — so it stays out of `ps -ef` and shell history. See
 - `GET /stock` — banner-rendered regional stock-index quote.
 - `GET /stock/:symbol` — banner-rendered quote for a caller-specified Yahoo symbol.
 - `GET /qr` — QR code encoding `?text=` (default `https://imglet.sh`); `?ec=L|M|Q|H`.
+- `GET /sysinfo` — banner card with hostname, OS, kernel, CPU, RAM, uptime, and load
+  average. **Disabled by default** — requires `--sysinfo` flag; see
+  [`docs/security.md`](./docs/security.md#sysinfo--opt-in-infrastructure-disclosure).
 - `GET /github/:user` — banner card for a GitHub user / org login.
 - `GET /github/:user/:repo` — banner card for a GitHub `owner/name` public repository.
 - `GET /dns/:hostname` — banner card for a public hostname's DNS records
