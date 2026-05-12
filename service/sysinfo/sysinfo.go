@@ -178,12 +178,13 @@ func pylonSafe(s string) string {
 }
 
 // startRefresher runs in a goroutine, calling c.Collect every five seconds
-// and storing the result in ptr. Errors are logged but do not stop the loop;
-// the stale snapshot remains until a successful collection. The loop exits
-// when ctx is cancelled.
+// and storing the result in ptr. Errors are logged only on state transitions
+// (ok→fail and fail→ok) to avoid flooding the log at 720 lines/hour on a
+// sustained failure. The loop exits when ctx is cancelled.
 func startRefresher(ctx context.Context, c Collector, ptr *atomic.Pointer[SysInfo]) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
+	failing := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -191,8 +192,15 @@ func startRefresher(ctx context.Context, c Collector, ptr *atomic.Pointer[SysInf
 		case <-ticker.C:
 			info, err := c.Collect()
 			if err != nil {
-				log.Warn().Err(err).Msg("sysinfo: refresh collect failed; keeping stale snapshot")
+				if !failing {
+					log.Warn().Err(err).Msg("sysinfo: refresh collect failed; keeping stale snapshot")
+					failing = true
+				}
 				continue
+			}
+			if failing {
+				log.Info().Msg("sysinfo: refresh collect recovered")
+				failing = false
 			}
 			ptr.Store(info)
 		}

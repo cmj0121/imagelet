@@ -3,6 +3,7 @@
 package sysinfo
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"runtime"
@@ -50,7 +51,7 @@ func (r RealCollector) Collect() (*SysInfo, error) {
 
 	// Total RAM: hw.memsize is a 64-bit integer. The stdlib syscall package
 	// only exposes SysctlUint32, so we read it via `sysctl -n hw.memsize`.
-	if memStr, err2 := sysctlN("hw.memsize"); err2 == nil {
+	if memStr, err2 := sysctlExec("hw.memsize"); err2 == nil {
 		if v, err3 := strconv.ParseInt(memStr, 10, 64); err3 == nil {
 			info.TotalRAMBytes = v
 		}
@@ -65,35 +66,34 @@ func (r RealCollector) Collect() (*SysInfo, error) {
 	return info, nil
 }
 
-// sysctlN runs `sysctl -n <key>` and returns the trimmed output.
-func sysctlN(key string) (string, error) {
-	out, err := exec.Command("sysctl", "-n", key).Output()
+// sysctlExec runs `sysctl -n <key>` with a 2-second deadline and returns
+// the trimmed stdout. The timeout prevents a stalled sysctl subprocess from
+// blocking the background refresher goroutine indefinitely.
+func sysctlExec(key string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "sysctl", "-n", key).Output()
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
 }
 
-// darwinUptime returns seconds since boot. It first tries to decode the
-// kern.boottime sysctl directly (which the stdlib exposes as a string),
-// then parses the output of `sysctl -n kern.boottime`.
+// darwinUptime returns seconds since boot by parsing `sysctl -n kern.boottime`.
 func darwinUptime() int64 {
 	// `sysctl -n kern.boottime` prints:
 	//   { sec = 1745600000, usec = 123456 } Tue Apr 25 12:00:00 2025
-	out, err := exec.Command("sysctl", "-n", "kern.boottime").Output()
+	s, err := sysctlExec("kern.boottime")
 	if err != nil {
 		return 0
 	}
-	s := string(out)
-	// Extract the `sec = <value>` field.
 	const prefix = "sec = "
 	idx := strings.Index(s, prefix)
 	if idx < 0 {
 		return 0
 	}
 	rest := s[idx+len(prefix):]
-	end := strings.IndexAny(rest, ", }")
-	if end >= 0 {
+	if end := strings.IndexAny(rest, ", }"); end >= 0 {
 		rest = rest[:end]
 	}
 	sec, err := strconv.ParseInt(strings.TrimSpace(rest), 10, 64)
@@ -103,14 +103,13 @@ func darwinUptime() int64 {
 	return time.Now().Unix() - sec
 }
 
-// darwinLoadAvg reads vm.loadavg. The command `sysctl -n vm.loadavg` returns
-// something like "{ 0.25 0.50 0.75 }" (already divided by fscale).
+// darwinLoadAvg reads vm.loadavg via sysctl with a 2s deadline.
+// `sysctl -n vm.loadavg` returns "{ 0.25 0.50 0.75 }" (pre-scaled floats).
 func darwinLoadAvg() (float64, float64, float64) {
-	out, err := exec.Command("sysctl", "-n", "vm.loadavg").Output()
+	s, err := sysctlExec("vm.loadavg")
 	if err != nil {
 		return 0, 0, 0
 	}
-	s := strings.TrimSpace(string(out))
 	// Strip surrounding "{ " and " }"
 	s = strings.Trim(s, "{ }")
 	fields := strings.Fields(s)
