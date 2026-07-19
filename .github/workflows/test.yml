@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           # Read the Go version from go.mod so the workflow tracks the module's
           # declared toolchain without a separate config to keep in sync.
