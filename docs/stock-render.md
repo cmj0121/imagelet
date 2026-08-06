@@ -168,8 +168,13 @@ it, the renderer treats the data as if it were unavailable.
 
 ### Where the rows sit
 
-The new rows sit beneath the existing per-stock TW enrichment groups
-and above the 散戶 group on market-wide views:
+The holders pair opens the per-stock TW enrichment group, which sits
+beneath the 三大法人 and 信用餘額 groups. The card below is a
+`/stock/2330.TW` view — holders never appear on the market-wide
+`/stock` view, which carries no stock id to key the TDCC lookup on.
+For the market-wide group order (which ends with 三大法人期貨 and
+散戶) see [三大法人期貨 rows](#三大法人期貨-rows-market-wide-only) at
+the end of this document.
 
 ```text
 外資籌碼  ░░░░░░░░░░│████████░░  +9.0B
@@ -199,7 +204,8 @@ blank between every line was structural noise.
 
 The per-stock card panel only carries rows about the queried
 ticker. Market-wide rows (`漲跌家數` breadth, market 信用餘額,
-市場 三大法人 fallback, 市場情緒 PCR/VIX, 散戶 retail futures)
+市場 三大法人 fallback, 市場情緒 PCR/VIX, 三大法人期貨 TXF
+positioning, 散戶 retail futures)
 render only on `/stock` (regional index); they're hidden on
 `/stock/:symbol` views.
 
@@ -354,3 +360,169 @@ The row covers BOTH listed types — handler routes by symbol suffix
 (.TW → TWSE, .TWO → TPEx). Revenue publishes monthly (~10th of the
 following month for most listings); 24h cache TTL is plenty for
 the monthly cadence.
+
+## 三大法人期貨 rows (market-wide only)
+
+The market-wide `/stock` card carries a four-row group with each
+institutional category's net open interest on the TXF (大台) 臺股期貨
+contract, plus their combined total:
+
+```text
+外資期貨  ░░░░░░░░░░│██████████  +32,451 口
+投信期貨  ░░░░░░░░░░│░░░░░░░░░░  +1,208 口
+自營期貨  ░░░░░░░███│░░░░░░░░░░  -8,133 口
+合計期貨  ░░░░░░░░░░│████████░░  +25,526 口  ▲
+```
+
+Row order (外資 → 投信 → 自營 → 合計), the center-split `SignedBar`,
+and the trailing ▲/▼ cue on the 合計 row all mirror the spot
+三大法人籌碼 block at the top of the card, so the two read as siblings.
+Only the unit differs: lots (口) here, NTD 億 there. Both groups share
+one row formatter with the 散戶 rows below, which keeps the two
+口-denominated groups from drifting apart.
+
+### What the number is
+
+`多空未平倉口數淨額` — standing net open interest in lots, signed, with
+positive meaning net long. This is **positioning, not flow**: it is the
+inventory a category is currently carrying, not what it bought or sold
+during the session. The same CSV also publishes `多空交易口數淨額` (the
+day's net buy/sell in lots) and the renderer deliberately ignores it —
+a reader who scans `外資期貨 +32,451 口` as a 買賣超 figure is reading
+the wrong metric off the row.
+
+### Why TXF (大台)
+
+Institutional participation concentrates in the full-size 臺股期貨: its
+notional keeps it out of most retail hands, and institutional hedging
+and arbitrage flow through it. The mini contracts — MXF (小台, 1/4 of
+TXF) and TMF (微台, 1/10 of MXF) — are retail-dominated because the
+smaller notional keeps margin within retail reach, which is why those
+two feed the 散戶 rows instead of this group.
+
+### Relationship to the 散戶 rows
+
+For any futures contract `total_long_OI ≡ total_short_OI`, so
+`retail_net = -(institutional_net)` on that contract. The 散戶 rows are
+derived that way — sign-flipped from the same 三大法人 endpoint rather
+than fetched from a separate total-OI file, one HTTP call per contract
+instead of two.
+
+That shared identity, and the shared 口 unit, is why this group sits
+directly above 散戶 rather than next to the spot 三大法人籌碼 block
+(which is denominated in NTD 億). Keeping the two 口 groups adjacent
+makes the mirror relationship legible.
+
+The rows are **not** each other's negation on the card, though: 散戶
+mirrors MXF and TMF, this group reports TXF. Three different contracts,
+same endpoint and same derivation rule.
+
+### Bar scale
+
+One scale shared by all four rows — the largest absolute value among
+them (including 合計). The dominant category fills its half of the bar
+and every other row reads as a proportion of it. Same convention as the
+spot `positioningRows`.
+
+A consequence that surprises people: **合計 is often not the longest
+bar**. The categories offset, so the +32,451 foreign leg above nets
+against the −8,133 dealer leg down to a 合計 of +25,526 — a visibly
+shorter bar than the row driving it.
+
+### Gating
+
+Four gates, all of which must pass:
+
+- **Market-wide only.** Rendered on `/stock` (the regional index view),
+  hidden on `/stock/:symbol` — a per-stock card only carries rows about
+  the queried ticker.
+- **Closed session only** (`q.IsClosed`). TAIFEX publishes once daily
+  after close, so during open hours the walk-back would serve
+  yesterday's numbers under today's live price. A `?date=` override
+  reconstructs a historical bar with `IsClosed` forced true, so pinned
+  historical dates keep the group.
+- **TXF fetch succeeded** (`HasTXF`). Checked across the three
+  per-身份別 legs rather than the 合計 alone: the legs can legally
+  offset to a zero total while still carrying real data.
+- **zh-TW / zh-CN only.** `en` strips the whole TWSE block (see
+  [`docs/localization.md`](./localization.md)).
+
+Cadence and caching ride the existing TAIFEX retail-futures entry —
+publish-window TTL, ~30 minutes before 17:00 Asia/Taipei and 24h after
+(see [`docs/caching.md`](./caching.md)).
+
+### Failure posture
+
+The three contracts are fetched independently, one POST each. A
+TXF-only failure zeroes just the TXF fields and leaves the 散戶 rows
+intact; an MXF/TMF failure leaves this group intact. The fetch fails as
+a whole only when all three fail. Adding the TXF request must not make
+the already-shipped 散戶 group more fragile than it was before TXF
+existed.
+
+One asymmetry worth knowing: the walk-back's "did this date publish?"
+answer is driven by MXF/TMF alone. A date where only TXF published
+reports not-found and the walk continues, so this group never renders
+on a day the 散戶 rows cannot.
+
+### Parser strictness
+
+Rows are attributed by the 身份別 column and matched **exactly**
+against an alias table — `自營商`, `投信`, and `外資` / `外資及陸資`
+(the upstream renamed that party years ago; both spellings collapse to
+one canonical key so the two cannot both land in one CSV unnoticed).
+Not by row order, and not by prefix.
+
+An unknown party name, a repeated party, or a short non-blank row fails
+the parse outright rather than being skipped. A silently dropped row
+would corrupt the retail derivation just as badly as an unattributed
+one — `retail_net = -(sum of the three)` only holds when the three are
+exactly complete. Blank padding rows (a trailing `,,,,`) are skipped
+before the fail-loud default so they don't surface as
+`unknown 身份別 ""`.
+
+Prefix matching is deliberately avoided: `futContractsDateDown` emits
+exactly three unsuffixed rows. TAIFEX's _options_ file
+(`callsAndPutsDate`) is the one that emits suffixed parties like
+`自營商(避險)`. Under a prefix rule a category subtotal emitted
+alongside its sub-rows would be summed into the same field and silently
+double-count.
+
+### Source
+
+TAIFEX 三大法人區分各期貨契約 (`futContractsDateDown`), BIG5-encoded
+CSV, one POST per (commodity, date) — MXF and TMF for the 散戶 rows,
+TXF for this group. Both column positions (`身份別` and
+`多空未平倉口數淨額`) are resolved by header name, so a future layout
+shuffle fails loudly instead of mis-attributing lots.
+
+Days with no publication answer with a small HTML `查無資料` alert page
+rather than a CSV; the fetcher detects that by testing for a leading
+`<` and walks back one day at a time until a real CSV lands.
+
+### Group order on the market-wide card
+
+Closed session, zh-TW, `/stock` resolving to `^TWII`:
+
+```text
+外資籌碼  ░░░░░░░░░░│████████░░  +43.9B
+投信籌碼  ░░░░░░░░░░│░░░░░░░░░░  +2.2B
+自營籌碼  ░░░░░░░░░░│██░░░░░░░░  +8.9B
+合計籌碼  ░░░░░░░░░░│██████████  +55.0B  ▲
+
+漲跌家數  ░░░░░░████│░░░░░░░░░░  漲 312 跌 691 平 63
+
+信用餘額  融資 4,409億   融券 19.1萬張
+
+外資期貨  ░░░░░░░░░░│██████████  +32,451 口
+投信期貨  ░░░░░░░░░░│░░░░░░░░░░  +1,208 口
+自營期貨  ░░░░░░░███│░░░░░░░░░░  -8,133 口
+合計期貨  ░░░░░░░░░░│████████░░  +25,526 口  ▲
+
+小台散戶  ░░░░░░░░░░│██████████  +2,317 口
+微台散戶  ░░░░░░████│░░░░░░░░░░  -845 口
+```
+
+The 市場情緒 PCR / VIX row, when present, renders as its own group
+between 信用餘額 and 三大法人期貨. As on the per-stock card, groups are
+separated by zero-width-space rows.
