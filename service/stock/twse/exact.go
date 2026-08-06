@@ -37,10 +37,10 @@ type StockMarginExactProvider interface {
 	FetchMIMARGNStockExact(ctx context.Context, stockID, date string) (StockMargin, bool, error)
 }
 
-// RetailFuturesExactProvider fetches the TAIFEX retail futures triple
-// (mxfNet, tmfNet) for a single day with no walk-back. Either
-// commodity may individually report "not published yet" — found=true
-// requires at least one to have data.
+// RetailFuturesExactProvider fetches the TAIFEX futures positioning
+// (MXF/TMF retail nets plus the TXF institutional breakdown) for a
+// single day with no walk-back. Any commodity may individually report
+// "not published yet" — found=true requires at least one to have data.
 type RetailFuturesExactProvider interface {
 	FetchTAIFEXFuturesExact(ctx context.Context, day time.Time) (RetailFutures, bool, error)
 }
@@ -112,26 +112,59 @@ func (p *HTTPProvider) FetchMIMARGNStockExact(ctx context.Context, stockID, date
 }
 
 // FetchTAIFEXFuturesExact retrieves the MXF + TMF retail-futures pair
-// for the given day with no walk-back. Returns found=true when at
-// least one commodity has a published row; found=false when both came
-// back empty (typical for non-trading days, holidays, or pre-publish
-// hours of a trading day).
+// and the TXF institutional breakdown for the given day with no
+// walk-back. This is the path production actually runs (via
+// CachedRetailFutures); HTTPProvider.GetRetailFutures is the uncached
+// twin and the two keep an identical failure posture:
+//
+//   - Per-commodity containment. A failure on one contract zeroes only
+//     that contract's fields; the whole fetch fails only when ALL
+//     THREE fail. Adding the TXF POST must not make the already-
+//     rendered 散戶 MXF/TMF group more fragile than it was before TXF
+//     existed — a transient 500 or timeout on TXF alone is not a
+//     reason to drop the minis.
+//   - found is mini-driven: it reports whether MXF or TMF published,
+//     deliberately ignoring TXF. found terminates the caller's
+//     walk-back, and a TXF-only day is a day whose HasAny() is false —
+//     stopping there would strand the walk on a date with no
+//     renderable 散戶 rows when an earlier date has them. Revisit once
+//     TXF gets its own render group and can justify a day on its own.
+//   - A contained failure sets Partial on the result. Containment
+//     alone would be a regression: the caller caches found=true
+//     results for a full session, so one 502 on MXF would pin
+//     MXFNet=0 (and drop the 小台散戶 row) for 24h with no retry.
+//     Partial lets CachedRetailFutures hold the degraded answer only
+//     briefly. Each failure is also logged per contract — otherwise a
+//     single-contract outage is invisible: HTTP 200, rendered card,
+//     missing row, no error anywhere.
 func (p *HTTPProvider) FetchTAIFEXFuturesExact(ctx context.Context, day time.Time) (RetailFutures, bool, error) {
 	if p.taifexFutures == "" {
 		return RetailFutures{}, false, ErrUnavailable
 	}
-	mxfNet, mxfOk, mxfErr := p.fetchTAIFEXOnce(ctx, commodityMXF, day)
-	if mxfErr != nil {
+	// A failed fetch yields a zero breakdown, so the corresponding
+	// fields stay zero and the Has* predicates report "not fetched".
+	mxf, mxfOk, mxfErr := p.fetchTAIFEXOnce(ctx, commodityMXF, day)
+	tmf, tmfOk, tmfErr := p.fetchTAIFEXOnce(ctx, commodityTMF, day)
+	txf, _, txfErr := p.fetchTAIFEXOnce(ctx, commodityTXF, day)
+	if mxfErr != nil && tmfErr != nil && txfErr != nil {
 		return RetailFutures{}, false, mxfErr
 	}
-	tmfNet, tmfOk, tmfErr := p.fetchTAIFEXOnce(ctx, commodityTMF, day)
-	if tmfErr != nil {
-		return RetailFutures{}, false, tmfErr
-	}
+	logTAIFEXContractFailure(commodityMXF, day, mxfErr)
+	logTAIFEXContractFailure(commodityTMF, day, tmfErr)
+	logTAIFEXContractFailure(commodityTXF, day, txfErr)
 	if !mxfOk && !tmfOk {
 		return RetailFutures{}, false, nil
 	}
-	out := RetailFutures{MXFNet: mxfNet, TMFNet: tmfNet, AsOf: day}
+	out := RetailFutures{
+		MXFNet:        mxf.retailNet(),
+		TMFNet:        tmf.retailNet(),
+		TXFDealerNet:  txf.dealer,
+		TXFTrustNet:   txf.trust,
+		TXFForeignNet: txf.foreign,
+		TXFInstNet:    txf.instNet(),
+		Partial:       mxfErr != nil || tmfErr != nil || txfErr != nil,
+		AsOf:          day,
+	}
 	return out, true, nil
 }
 
