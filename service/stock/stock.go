@@ -30,7 +30,25 @@
 //	漲跌家數  bar  漲 312 跌 691 平 63
 //	(blank)
 //	信用餘額  融資 N億   融券 N萬張
-//	散戶多空  bar  +N%
+//	(blank)
+//	外資期貨  bar  +32,451 口
+//	投信期貨  bar  +1,208 口
+//	自營期貨  bar  -8,133 口
+//	合計期貨  bar  +25,526 口  ▲
+//	(blank)
+//	小台散戶  bar  +2,317 口
+//	微台散戶  bar  -845 口
+//
+// The 三大法人期貨 group (TXF 大台 net OI per 身份別) sits directly above
+// the 散戶 group because both come off the same TAIFEX endpoint under the
+// same per-contract derivation rule and both are quoted in 口, while the
+// 三大法人籌碼 block at the top is quoted in NTD 億.
+//
+// The two groups are NOT each other's negation on the card. The
+// retail_net = -(institutional_net) identity holds per contract, and
+// 散戶 mirrors MXF (小台) + TMF (微台) while this group reports TXF —
+// three different contracts. Summing the two groups toward zero is a
+// misreading, not a broken card.
 //
 // Blank rows between groups are zero-width space (U+200B) — a literal
 // blank string would be trimmed away by pylon's row parser. Bordered
@@ -909,6 +927,33 @@ func buildBlocks(symbol string, q quote.Quote, in stockRenderInput, loc i18n.Loc
 	if !isPerStock && q.IsClosed && (in.pcr.Has() || in.vix.Has()) {
 		groups = append(groups, []string{marketSentimentRow(in.pcr, in.vix, cat)})
 	}
+	// 三大法人期貨 (TXF 大台 institutional net OI). Same two gates as the
+	// rows above: market-wide only (a per-stock card carries rows about
+	// the queried ticker alone) and closed-market only (TAIFEX publishes
+	// once daily after close, so during open hours the lookback would
+	// serve yesterday's numbers under today's price).
+	//
+	// Placed DIRECTLY ABOVE the 散戶 group on purpose: both groups come
+	// off the same TAIFEX 三大法人 endpoint under the same per-contract
+	// derivation rule, and both are denominated in 口 — whereas the spot
+	// 三大法人 block further up is in NTD 億. Keeping the two 口 groups
+	// adjacent keeps the unit switch in one place on the card.
+	//
+	// They are NOT each other's negation, though. retail_net =
+	// -(institutional_net) holds within a single contract; 散戶 is derived
+	// from MXF (小台) and TMF (微台) while this group reports TXF (大台),
+	// so the two sets of rows describe three different contracts and will
+	// not sum to zero.
+	//
+	// The len check keeps an all-zero TXF payload from appending an empty
+	// group — the separator loop below emits a blank row before every
+	// group after the first, so an empty group would surface as a stray
+	// blank line in the rendered card.
+	if !isPerStock && q.IsClosed && in.retail.HasTXF() {
+		if rows := institutionalFuturesRows(in.retail, cat); len(rows) > 0 {
+			groups = append(groups, rows)
+		}
+	}
 	if !isPerStock && q.IsClosed && in.retail.HasAny() {
 		groups = append(groups, retailFuturesRows(in.retail, cat))
 	}
@@ -1446,6 +1491,62 @@ func marketSentimentRow(p twse.OptionsPCR, v twse.VIX, cat *i18n.Catalog) string
 		parts = append(parts, fmt.Sprintf("%s  %.2f", cat.TWSEVIX, v.Value))
 	}
 	return strings.Join(parts, "  ")
+}
+
+// institutionalFuturesRows formats the 三大法人期貨 section: 外資期貨 /
+// 投信期貨 / 自營期貨 / 合計期貨 (zh-TW; zh-CN uses 外资期货 / 投信期货 /
+// 自营期货 / 合计期货). Values are TXF (大台) net open interest per 身份別
+// in lots, signed (positive = net long).
+//
+// Row order and row shape deliberately mirror positioningRows: same
+// participant order (外資 → 投信 → 自營 → 合計), same shared SignedBar
+// scale (the largest absolute value across the four rows, so a glance
+// reveals which party dominated the day), same ▲/▼ summary cue on the
+// 合計 row only. The two blocks then read as siblings and only the unit
+// differs — lots (口) here vs NTD 億 in the spot block.
+//
+// Per-row formatting delegates to retailFuturesRow purely to share a
+// row SHAPE — label + bar + signed-lot-count + 口 — with the 散戶 rows
+// below, so the two 口-denominated groups stay visually consistent. It
+// implies nothing about the numbers: 散戶 is derived from MXF and TMF,
+// this group reports TXF, and neither is the other's negation.
+//
+// Returns nil when all four values are zero — a zero scale would leave
+// every bar degenerate and the group would carry no signal. Callers
+// gate on retail.HasTXF(), which already implies a non-zero foreign,
+// trust or dealer leg, so this is a guard rather than a live branch.
+func institutionalFuturesRows(r twse.RetailFutures, cat *i18n.Catalog) []string {
+	const halfWidth = 10
+	scale := absMaxInt64(r.TXFForeignNet, r.TXFTrustNet, r.TXFDealerNet, r.TXFInstNet)
+	if scale == 0 {
+		return nil
+	}
+
+	type entry struct {
+		label string
+		net   int64
+	}
+	rows := []entry{
+		{cat.TWSEFuturesForeign, r.TXFForeignNet},
+		{cat.TWSEFuturesTrust, r.TXFTrustNet},
+		{cat.TWSEFuturesDealer, r.TXFDealerNet},
+		{cat.TWSEFuturesTotal, r.TXFInstNet},
+	}
+	w := maxLabelWidth(rows[0].label, rows[1].label, rows[2].label, rows[3].label)
+
+	out := make([]string, 0, len(rows))
+	for i, e := range rows {
+		line := retailFuturesRow(padLabel(e.label, w), e.net, scale, halfWidth, cat)
+		if i == len(rows)-1 {
+			arrowChar := "▲"
+			if e.net < 0 {
+				arrowChar = "▼"
+			}
+			line += "  " + arrowChar
+		}
+		out = append(out, line)
+	}
+	return out
 }
 
 // retailFuturesRows formats the 散戶 section: 小台散戶 / 微台散戶
