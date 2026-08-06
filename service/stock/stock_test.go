@@ -2468,3 +2468,363 @@ func TestEnCatalogHoldersFieldsEmpty(t *testing.T) {
 		}
 	}
 }
+
+// retailTWSE satisfies twse.Provider + twse.RetailFuturesProvider so
+// the market-wide TAIFEX futures groups (三大法人期貨 + 散戶) can be
+// exercised through the real handler rather than a unit-level helper
+// call. GetRetailFutures ignores asOf — the fake has a single canned
+// snapshot; the walk-back behaviour is the provider's concern and is
+// covered in service/stock/twse.
+type retailTWSE struct {
+	fakeTWSE
+	retail twse.RetailFutures
+}
+
+func (p retailTWSE) GetRetailFutures(_ context.Context, _ time.Time) (twse.RetailFutures, error) {
+	return p.retail, nil
+}
+
+// freshTXF returns a deterministic RetailFutures carrying BOTH the TXF
+// institutional breakdown and the 散戶 (MXF/TMF) legs, so tests can pin
+// the two 口-denominated groups and their relative order in one render.
+//
+// The TXF legs sum exactly: 32451 + 1208 - 8133 = 25526, matching the
+// upstream invariant that 合計 is the sum of the three 身份別 rows.
+// Dealer is negative so the ▲/▼ arrow logic and the negative-lot format
+// ("-8,133") are both exercised. Foreign is the largest absolute value,
+// so it owns the full bar width and every other row reads as a
+// proportion of it.
+func freshTXF() twse.RetailFutures {
+	return twse.RetailFutures{
+		MXFNet:        2_317,
+		TMFNet:        -845,
+		TXFForeignNet: 32_451,
+		TXFTrustNet:   1_208,
+		TXFDealerNet:  -8_133,
+		TXFInstNet:    25_526,
+		AsOf:          time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC),
+	}
+}
+
+// twMarketQuote returns a closed-market TAIEX quote — the state in
+// which every TAIFEX-sourced group is eligible to render.
+func twMarketQuote() quote.Quote {
+	q := freshQuote()
+	q.Symbol = "^TWII"
+	q.Name = "加權指數"
+	q.Currency = "TWD"
+	q.IsClosed = true
+	return q
+}
+
+// getStockASCII issues a GET against the given path with a curl UA (so
+// the ASCII surface is selected) and CF-IPCountry: TW, and returns the
+// rendered body. Fails the test on any non-200.
+func getStockASCII(t *testing.T, r *gin.Engine, path string) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("User-Agent", "curl/8.4.0")
+	req.Header.Set("CF-IPCountry", "TW")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s: status = %d, want 200\n--- body ---\n%s", path, rec.Code, rec.Body.String())
+	}
+	return rec.Body.String()
+}
+
+// txfRouter wires a market-data + retail-futures provider pair behind
+// the real handler for the given RetailFutures snapshot.
+func txfRouter(q quote.Quote, rf twse.RetailFutures) *gin.Engine {
+	return newRouterWithTWSE(fakeProvider{q: q}, retailTWSE{
+		fakeTWSE: fakeTWSE{d: freshTW()},
+		retail:   rf,
+	})
+}
+
+// futuresLabelsTW are the four zh-TW 三大法人期貨 row labels.
+var futuresLabelsTW = []string{"外資期貨", "投信期貨", "自營期貨", "合計期貨"}
+
+// futuresLines returns the rendered lines belonging to the 三大法人期貨
+// group. Used to assert per-row properties (the arrow cue) without
+// re-deriving the whole layout.
+func futuresLines(body string) []string {
+	var out []string
+	for _, ln := range strings.Split(body, "\n") {
+		for _, label := range futuresLabelsTW {
+			if strings.Contains(ln, label) {
+				out = append(out, ln)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// TestServeInstitutionalFuturesRendersZhTW pins the 三大法人期貨 group on
+// the market-wide closed-market view: all four labels in 外資 → 投信 →
+// 自營 → 合計 order, signed lot counts with thousands separators and the
+// 口 suffix, and the ▲ summary arrow on the 合計 row ONLY.
+func TestServeInstitutionalFuturesRendersZhTW(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := getStockASCII(t, txfRouter(twMarketQuote(), freshTXF()), "/stock")
+	t.Logf("rendered ASCII body:\n%s", body)
+
+	for _, want := range []string{
+		"外資期貨", "投信期貨", "自營期貨", "合計期貨",
+		"+32,451 口", "+1,208 口", "-8,133 口", "+25,526 口",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q\n--- body ---\n%s", want, body)
+		}
+	}
+
+	// Row order: 外資 → 投信 → 自營 → 合計, matching the spot 三大法人
+	// block above so the two read as siblings.
+	for i := 1; i < len(futuresLabelsTW); i++ {
+		prev, curr := strings.Index(body, futuresLabelsTW[i-1]), strings.Index(body, futuresLabelsTW[i])
+		if prev < 0 || curr < 0 || prev >= curr {
+			t.Errorf("row order broken: %q at %d must precede %q at %d",
+				futuresLabelsTW[i-1], prev, futuresLabelsTW[i], curr)
+		}
+	}
+
+	// The ▲ arrow belongs to the 合計 row and nowhere else in the group.
+	if got := len(futuresLines(body)); got != 4 {
+		t.Fatalf("futures group rendered %d rows, want 4\n--- body ---\n%s", got, body)
+	}
+	for _, ln := range futuresLines(body) {
+		hasArrow := strings.Contains(ln, "▲") || strings.Contains(ln, "▼")
+		isTotal := strings.Contains(ln, "合計期貨")
+		if isTotal && !strings.Contains(ln, "▲") {
+			t.Errorf("合計期貨 row missing ▲ (net is positive): %q", ln)
+		}
+		if !isTotal && hasArrow {
+			t.Errorf("non-合計 futures row carries an arrow: %q", ln)
+		}
+	}
+}
+
+// TestServeInstitutionalFuturesNegativeTotalShowsDownArrow pins the ▼
+// branch: when the three 身份別 legs net short, the 合計 row flips its
+// summary cue.
+func TestServeInstitutionalFuturesNegativeTotalShowsDownArrow(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rf := freshTXF()
+	rf.TXFForeignNet, rf.TXFInstNet = -32_451, -39_376 // -32451 + 1208 - 8133
+	body := getStockASCII(t, txfRouter(twMarketQuote(), rf), "/stock")
+
+	for _, ln := range futuresLines(body) {
+		if strings.Contains(ln, "合計期貨") {
+			if !strings.Contains(ln, "▼") {
+				t.Errorf("合計期貨 row missing ▼ for a negative net: %q", ln)
+			}
+			return
+		}
+	}
+	t.Fatalf("no 合計期貨 row rendered\n--- body ---\n%s", body)
+}
+
+// TestServeInstitutionalFuturesHiddenOnPerStockView pins that the group
+// is market-wide only: a per-stock card carries rows about the queried
+// ticker alone, so /stock/2330.TW must not show it even though the
+// wired provider can answer the query.
+func TestServeInstitutionalFuturesHiddenOnPerStockView(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := twMarketQuote()
+	q.Symbol = "2330.TW"
+	q.Name = "台積電"
+	body := getStockASCII(t, txfRouter(q, freshTXF()), "/stock/2330.TW")
+
+	for _, unwanted := range futuresLabelsTW {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("per-stock view leaked market-wide row %q\n--- body ---\n%s", unwanted, body)
+		}
+	}
+}
+
+// TestServeInstitutionalFuturesHiddenWhenMarketOpen pins the q.IsClosed
+// gate. TAIFEX publishes once daily after close; during open hours the
+// provider's lookback serves the PREVIOUS session, which would sit under
+// today's live price and misread as today's positioning.
+func TestServeInstitutionalFuturesHiddenWhenMarketOpen(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	q := twMarketQuote()
+	q.IsClosed = false
+	body := getStockASCII(t, txfRouter(q, freshTXF()), "/stock")
+
+	for _, unwanted := range futuresLabelsTW {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("open market rendered %q\n--- body ---\n%s", unwanted, body)
+		}
+	}
+}
+
+// TestServeInstitutionalFuturesOmittedWhenNoTXFData pins the HasTXF()
+// gate AND its layout consequence. When the TXF fetch failed, the group
+// must vanish completely: no labels, no label-only row, and — critically
+// — no stray blank separator. The body's group separators are U+200B
+// rows, so an empty group appended to the list would surface as an extra
+// blank line. Asserted by diffing the separator count against an
+// otherwise identical render that DOES carry TXF data: exactly one
+// separator fewer, never the same count with a hole in it.
+func TestServeInstitutionalFuturesOmittedWhenNoTXFData(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	noTXF := freshTXF()
+	noTXF.TXFForeignNet, noTXF.TXFTrustNet, noTXF.TXFDealerNet, noTXF.TXFInstNet = 0, 0, 0, 0
+	if noTXF.HasTXF() {
+		t.Fatalf("fixture invalid: HasTXF() true with all TXF legs zero")
+	}
+	withBody := getStockASCII(t, txfRouter(twMarketQuote(), freshTXF()), "/stock")
+	withoutBody := getStockASCII(t, txfRouter(twMarketQuote(), noTXF), "/stock")
+
+	for _, unwanted := range futuresLabelsTW {
+		if strings.Contains(withoutBody, unwanted) {
+			t.Errorf("no-TXF render leaked %q\n--- body ---\n%s", unwanted, withoutBody)
+		}
+	}
+	// The 散戶 group is untouched by the TXF outage.
+	if !strings.Contains(withoutBody, "小台散戶") {
+		t.Errorf("no-TXF render dropped the 散戶 group\n--- body ---\n%s", withoutBody)
+	}
+	// Exactly one separator disappears along with the group — proving no
+	// blank row was left behind where the group used to be.
+	gotWith, gotWithout := countBlankRows(withBody), countBlankRows(withoutBody)
+	if gotWith-gotWithout != 1 {
+		t.Errorf("blank separator rows: with-TXF %d, without %d; want exactly one fewer\n--- with ---\n%s\n--- without ---\n%s",
+			gotWith, gotWithout, withBody, withoutBody)
+	}
+	// Belt and braces: no two blank separators ever sit adjacent, which
+	// is what an empty group between two real ones would produce.
+	if n := adjacentBlankRows(withoutBody); n > 0 {
+		t.Errorf("no-TXF render has %d adjacent blank separator pair(s)\n--- body ---\n%s", n, withoutBody)
+	}
+}
+
+// isBlankRow reports whether a rendered line is visually empty. Group
+// separators carry only the U+200B zero-width space, so "blank" means
+// empty once ZWSP and surrounding whitespace are stripped.
+func isBlankRow(line string) bool {
+	return strings.TrimSpace(strings.ReplaceAll(line, "​", "")) == ""
+}
+
+// countBlankRows counts the visually-blank rows in the response, with
+// the response's own leading/trailing newlines trimmed first so the
+// count reflects in-block group separators.
+func countBlankRows(body string) int {
+	n := 0
+	for _, ln := range strings.Split(strings.Trim(body, "\n"), "\n") {
+		if isBlankRow(ln) {
+			n++
+		}
+	}
+	return n
+}
+
+// adjacentBlankRows counts consecutive visually-blank row pairs — the
+// signature of an empty group appended between two populated ones.
+func adjacentBlankRows(body string) int {
+	lines := strings.Split(strings.Trim(body, "\n"), "\n")
+	n := 0
+	for i := 1; i < len(lines); i++ {
+		if isBlankRow(lines[i]) && isBlankRow(lines[i-1]) {
+			n++
+		}
+	}
+	return n
+}
+
+// TestServeInstitutionalFuturesRendersZhCN pins the Simplified labels
+// for a zh-CN visitor and asserts the Traditional forms do NOT leak.
+func TestServeInstitutionalFuturesRendersZhCN(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := getStockASCII(t, txfRouter(twMarketQuote(), freshTXF()), "/stock?lang=zh-CN")
+
+	for _, want := range []string{"外资期货", "投信期货", "自营期货", "合计期货", "+25,526 口"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("zh-CN body missing %q\n--- body ---\n%s", want, body)
+		}
+	}
+	for _, unwanted := range []string{"外資期貨", "自營期貨", "合計期貨"} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("zh-CN body leaked Traditional label %q\n--- body ---\n%s", unwanted, body)
+		}
+	}
+}
+
+// TestServeInstitutionalFuturesStrippedOnEn pins that en drops the
+// group — showTWSEEnrichment strips the ENTIRE TWSE block for en, and
+// the catalog leaves the futures labels empty there, so nothing of the
+// group may reach the body.
+func TestServeInstitutionalFuturesStrippedOnEn(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := getStockASCII(t, txfRouter(twMarketQuote(), freshTXF()), "/stock?lang=en")
+
+	for _, unwanted := range []string{
+		"外資期貨", "投信期貨", "自營期貨", "合計期貨",
+		"外资期货", "合计期货",
+		"+32,451", "+25,526", "口",
+		// The rest of the TWSE block goes too.
+		"小台散戶", "外資籌碼", "信用餘額",
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("en body leaked TWSE content %q\n--- body ---\n%s", unwanted, body)
+		}
+	}
+}
+
+// TestServeInstitutionalFuturesSitsAboveRetailGroup pins the deliberate
+// placement: 三大法人期貨 renders as its own group DIRECTLY above the
+// 散戶 group — same TAIFEX endpoint, same 口 unit — and below the
+// NTD-denominated spot 三大法人籌碼 / 信用餘額 groups. Also pins that the
+// 散戶 rows still render correctly alongside.
+//
+// Adjacency is a units-and-source grouping, NOT an arithmetic one: 散戶
+// reports MXF/TMF and this group reports TXF, so the fixture's 散戶 and
+// 期貨 values are deliberately unrelated rather than sign-flipped pairs.
+func TestServeInstitutionalFuturesSitsAboveRetailGroup(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := getStockASCII(t, txfRouter(twMarketQuote(), freshTXF()), "/stock")
+
+	// 散戶 group still intact next to the new one.
+	for _, want := range []string{"小台散戶", "+2,317 口", "微台散戶", "-845 口"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("散戶 group missing %q\n--- body ---\n%s", want, body)
+		}
+	}
+
+	// Group order down the card.
+	seq := []string{"外資籌碼", "信用餘額", "外資期貨", "合計期貨", "小台散戶", "微台散戶"}
+	for i := 1; i < len(seq); i++ {
+		prev, curr := strings.Index(body, seq[i-1]), strings.Index(body, seq[i])
+		if prev < 0 {
+			t.Fatalf("expected row %q not rendered\n--- body ---\n%s", seq[i-1], body)
+		}
+		if curr < 0 {
+			t.Fatalf("expected row %q not rendered\n--- body ---\n%s", seq[i], body)
+		}
+		if prev >= curr {
+			t.Errorf("group order broken: %q (at %d) must precede %q (at %d)", seq[i-1], prev, seq[i], curr)
+		}
+	}
+
+	// Exactly one blank separator between 合計期貨 and 小台散戶 — the two
+	// groups are adjacent, with nothing rendered in between.
+	lines := strings.Split(body, "\n")
+	totalAt, retailAt := -1, -1
+	for i, ln := range lines {
+		if totalAt < 0 && strings.Contains(ln, "合計期貨") {
+			totalAt = i
+		}
+		if retailAt < 0 && strings.Contains(ln, "小台散戶") {
+			retailAt = i
+		}
+	}
+	if totalAt < 0 || retailAt < 0 {
+		t.Fatalf("could not locate both rows (合計期貨=%d 小台散戶=%d)", totalAt, retailAt)
+	}
+	if got := retailAt - totalAt; got != 2 {
+		t.Errorf("合計期貨 → 小台散戶 line gap = %d, want 2 (exactly one separator between the groups)\n--- body ---\n%s", got, body)
+	}
+}

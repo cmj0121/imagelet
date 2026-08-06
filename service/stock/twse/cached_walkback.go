@@ -260,15 +260,58 @@ func (c *CachedRetailFutures) SetClock(now func() time.Time) {
 	c.cache.SetClock(now)
 }
 
+// partialEntryTTL caps how long a partial (upstream-degraded) futures
+// entry may occupy the cache. FetchTAIFEXFuturesExact contains
+// per-contract failures so a 502 on one commodity still returns the
+// others — but that answer carries zeroes where an error was, and the
+// normal TTL would hold it for a full closedSessionTTL (24h) on any
+// past date or any post-publish-hour probe. A single transient 502
+// would then drop a shipped row from every render for 24h with no
+// retry, which is strictly worse than the error it replaced.
+//
+// minTodayTTL is reused rather than a new constant: it is already the
+// package's "an open question re-asks itself this often" interval, and
+// a degraded contract is exactly that. The effective TTL is the MIN of
+// this and the normal TTL, so a partial never outlives what a complete
+// entry would have got (e.g. 10 minutes before publish stays 10
+// minutes). Non-zero rather than "don't cache at all" so a sustained
+// TAIFEX outage can't turn every /stock request into a fresh 3-POST
+// fan-out.
+const partialEntryTTL = minTodayTTL
+
 func (c *CachedRetailFutures) GetRetailFutures(ctx context.Context, asOf time.Time) (RetailFutures, error) {
 	var out RetailFutures
 	err := walkBackTradingDays(asOf, c.now(), func(probe time.Time) (bool, error) {
 		key := probe.Format("20060102")
-		v, found, err := c.cache.GetOrFetch(key, ttlForAsOf(probe, c.now()), func() (RetailFutures, bool, error) {
+		ttl := ttlForAsOf(probe, c.now())
+		// fetched distinguishes "this call ran the upstream" from "this
+		// call was served from cache". The TTL fixup below must only
+		// run on a fresh write: re-stamping an existing partial entry
+		// on every read would keep pushing its expiry forward and it
+		// would never self-heal.
+		//
+		// Safe without synchronisation: ttlcache's singleflight runs
+		// the closure on the leader's goroutine, and waiters get the
+		// leader's result without executing it, so each caller only
+		// ever reads the flag its own stack wrote.
+		fetched := false
+		v, found, err := c.cache.GetOrFetch(key, ttl, func() (RetailFutures, bool, error) {
+			fetched = true
 			return c.upstream.FetchTAIFEXFuturesExact(ctx, probe)
 		})
 		if err != nil {
 			return false, err
+		}
+		// GetOrFetch commits the entry with a TTL chosen before the
+		// fetch returns, so partial-ness — only knowable afterwards —
+		// is corrected here by rewriting the entry with the shorter
+		// expiry.
+		if fetched && found && v.Partial {
+			c.cache.Set(key, ttlcache.Entry[RetailFutures]{
+				Value:     v,
+				Found:     found,
+				ExpiresAt: c.now().Add(min(ttl, partialEntryTTL)),
+			})
 		}
 		if found {
 			out = v

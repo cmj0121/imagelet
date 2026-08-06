@@ -38,7 +38,9 @@ live path.
 `/stock/:symbol` accepts any Yahoo symbol (e.g. `2330.TW`, `AAPL`,
 `BRK-B`, `EURUSD=X`). Index symbols starting with `^` must be
 percent-encoded — `/stock/%5EGSPC` for `^GSPC`. The TW enrichment
-block (institutional flow / breadth / margin balance) activates by
+block (institutional spot flow / breadth / margin balance, plus
+三大法人 and 散戶 futures positioning on the market-wide view)
+activates by
 symbol suffix (`.TW`, `.TWO`) or the `^TWII` index, independent of
 the visitor's region. For `<id>.TW` symbols, the 三大法人 rows show
 PER-STOCK flow (TWSE T86) instead of the market-wide aggregate.
