@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -255,11 +256,19 @@ func TestParseTWSENumberStripsCommas(t *testing.T) {
 // provided asOf date rather than time.Now(). Use a Wednesday asOf so no
 // weekend skip interferes with the first probe.
 func TestGetAtWalksBackFromAsOf(t *testing.T) {
-	var seenDates []string
+	// GetAt fans out the upstream endpoints concurrently, so the
+	// capture slice needs a lock — the handler runs on per-connection
+	// server goroutines.
+	var (
+		seenMu    sync.Mutex
+		seenDates []string
+	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Capture the date= query, route by path the way fixtureServer does.
 		if v := r.URL.Query().Get("d"); v != "" {
+			seenMu.Lock()
 			seenDates = append(seenDates, v)
+			seenMu.Unlock()
 		}
 		var name string
 		switch {
@@ -288,6 +297,8 @@ func TestGetAtWalksBackFromAsOf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAt: %v", err)
 	}
+	seenMu.Lock()
+	defer seenMu.Unlock()
 	if len(seenDates) == 0 {
 		t.Fatalf("upstream not hit")
 	}
@@ -299,10 +310,16 @@ func TestGetAtWalksBackFromAsOf(t *testing.T) {
 // TestGetAtFutureClampedToToday pins that a future-dated asOf does not
 // loop the upstream against impossible dates — clamped to today.
 func TestGetAtFutureClampedToToday(t *testing.T) {
-	var seenDates []string
+	// Same locking rationale as TestGetAtWalksBackFromAsOf.
+	var (
+		seenMu    sync.Mutex
+		seenDates []string
+	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if v := r.URL.Query().Get("d"); v != "" {
+			seenMu.Lock()
 			seenDates = append(seenDates, v)
+			seenMu.Unlock()
 		}
 		var name string
 		switch {
@@ -330,6 +347,8 @@ func TestGetAtFutureClampedToToday(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAt: %v", err)
 	}
+	seenMu.Lock()
+	defer seenMu.Unlock()
 	if len(seenDates) == 0 {
 		t.Fatalf("upstream not hit")
 	}
